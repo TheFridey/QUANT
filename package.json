@@ -1,0 +1,29 @@
+{
+  "name": "odin-quant",
+  "private": true,
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm build:packages && pnpm exec concurrently -n api,worker,web -c blue,magenta,green \"pnpm --filter @odin/api dev\" \"pnpm --filter @odin/worker dev\" \"pnpm --filter @odin/web dev\"",
+    "build:packages": "pnpm --filter @odin/shared build && pnpm --filter @odin/market-data --filter @odin/risk-engine --filter @odin/trading-engine --filter @odin/analytics build && pnpm --filter @odin/agent-core build",
+    "build": "pnpm build:packages && pnpm --filter @odin/api --filter @odin/worker --filter @odin/web build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "db:generate": "pnpm --filter @odin/shared db:generate",
+    "db:deploy": "pnpm --filter @odin/shared db:deploy",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.36.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.36.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.45.0",
+    "vitest": "^3.2.4"
+  }
+}

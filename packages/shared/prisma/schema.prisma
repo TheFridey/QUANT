@@ -1,0 +1,172 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         String
+  createdAt    DateTime @default(now())
+}
+
+model EngineControl {
+  id               String   @id @default("primary")
+  status           String
+  flattenRequested Boolean  @default(false)
+  config           Json
+  updatedAt        DateTime @updatedAt
+  updatedBy        String?
+}
+
+model PaperAccount {
+  id                 String         @id @default("primary")
+  cashUsd            Decimal        @db.Decimal(24, 8)
+  startingBalanceUsd Decimal        @db.Decimal(24, 8)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  positions          Position[]
+  orders             Order[]
+  ledger             LedgerEntry[]
+}
+
+model MarketObservation {
+  id             String   @id @default(cuid())
+  ingestJobId    String
+  source         String
+  chainId        String
+  pairAddress    String
+  dexId          String
+  url            String?
+  baseAddress    String
+  baseSymbol     String
+  baseName       String
+  quoteAddress   String
+  quoteSymbol    String
+  priceUsd       Decimal? @db.Decimal(24, 8)
+  liquidityUsd   Decimal? @db.Decimal(24, 8)
+  volume24hUsd   Decimal? @db.Decimal(24, 8)
+  volume5mUsd    Decimal? @db.Decimal(24, 8)
+  priceChangeM5  Decimal? @db.Decimal(16, 6)
+  priceChangeH1  Decimal? @db.Decimal(16, 6)
+  priceChangeH24 Decimal? @db.Decimal(16, 6)
+  txnsM5Buys     Int?
+  txnsM5Sells    Int?
+  freshness      String
+  receivedAt     DateTime
+  raw            Json
+  createdAt      DateTime @default(now())
+
+  @@unique([ingestJobId, pairAddress])
+  @@index([pairAddress, receivedAt])
+  @@index([receivedAt])
+}
+
+model CycleRun {
+  id               String    @id
+  trigger          String
+  status           String
+  stage            String
+  dataState        String
+  error            String?
+  operator         Json?
+  observationCount Int       @default(0)
+  orderCount       Int       @default(0)
+  startedAt        DateTime
+  finishedAt       DateTime?
+
+  @@index([status, startedAt])
+  @@index([startedAt])
+}
+
+model AgentDecision {
+  id           String   @id @default(cuid())
+  cycleId      String
+  agent        String
+  modelVersion String
+  pairAddress  String   @default("")
+  decision     String
+  confidence   Decimal  @db.Decimal(8, 6)
+  reasonCodes  String[]
+  input        Json
+  output       Json
+  createdAt    DateTime @default(now())
+
+  @@unique([cycleId, agent, pairAddress])
+  @@index([createdAt])
+  @@index([agent, createdAt])
+}
+
+model Order {
+  id            String   @id @default(cuid())
+  clientOrderId String   @unique
+  cycleId       String
+  accountId     String
+  pairAddress   String
+  baseSymbol    String
+  side          String
+  intent        String
+  status        String
+  qty           Decimal  @db.Decimal(24, 8)
+  reasonCodes   String[]
+  rejectReason  String?
+  createdAt     DateTime @default(now())
+  account       PaperAccount @relation(fields: [accountId], references: [id])
+  fills         Fill[]
+
+  @@index([createdAt])
+  @@index([cycleId])
+}
+
+model Fill {
+  id            String   @id @default(cuid())
+  orderId       String
+  observationId String
+  pairAddress   String
+  side          String
+  qty           Decimal  @db.Decimal(24, 8)
+  priceUsd      Decimal  @db.Decimal(24, 8)
+  notionalUsd   Decimal  @db.Decimal(24, 8)
+  feeUsd        Decimal  @db.Decimal(24, 8)
+  slippageBps   Decimal  @db.Decimal(16, 6)
+  liquidityUsd  Decimal  @db.Decimal(24, 8)
+  createdAt     DateTime @default(now())
+  order         Order    @relation(fields: [orderId], references: [id])
+
+  @@index([pairAddress, createdAt])
+}
+
+model Position {
+  id             String   @id @default(cuid())
+  accountId      String
+  pairAddress    String
+  baseSymbol     String
+  baseQty        Decimal  @db.Decimal(24, 8)
+  avgCostUsd     Decimal  @db.Decimal(24, 8)
+  realizedPnlUsd Decimal  @db.Decimal(24, 8)
+  updatedAt      DateTime @updatedAt
+  account        PaperAccount @relation(fields: [accountId], references: [id])
+
+  @@unique([accountId, pairAddress])
+}
+
+model LedgerEntry {
+  id          String   @id @default(cuid())
+  accountId   String
+  type        String
+  amountUsd   Decimal  @db.Decimal(24, 8)
+  affectsCash Boolean
+  orderId     String?
+  fillId      String?
+  note        String
+  createdAt   DateTime @default(now())
+  account     PaperAccount @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, createdAt])
+  @@index([type, createdAt])
+}

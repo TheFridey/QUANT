@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: odin
+          POSTGRES_PASSWORD: odin
+          POSTGRES_DB: odin_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U odin -d odin_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://odin:odin@127.0.0.1:5432/odin_test
+      DATABASE_URL_TEST: postgresql://odin:odin@127.0.0.1:5432/odin_test
+      REDIS_URL: redis://127.0.0.1:6379
+      JWT_SECRET: ci-jwt-secret-not-for-production
+      ADMIN_EMAIL: admin@odin.local
+      ADMIN_PASSWORD: odin-paper-dev
+      WEB_ORIGIN: http://127.0.0.1:4317
+      DATA_MODE: live
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:deploy
+      - run: pnpm test
+      - run: pnpm typecheck
+      - run: pnpm lint
