@@ -22,6 +22,7 @@ export default defineConfig({
       { find: /^@odin\/agent-core$/, replacement: resolve(root, "packages/agent-core/src/index.ts") },
       { find: /^@odin\/analytics$/, replacement: resolve(root, "packages/analytics/src/index.ts") },
       { find: /^@odin\/backtest$/, replacement: resolve(root, "packages/backtest/src/index.ts") },
+      { find: /^@odin\/evolution$/, replacement: resolve(root, "packages/evolution/src/index.ts") },
     ],
   },
   test: {

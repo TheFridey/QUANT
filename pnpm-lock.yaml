@@ -59,6 +59,9 @@ importers:
       '@odin/backtest':
         specifier: workspace:*
         version: link:../../packages/backtest
+      '@odin/evolution':
+        specifier: workspace:*
+        version: link:../../packages/evolution
       '@odin/market-data':
         specifier: workspace:*
         version: link:../../packages/market-data
@@ -281,6 +284,31 @@ importers:
         specifier: workspace:*
         version: link:../trading-engine
     devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/evolution:
+    dependencies:
+      '@odin/agent-core':
+        specifier: workspace:*
+        version: link:../agent-core
+      '@odin/backtest':
+        specifier: workspace:*
+        version: link:../backtest
+      '@odin/market-data':
+        specifier: workspace:*
+        version: link:../market-data
+      '@odin/shared':
+        specifier: workspace:*
+        version: link:../shared
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: ^22.18.6
+        version: 22.20.5
       typescript:
         specifier: ^5.9.3
         version: 5.9.3

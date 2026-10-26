@@ -112,6 +112,20 @@ Older configs merge missing keys from `DEFAULT_STRATEGY`:
 - HTML research reports: `GET /api/lab/backtests/:id/report`.
 - Limitations: survivorship bias is disclosed not corrected; data gaps block fills; paper ≠ live; one profitable night is never “validated.”
 
+## PROJECT EVOLUTION (extension layer)
+
+See `docs/EVOLUTION.md`. Live paper BullMQ path is unchanged.
+
+| Piece | Location |
+| --- | --- |
+| Instrument registry + market selector | `packages/shared` instruments, `packages/market-data` registry + index feed, `/api/evolution/markets` |
+| Multi-model router (tiers, budgets, fallback) | `packages/evolution` router; usage in `ModelUsageLog` |
+| Research pipeline OBSERVE→REVIEW | `packages/evolution` pipeline + forge sandbox + challenge + signed reports |
+| Deep trade memory | `TradeMemory` + `/api/evolution/memory` (post-exit excluded from entry reconstruction) |
+| Autonomy 0–3 (4 disabled) | `AutonomyControl` + `/api/evolution/autonomy` |
+| ORACLE queues / briefings | `ResearchQueueItem` + research centre endpoints |
+| Command centre modules | Market Selector, AI Research Centre, Model Ops, Genome, Memory, Autonomy |
+
 ## Engine
 
 `STOPPED → start → RUNNING → pause → PAUSED → resume → RUNNING`.

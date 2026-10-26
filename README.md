@@ -75,3 +75,16 @@ Workflow:
 - Paper accounting ≠ live venue microstructure.
 - Optimisation that only maximises in-sample returns is rejected when sample gates fail.
 - Docker Compose is the intended infra launcher; if Docker is unavailable, point `DATABASE_URL` / `REDIS_URL` at local Postgres/Redis (see acceptance notes under `docs/acceptance/research-lab.md`).
+
+## PROJECT EVOLUTION
+
+Extends the lab without rewriting the live paper path. See `docs/EVOLUTION.md` and `docs/acceptance/evolution.md`.
+
+- Multi-market instrument registry (Solana paper + SPX/NDX/FTSE/DJI **indices**, research-only)
+- Multi-model router (FAST / DEEP / ENGINEERING) with budgets, fallback, mock providers
+- Research pipeline OBSERVE→HYPOTHESISE→FORGE→TEST→CHALLENGE→VALIDATE→PAPER→REVIEW
+- Forge sandbox with static deny-lists (no credentials, risk override, or real orders)
+- Deep trade memory (post-exit excluded from entry reconstruction)
+- Autonomy levels 0–3 (level 4 real-money adapter disabled)
+- Command centre: Market Selector, AI Research Centre, Model Ops, Genome, Memory, Autonomy
+- API surface: `/api/evolution/*`

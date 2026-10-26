@@ -380,3 +380,155 @@ model LedgerEntry {
   @@index([accountId, createdAt])
   @@index([type, createdAt])
 }
+
+/// Multi-market instrument registry (Solana pairs + equity indices, etc.).
+model Instrument {
+  id                     String   @id
+  symbol                 String
+  displayName            String
+  venue                  String
+  assetClass             String
+  base                   String
+  quote                  String
+  tickSize               String
+  lotSize                String
+  session                String
+  providerId             String
+  providerSymbol         String
+  executionCapabilities  String[]
+  enabledByDefault       Boolean  @default(false)
+  notes                  String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  selections             MarketSelection[]
+
+  @@index([assetClass, venue])
+  @@index([providerId])
+}
+
+model MarketSelection {
+  id           String     @id @default(cuid())
+  instrumentId String
+  enabled      Boolean
+  updatedBy    String?
+  updatedAt    DateTime   @updatedAt
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
+
+  @@unique([instrumentId])
+}
+
+model Hypothesis {
+  id               String   @id @default(cuid())
+  title            String
+  market           String
+  instrumentIds    String[]
+  conditions       String
+  claimedAdvantage String
+  entryRules       String
+  exitRules        String
+  riskRules        String
+  rationale        String
+  successCriteria  String
+  failureModes     String
+  status           String   @default("OPEN")
+  createdBy        String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([market])
+}
+
+model LifecycleAudit {
+  id           String   @id @default(cuid())
+  strategyId   String
+  fromState    String
+  toState      String
+  actor        String
+  evidence     Json
+  evidenceHash String
+  createdAt    DateTime @default(now())
+
+  @@index([strategyId, createdAt])
+  @@index([toState, createdAt])
+}
+
+model ExperimentReport {
+  id              String   @id @default(cuid())
+  hypothesisId    String
+  strategyModuleId String
+  strategyVersion String
+  payload         Json
+  contentHash     String
+  signature       String
+  approvalStatus  String   @default("PENDING")
+  approvedBy      String?
+  approvedAt      DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([hypothesisId, createdAt])
+  @@index([contentHash])
+}
+
+model TradeMemory {
+  id          String   @id @default(cuid())
+  tradeId     String
+  pairAddress String
+  phase       String
+  postExit    Boolean  @default(false)
+  context     Json
+  capturedAt  DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([tradeId, phase])
+  @@index([pairAddress, capturedAt])
+  @@index([postExit, capturedAt])
+}
+
+model ModelUsageLog {
+  id                  String   @id @default(cuid())
+  agentOrTask         String
+  endpointId          String
+  provider            String
+  model               String
+  tier                String
+  ok                  Boolean
+  latencyMs           Int
+  promptTokensEst     Int
+  completionTokensEst Int
+  costUsdEst          Decimal  @db.Decimal(16, 8)
+  error               String?
+  createdAt           DateTime @default(now())
+
+  @@index([agentOrTask, createdAt])
+  @@index([tier, createdAt])
+}
+
+model ResearchQueueItem {
+  id           String   @id @default(cuid())
+  kind         String
+  priority     Int
+  hypothesisId String?
+  strategyId   String?
+  status       String
+  reason       String
+  budgetUsd    Decimal  @db.Decimal(16, 8)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([status, priority])
+  @@index([createdAt])
+}
+
+model AutonomyControl {
+  id                         String   @id @default("primary")
+  level                      Int      @default(1)
+  realMoneyExecutionEnabled  Boolean  @default(false)
+  allowUnreviewedCodeDeploy  Boolean  @default(false)
+  allowRiskLimitMutation     Boolean  @default(false)
+  maxResearchIterations      Int      @default(8)
+  maxResearchBudgetUsd       Decimal  @db.Decimal(16, 8) @default(5)
+  timeoutMs                  Int      @default(120000)
+  updatedAt                  DateTime @updatedAt
+  updatedBy                  String?
+}

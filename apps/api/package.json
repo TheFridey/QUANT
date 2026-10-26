@@ -19,6 +19,7 @@
     "@odin/agent-core": "workspace:*",
     "@odin/analytics": "workspace:*",
     "@odin/backtest": "workspace:*",
+    "@odin/evolution": "workspace:*",
     "@odin/market-data": "workspace:*",
     "@odin/shared": "workspace:*",
     "@odin/trading-engine": "workspace:*",

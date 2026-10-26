@@ -5,3 +5,5 @@ export * from "./reasons.js";
 export * from "./market.js";
 export * from "./strategy.js";
 export * from "./contracts.js";
+export * from "./instruments.js";
+export * from "./evolution.js";

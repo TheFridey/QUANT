@@ -6,6 +6,14 @@ import { SnapshotProvider, useSnapshot } from "@/components/terminal/snapshot-co
 import { AgentsSection } from "@/components/terminal/sections/agents-section";
 import { BacktestingSection } from "@/components/terminal/sections/backtesting-section";
 import { DecisionFeed } from "@/components/terminal/sections/decision-feed";
+import {
+  AutonomySection,
+  GenomeSection,
+  MarketSelectorSection,
+  ModelOpsSection,
+  ResearchCentreSection,
+  ResearchMemorySection,
+} from "@/components/terminal/sections/evolution-sections";
 import { HistorySection } from "@/components/terminal/sections/history-section";
 import { LogsSection } from "@/components/terminal/sections/logs-section";
 import { OverviewSection } from "@/components/terminal/sections/overview-section";
@@ -94,6 +102,8 @@ function renderSection(section: TerminalSection) {
       return <RadarSection />;
     case "agents":
       return <AgentsSection />;
+    case "markets":
+      return <MarketSelectorSection />;
     case "trading":
       return <TradingSection />;
     case "portfolio":
@@ -111,8 +121,18 @@ function renderSection(section: TerminalSection) {
       return <StrategySection />;
     case "backtesting":
       return <BacktestingSection />;
+    case "research":
+      return <ResearchCentreSection />;
+    case "genome":
+      return <GenomeSection />;
+    case "memory":
+      return <ResearchMemorySection />;
     case "risk":
       return <RiskSection />;
+    case "models":
+      return <ModelOpsSection />;
+    case "autonomy":
+      return <AutonomySection />;
     case "logs":
       return (
         <div className="space-y-3">
