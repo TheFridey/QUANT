@@ -56,4 +56,4 @@ Honest results for this agent session (2026-10-26). Untested items stay SKIP/FAI
 
 ## Commit
 
-Recorded after push on `main` (see git log / parent return).
+`f6085d2e733f018707de16ca8cba82fa0f63a597` on `main` — *Add PROJECT EVOLUTION: multi-market registry, model router, research pipeline.*
