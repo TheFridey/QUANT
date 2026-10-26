@@ -1,7 +1,7 @@
 "use client";
 
-import { TerminalShell } from "@/components/terminal/terminal-shell";
+import { CommandShell } from "@/components/terminal/command-shell";
 
 export default function TerminalPage() {
-  return <TerminalShell />;
+  return <CommandShell section="overview" />;
 }

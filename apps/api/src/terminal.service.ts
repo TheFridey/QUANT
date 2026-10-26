@@ -117,21 +117,56 @@ export class TerminalService {
       orderBy: { createdAt: "desc" },
       take: 200,
     });
+    const equitySeriesRows = await this.prisma.equitySnapshot.findMany({
+      where: { equityUsd: { not: null } },
+      orderBy: { createdAt: "asc" },
+      take: 500,
+      select: { equityUsd: true },
+    });
     const report = performanceReport({
       valuation,
       startingBalanceUsd: account.startingBalanceUsd.toString(),
       feesUsd: usd(d(fees._sum.amountUsd?.toString() ?? "0").abs()),
       closedTradePnlUsd: closed.map((entry) => entry.amountUsd.toString()),
+      equitySeries: equitySeriesRows.map((row) => row.equityUsd!.toString()),
     });
     const cycle = await this.prisma.cycleRun.findFirst({ orderBy: { startedAt: "desc" } });
     const decisions = cycle
-      ? await this.prisma.agentDecision.findMany({ where: { cycleId: cycle.id }, orderBy: { createdAt: "asc" }, take: 80 })
+      ? await this.prisma.agentDecision.findMany({ where: { cycleId: cycle.id }, orderBy: { createdAt: "asc" }, take: 120 })
       : [];
+    const recentAgentDecisions = await this.prisma.agentDecision.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 60,
+    });
     const orders = await this.prisma.order.findMany({
       orderBy: { createdAt: "desc" },
-      take: 20,
+      take: 40,
       include: { fills: true },
     });
+    const fillStats = await this.fillsStats();
+    const closedPnls = closed.map((entry) => entry.amountUsd.toString());
+    const largestGainUsd = closedPnls.length === 0 ? null : usd(closedPnls.reduce((best, value) => (d(value).gt(best) ? d(value) : best), d(closedPnls[0]!)));
+    const largestLossUsd = closedPnls.length === 0 ? null : usd(closedPnls.reduce((worst, value) => (d(value).lt(worst) ? d(value) : worst), d(closedPnls[0]!)));
+    const tradeDistribution = {
+      wins: report.wins,
+      losses: report.losses,
+      breakeven: report.breakeven,
+    };
+    const openedAtByPair = await this.positionOpenedAt(positions.map((position) => position.pairAddress));
+    const stopLossPct = config?.stopLossPct ?? null;
+    const takeProfitPct = config?.takeProfitPct ?? null;
+    const exposureUsd =
+      report.valuation.equityUsd === null
+        ? null
+        : usd(d(report.valuation.equityUsd).minus(d(account.cashUsd.toString())));
+    const drawdownPct =
+      report.valuation.equityUsd === null || !account.highWaterMarkUsd || d(account.highWaterMarkUsd.toString()).lte(0)
+        ? null
+        : d(account.highWaterMarkUsd.toString())
+            .minus(d(report.valuation.equityUsd))
+            .div(d(account.highWaterMarkUsd.toString()))
+            .mul(100)
+            .toFixed(4);
     const states = pairs.map((pair) => pair.freshness);
     return {
       serverTime: now.toISOString(),
@@ -171,10 +206,49 @@ export class TerminalService {
         sampleSize: report.sampleSize,
         observed: report.observed,
         highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,
-        positions: report.valuation.positions,
+        availableFundsUsd: account.cashUsd.toString(),
+        exposureUsd,
+        currentDrawdownPct: drawdownPct,
+        largestGainUsd,
+        largestLossUsd,
+        tradeDistribution,
+        avgSlippageBps: fillStats.avgSlippageBps,
+        totalSlippageUsd: fillStats.totalSlippageUsd,
+        fillCount: fillStats.fillCount,
+        positions: report.valuation.positions.map((position) => {
+          const openedAt = openedAtByPair.get(position.pairAddress) ?? null;
+          const stopUsd =
+            stopLossPct == null
+              ? null
+              : usd(d(position.avgCostUsd).mul(d("1").minus(d(stopLossPct).div(100))));
+          const targetUsd =
+            takeProfitPct == null
+              ? null
+              : usd(d(position.avgCostUsd).mul(d("1").plus(d(takeProfitPct).div(100))));
+          const exposurePct =
+            report.valuation.equityUsd === null || position.marketValueUsd === null
+              ? null
+              : d(position.marketValueUsd).div(d(report.valuation.equityUsd)).mul(100).toFixed(4);
+          return {
+            ...position,
+            openedAt,
+            stopUsd,
+            targetUsd,
+            stopLossPct,
+            takeProfitPct,
+            exposurePct,
+          };
+        }),
       },
-      agents: this.agentStatus(decisions),
-      watchlist: await this.watchlist(),
+      agents: this.agentStatus(recentAgentDecisions.length > 0 ? recentAgentDecisions : decisions),
+      watchlist: await this.watchlist(pairs, decisions),
+      health: {
+        postgres: "up",
+        redis: "unknown",
+        engine: engineRow.status,
+        dataState: worst(states),
+        venue: "PAPER" as const,
+      },
       cycle: cycle
         ? {
             id: cycle.id,
@@ -189,19 +263,7 @@ export class TerminalService {
             finishedAt: cycle.finishedAt?.toISOString() ?? null,
           }
         : null,
-      decisions: decisions.map((decision) => ({
-        id: decision.id,
-        agent: decision.agent,
-        modelVersion: decision.modelVersion,
-        pairAddress: decision.pairAddress || null,
-        decision: decision.decision,
-        confidence: decision.confidence.toString(),
-        reasonCodes: decision.reasonCodes,
-        reasonText: decision.reasonCodes.map((code) => (isReasonCode(code) ? REASON_TEXT[code] : code)),
-        inputSource: decision.inputSource,
-        durationMs: decision.durationMs,
-        createdAt: decision.createdAt.toISOString(),
-      })),
+      decisions: decisions.map((decision) => this.presentDecision(decision)),
       orders: orders.map((order) => ({
         id: order.id,
         clientOrderId: order.clientOrderId,
@@ -222,6 +284,232 @@ export class TerminalService {
           slippageBps: fill.slippageBps.toString(),
           observationId: fill.observationId,
         })),
+      })),
+    };
+  }
+
+  async equityHistory(rangeRaw: string) {
+    const range = ["1H", "24H", "7D", "30D", "ALL"].includes(rangeRaw.toUpperCase())
+      ? rangeRaw.toUpperCase()
+      : "24H";
+    const since = equityRangeStart(range);
+    const rows = await this.prisma.equitySnapshot.findMany({
+      where: since ? { createdAt: { gte: since } } : undefined,
+      orderBy: { createdAt: "asc" },
+      take: 2_000,
+    });
+    const account = await this.prisma.paperAccount.findUnique({ where: { id: "primary" } });
+    const points = rows.map((row) => {
+      const equity = row.equityUsd?.toString() ?? null;
+      const hwm = row.highWaterMarkUsd?.toString() ?? null;
+      const drawdownPct =
+        equity === null || hwm === null || d(hwm).lte(0)
+          ? null
+          : d(hwm).minus(d(equity)).div(d(hwm)).mul(100).toFixed(4);
+      return {
+        time: Math.floor(row.createdAt.getTime() / 1000),
+        createdAt: row.createdAt.toISOString(),
+        cycleId: row.cycleId,
+        cashUsd: row.cashUsd.toString(),
+        equityUsd: equity,
+        unrealizedPnlUsd: row.unrealizedPnlUsd?.toString() ?? null,
+        realizedPnlUsd: row.realizedPnlUsd.toString(),
+        highWaterMarkUsd: hwm,
+        exposureUsd: row.exposureUsd?.toString() ?? null,
+        valuation: row.valuation,
+        feesUsd: row.feesUsd.toString(),
+        drawdownPct,
+        gap: equity === null || row.valuation === "INCOMPLETE",
+      };
+    });
+    const fills = await this.prisma.fill.findMany({
+      where: since ? { createdAt: { gte: since } } : undefined,
+      orderBy: { createdAt: "asc" },
+      take: 200,
+      include: { order: { select: { side: true, baseSymbol: true, intent: true } } },
+    });
+    const markers = fills.map((fill) => ({
+      time: Math.floor(fill.createdAt.getTime() / 1000),
+      createdAt: fill.createdAt.toISOString(),
+      side: fill.order.side,
+      baseSymbol: fill.order.baseSymbol,
+      intent: fill.order.intent,
+      priceUsd: fill.priceUsd.toString(),
+      qty: fill.qty.toString(),
+      notionalUsd: fill.notionalUsd.toString(),
+    }));
+    const warningWhere = {
+      OR: [{ status: "FAILED" }, { error: { not: null } }],
+      ...(since ? { startedAt: { gte: since } } : {}),
+    };
+    const warnings = await this.prisma.cycleRun.findMany({
+      where: warningWhere,
+      orderBy: { startedAt: "asc" },
+      take: 100,
+    });
+    return {
+      range,
+      startingBalanceUsd: account?.startingBalanceUsd.toString() ?? null,
+      pointCount: points.length,
+      pricedPointCount: points.filter((point) => point.equityUsd !== null).length,
+      points,
+      markers,
+      annotations: warnings.map((cycle) => ({
+        time: Math.floor(cycle.startedAt.getTime() / 1000),
+        createdAt: cycle.startedAt.toISOString(),
+        kind: "SYSTEM_WARNING" as const,
+        label: cycle.error ?? cycle.status,
+        cycleId: cycle.id,
+      })),
+      insufficientHistory: points.filter((point) => point.equityUsd !== null).length < 2,
+    };
+  }
+
+  async activityFeed(limit: number) {
+    const take = Math.min(Math.max(limit, 1), 200);
+    const [decisions, orders, cycles] = await Promise.all([
+      this.prisma.agentDecision.findMany({ orderBy: { createdAt: "desc" }, take }),
+      this.prisma.order.findMany({ orderBy: { createdAt: "desc" }, take, include: { fills: true } }),
+      this.prisma.cycleRun.findMany({
+        where: { OR: [{ status: "FAILED" }, { error: { not: null } }] },
+        orderBy: { startedAt: "desc" },
+        take: Math.min(take, 40),
+      }),
+    ]);
+    const events: Array<{
+      id: string;
+      kind: string;
+      source: string;
+      timestamp: string;
+      summary: string;
+      pairAddress: string | null;
+      details: Record<string, unknown>;
+    }> = [];
+
+    for (const decision of decisions) {
+      const kind = classifyDecisionEvent(decision.agent, decision.decision, decision.reasonCodes);
+      events.push({
+        id: `decision:${decision.id}`,
+        kind,
+        source: decision.agent,
+        timestamp: decision.createdAt.toISOString(),
+        summary: decision.reasonCodes.map((code) => (isReasonCode(code) ? REASON_TEXT[code] : code)).join(" · ") || decision.decision,
+        pairAddress: decision.pairAddress || null,
+        details: {
+          decisionId: decision.id,
+          decision: decision.decision,
+          confidence: decision.confidence.toString(),
+          reasonCodes: decision.reasonCodes,
+          inputSource: decision.inputSource,
+          durationMs: decision.durationMs,
+          modelVersion: decision.modelVersion,
+        },
+      });
+    }
+
+    for (const order of orders) {
+      events.push({
+        id: `order:${order.id}`,
+        kind: order.status === "FILLED" || order.fills.length > 0 ? "ORDER_SUBMITTED" : order.status === "REJECTED" ? "RISK_REJECT" : "ORDER_SUBMITTED",
+        source: "EXECUTOR",
+        timestamp: order.createdAt.toISOString(),
+        summary: `${order.side} ${order.baseSymbol} · ${order.status}${order.rejectReason ? ` · ${order.rejectReason}` : ""}`,
+        pairAddress: order.pairAddress,
+        details: {
+          orderId: order.id,
+          side: order.side,
+          intent: order.intent,
+          status: order.status,
+          qty: order.qty.toString(),
+          rejectReason: order.rejectReason,
+        },
+      });
+      for (const fill of order.fills) {
+        events.push({
+          id: `fill:${fill.id}`,
+          kind: order.side === "SELL" ? "EXIT" : "FILL",
+          source: "LEDGER",
+          timestamp: fill.createdAt.toISOString(),
+          summary: `${order.side} fill ${order.baseSymbol} @ ${fill.priceUsd.toString()}`,
+          pairAddress: order.pairAddress,
+          details: {
+            fillId: fill.id,
+            orderId: order.id,
+            priceUsd: fill.priceUsd.toString(),
+            qty: fill.qty.toString(),
+            feeUsd: fill.feeUsd.toString(),
+            slippageBps: fill.slippageBps.toString(),
+            notionalUsd: fill.notionalUsd.toString(),
+          },
+        });
+      }
+    }
+
+    for (const cycle of cycles) {
+      events.push({
+        id: `cycle:${cycle.id}`,
+        kind: "SYSTEM_WARNING",
+        source: "ENGINE",
+        timestamp: cycle.startedAt.toISOString(),
+        summary: cycle.error ?? `Cycle ${cycle.status}`,
+        pairAddress: null,
+        details: {
+          cycleId: cycle.id,
+          status: cycle.status,
+          stage: cycle.stage,
+          error: cycle.error,
+        },
+      });
+    }
+
+    return {
+      events: events
+        .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))
+        .slice(0, take),
+    };
+  }
+
+  async decisionDetail(id: string) {
+    const decision = await this.prisma.agentDecision.findUnique({ where: { id } });
+    if (!decision) throw new NotFoundException("Decision not found");
+    return {
+      ...this.presentDecision(decision),
+      input: decision.input,
+      output: decision.output,
+    };
+  }
+
+  async agentDetail(agentRaw: string) {
+    const agent = agentRaw.toUpperCase();
+    const decisions = await this.prisma.agentDecision.findMany({
+      where: { agent },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    });
+    const latest = decisions[0] ?? null;
+    return {
+      agent,
+      latest: latest ? { ...this.presentDecision(latest), input: latest.input, output: latest.output } : null,
+      recent: decisions.map((decision) => this.presentDecision(decision)),
+    };
+  }
+
+  async systemLogs(limit: number) {
+    const take = Math.min(Math.max(limit, 1), 200);
+    const cycles = await this.prisma.cycleRun.findMany({ orderBy: { startedAt: "desc" }, take });
+    return {
+      entries: cycles.map((cycle) => ({
+        id: cycle.id,
+        level: cycle.error || cycle.status === "FAILED" ? "error" : cycle.status === "COMPLETE" ? "info" : "warn",
+        timestamp: cycle.startedAt.toISOString(),
+        stage: cycle.stage,
+        status: cycle.status,
+        trigger: cycle.trigger,
+        dataState: cycle.dataState,
+        message: cycle.error ?? `${cycle.trigger} · ${cycle.stage} · ${cycle.status}`,
+        observationCount: cycle.observationCount,
+        orderCount: cycle.orderCount,
+        finishedAt: cycle.finishedAt?.toISOString() ?? null,
       })),
     };
   }
@@ -369,6 +657,7 @@ export class TerminalService {
       priceChangeM5: { toString(): string } | null;
       priceChangeH1: { toString(): string } | null;
       priceChangeH24: { toString(): string } | null;
+      pairCreatedAt?: Date | null;
       receivedAt: Date;
       source: string;
     },
@@ -397,6 +686,7 @@ export class TerminalService {
       priceChangeM5Pct: row.priceChangeM5?.toString() ?? null,
       priceChangeH1Pct: row.priceChangeH1?.toString() ?? null,
       priceChangeH24Pct: row.priceChangeH24?.toString() ?? null,
+      pairCreatedAt: row.pairCreatedAt?.toISOString() ?? null,
       freshness,
       receivedAt: row.receivedAt.toISOString(),
     };
@@ -440,7 +730,9 @@ export class TerminalService {
   ) {
     const agents = ["SENTINEL", "PULSE", "AEGIS", "ATLAS", "EXECUTOR", "ARCHIVIST"] as const;
     return agents.map((agent) => {
-      const latest = [...decisions].reverse().find((decision) => decision.agent === agent);
+      const latest = [...decisions]
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .find((decision) => decision.agent === agent);
       const outcome =
         latest == null
           ? "—"
@@ -464,22 +756,190 @@ export class TerminalService {
     });
   }
 
-  private async watchlist() {
+  private async watchlist(
+    marketPairs: Array<{
+      pairAddress: string;
+      priceUsd: string | null;
+      liquidityUsd: string | null;
+      volume24hUsd: string | null;
+      priceChangeM5Pct: string | null;
+      receivedAt: string;
+      freshness: DataState;
+      baseAddress: string;
+      pairCreatedAt?: string | null;
+    }>,
+    cycleDecisions: Array<{
+      pairAddress: string;
+      agent: string;
+      decision: string;
+      reasonCodes: string[];
+    }>,
+  ) {
     const rows = await this.prisma.watchlistEntry.findMany({
       orderBy: [{ rank: "asc" }, { score: "desc" }],
-      take: 20,
+      take: 40,
     });
-    return rows.map((row) => ({
-      pairAddress: row.pairAddress,
-      baseSymbol: row.baseSymbol,
-      quoteSymbol: row.quoteSymbol,
-      dexId: row.dexId,
-      score: row.score.toString(),
-      rank: row.rank,
-      source: row.source,
-      reasonCodes: row.reasonCodes,
-      observedAt: row.observedAt.toISOString(),
-    }));
+    const pairByAddress = new Map(marketPairs.map((pair) => [pair.pairAddress, pair]));
+    const tokens = [...new Set(rows.map((row) => row.baseAddress))];
+    const assessments =
+      tokens.length === 0
+        ? []
+        : await this.prisma.securityAssessment.findMany({ where: { tokenAddress: { in: tokens } } });
+    const assessmentByToken = new Map(assessments.map((row) => [row.tokenAddress, row]));
+    const observationFallback = new Map<
+      string,
+      {
+        priceUsd: string | null;
+        liquidityUsd: string | null;
+        volume24hUsd: string | null;
+        priceChangeM5Pct: string | null;
+        receivedAt: string;
+        freshness: DataState;
+        pairCreatedAt: string | null;
+        baseAddress: string;
+      }
+    >();
+
+    for (const row of rows) {
+      if (pairByAddress.has(row.pairAddress)) continue;
+      const observation = await this.prisma.marketObservation.findFirst({
+        where: { pairAddress: row.pairAddress },
+        orderBy: { receivedAt: "desc" },
+      });
+      if (!observation) continue;
+      const config = null;
+      observationFallback.set(row.pairAddress, {
+        priceUsd: observation.priceUsd?.toString() ?? null,
+        liquidityUsd: observation.liquidityUsd?.toString() ?? null,
+        volume24hUsd: observation.volume24hUsd?.toString() ?? null,
+        priceChangeM5Pct: observation.priceChangeM5?.toString() ?? null,
+        receivedAt: observation.receivedAt.toISOString(),
+        freshness: classifyFreshness({
+          mode: this.mode(),
+          receivedAt: observation.receivedAt,
+          now: new Date(),
+          liveMaxAgeMs: 45_000,
+          delayedMaxAgeMs: 180_000,
+        }),
+        pairCreatedAt: observation.pairCreatedAt?.toISOString() ?? null,
+        baseAddress: observation.baseAddress,
+      });
+      void config;
+    }
+
+    return rows.map((row) => {
+      const market = pairByAddress.get(row.pairAddress);
+      const fallback = observationFallback.get(row.pairAddress);
+      const security = assessmentByToken.get(row.baseAddress);
+      const agentRec =
+        [...cycleDecisions]
+          .reverse()
+          .find((decision) => decision.pairAddress === row.pairAddress && ["PULSE", "AEGIS", "ATLAS", "EXECUTOR"].includes(decision.agent)) ??
+        null;
+      const ageMs = (() => {
+        const createdAt = market?.pairCreatedAt ?? fallback?.pairCreatedAt ?? null;
+        const created = createdAt ? Date.parse(createdAt) : NaN;
+        if (Number.isFinite(created)) return Date.now() - created;
+        return null;
+      })();
+      return {
+        pairAddress: row.pairAddress,
+        baseAddress: row.baseAddress,
+        baseSymbol: row.baseSymbol,
+        quoteSymbol: row.quoteSymbol,
+        dexId: row.dexId,
+        score: row.score.toString(),
+        rank: row.rank,
+        source: row.source,
+        reasonCodes: row.reasonCodes,
+        observedAt: row.observedAt.toISOString(),
+        priceUsd: market?.priceUsd ?? fallback?.priceUsd ?? null,
+        liquidityUsd: market?.liquidityUsd ?? fallback?.liquidityUsd ?? null,
+        volume24hUsd: market?.volume24hUsd ?? fallback?.volume24hUsd ?? null,
+        momentumPct: market?.priceChangeM5Pct ?? fallback?.priceChangeM5Pct ?? null,
+        freshness: market?.freshness ?? fallback?.freshness ?? null,
+        ageMs,
+        security: security
+          ? {
+              category: security.category,
+              confidence: security.confidence.toString(),
+              reasonCodes: security.reasonCodes,
+              stale: security.stale,
+              mintAuthority: security.mintAuthority,
+              freezeAuthority: security.freezeAuthority,
+            }
+          : null,
+        recommendation: agentRec
+          ? {
+              agent: agentRec.agent,
+              decision: agentRec.decision,
+              reasonCodes: agentRec.reasonCodes,
+            }
+          : null,
+        lastUpdated: market?.receivedAt ?? fallback?.receivedAt ?? row.observedAt.toISOString(),
+      };
+    });
+  }
+
+  private presentDecision(decision: {
+    id: string;
+    agent: string;
+    modelVersion: string;
+    pairAddress: string;
+    decision: string;
+    confidence: { toString(): string };
+    reasonCodes: string[];
+    inputSource: string | null;
+    durationMs: number | null;
+    createdAt: Date;
+  }) {
+    return {
+      id: decision.id,
+      agent: decision.agent,
+      modelVersion: decision.modelVersion,
+      pairAddress: decision.pairAddress || null,
+      decision: decision.decision,
+      confidence: decision.confidence.toString(),
+      reasonCodes: decision.reasonCodes,
+      reasonText: decision.reasonCodes.map((code) => (isReasonCode(code) ? REASON_TEXT[code] : code)),
+      inputSource: decision.inputSource,
+      durationMs: decision.durationMs,
+      createdAt: decision.createdAt.toISOString(),
+    };
+  }
+
+  private async fillsStats() {
+    const fills = await this.prisma.fill.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 500,
+      select: { slippageBps: true, notionalUsd: true, feeUsd: true },
+    });
+    if (fills.length === 0) {
+      return { avgSlippageBps: null as string | null, totalSlippageUsd: null as string | null, fillCount: 0 };
+    }
+    const avgSlippageBps = fills
+      .reduce((total, fill) => total.plus(d(fill.slippageBps.toString())), d("0"))
+      .div(fills.length)
+      .toFixed(4);
+    const totalSlippageUsd = usd(
+      fills.reduce(
+        (total, fill) => total.plus(d(fill.notionalUsd.toString()).mul(d(fill.slippageBps.toString())).div(10_000)),
+        d("0"),
+      ),
+    );
+    return { avgSlippageBps, totalSlippageUsd, fillCount: fills.length };
+  }
+
+  private async positionOpenedAt(pairAddresses: string[]) {
+    const result = new Map<string, string>();
+    for (const pairAddress of pairAddresses) {
+      const fill = await this.prisma.fill.findFirst({
+        where: { pairAddress, order: { side: "BUY" } },
+        orderBy: { createdAt: "asc" },
+      });
+      if (fill) result.set(pairAddress, fill.createdAt.toISOString());
+    }
+    return result;
   }
 }
 
@@ -491,4 +951,34 @@ function worst(states: DataState[]): DataState | null {
   const rank: Record<DataState, number> = { LIVE: 0, DELAYED: 1, STALE: 2, REPLAY: 3, DEMO: 4 };
   if (states.length === 0) return null;
   return states.reduce((worstState, state) => (rank[state] > rank[worstState] ? state : worstState));
+}
+
+function equityRangeStart(range: string): Date | null {
+  const now = Date.now();
+  switch (range) {
+    case "1H":
+      return new Date(now - 60 * 60 * 1000);
+    case "24H":
+      return new Date(now - 24 * 60 * 60 * 1000);
+    case "7D":
+      return new Date(now - 7 * 24 * 60 * 60 * 1000);
+    case "30D":
+      return new Date(now - 30 * 24 * 60 * 60 * 1000);
+    default:
+      return null;
+  }
+}
+
+function classifyDecisionEvent(agent: string, decision: string, reasonCodes: string[]): string {
+  if (agent === "SENTINEL") return "SCAN";
+  if (agent === "PULSE") return "SIGNAL";
+  if (agent === "AEGIS") {
+    if (decision === "BLOCK" || reasonCodes.some((code) => code.includes("BLOCK"))) return "SECURITY_BLOCK";
+    return "SECURITY_PASS";
+  }
+  if (agent === "ATLAS" && (decision === "REJECT" || reasonCodes.some((code) => code.includes("REJECT") || code.includes("RISK")))) {
+    return "RISK_REJECT";
+  }
+  if (agent === "EXECUTOR") return decision === "SUBMIT" || decision === "BUY" || decision === "SELL" ? "ORDER_SUBMITTED" : "SIGNAL";
+  return "SIGNAL";
 }

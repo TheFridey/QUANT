@@ -3,17 +3,19 @@
 @theme {
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
-  --color-background: #07090d;
-  --color-foreground: #ebe6dc;
-  --color-card: #10141c;
-  --color-panel: #0c1016;
-  --color-border: #2a3446;
-  --color-muted: #8d97a8;
-  --color-primary: #e4b15a;
-  --color-primary-foreground: #1c1408;
-  --color-destructive: #e11d48;
-  --color-profit: #3dce9a;
-  --color-loss: #ff5c7a;
+  --color-background: #080d17;
+  --color-foreground: #e8edf7;
+  --color-card: #111927;
+  --color-panel: #0d1420;
+  --color-border: #243044;
+  --color-muted: #8b9bb3;
+  --color-primary: #7eb6ff;
+  --color-primary-foreground: #071018;
+  --color-destructive: #f36b7c;
+  --color-profit: #35e0c4;
+  --color-loss: #f36b7c;
+  --color-warning: #f5b95e;
+  --color-surface-elevated: #152033;
 }
 
 * { box-sizing: border-box; }
@@ -22,11 +24,63 @@ html, body { height: 100%; }
 
 body {
   margin: 0;
-  background: var(--color-background);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(126, 182, 255, 0.08), transparent 55%),
+    radial-gradient(900px 500px at 90% 0%, rgba(53, 224, 196, 0.05), transparent 50%),
+    var(--color-background);
   color: var(--color-foreground);
-  font-family: var(--font-sans), "IBM Plex Sans", sans-serif;
+  font-family: var(--font-sans), "Geist", "Inter", ui-sans-serif, sans-serif;
+  font-feature-settings: "ss01" on, "cv11" on;
 }
 
-button, input { font: inherit; }
+button, input, select, textarea { font: inherit; }
 
-.mono { font-family: var(--font-mono), "IBM Plex Mono", ui-monospace, monospace; }
+.mono {
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.hairline { border-color: var(--color-border); }
+
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #243044 transparent;
+}
+
+@keyframes odin-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+@keyframes odin-fade-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes odin-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.animate-odin-pulse { animation: odin-pulse 1.8s ease-in-out infinite; }
+.animate-odin-fade { animation: odin-fade-up 220ms ease-out both; }
+
+.skeleton {
+  background: linear-gradient(90deg, #111927 0%, #1a2436 45%, #111927 100%);
+  background-size: 200% 100%;
+  animation: odin-shimmer 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-odin-pulse,
+  .animate-odin-fade,
+  .skeleton {
+    animation: none !important;
+  }
+}

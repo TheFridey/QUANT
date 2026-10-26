@@ -33,12 +33,16 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="grid min-h-screen place-items-center px-4">
-      <form onSubmit={onSubmit} className="w-full max-w-md space-y-4 rounded-lg border border-border bg-card p-6">
+    <main className="relative grid min-h-screen place-items-center overflow-hidden px-4">
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(36,48,68,0.25)_1px,transparent_1px),linear-gradient(90deg,rgba(36,48,68,0.25)_1px,transparent_1px)] bg-[size:48px_48px] opacity-40" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-48 bg-gradient-to-b from-primary/10 to-transparent" />
+      <form onSubmit={onSubmit} className="panel relative w-full max-w-md space-y-4 rounded-md p-6">
         <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-primary">Paper research terminal</p>
-          <h1 className="mt-1 text-2xl font-semibold">ODIN // QUANT</h1>
-          <p className="mt-2 text-sm text-muted">Paper trading only. No wallet, no private keys, no live order routing.</p>
+          <p className="text-[10px] uppercase tracking-[0.22em] text-primary">Paper research terminal</p>
+          <h1 className="mt-2 text-2xl font-semibold tracking-[0.08em]">ODIN // QUANT</h1>
+          <p className="mt-2 text-sm text-muted">
+            Quantitative command centre for Solana paper trading. No wallet, no private keys, no live order routing.
+          </p>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="email">Email</Label>
@@ -46,13 +50,19 @@ export default function LoginPage() {
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="password">Password</Label>
-          <Input id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} />
+          <Input
+            id="password"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
         </div>
         {error ? <p className="text-sm text-loss">{error}</p> : null}
         <Button type="submit" disabled={pending || password.length < 8} className="w-full">
-          {pending ? "Checking credentials…" : "Enter terminal"}
+          {pending ? "Authenticating…" : "Enter command centre"}
         </Button>
-        <p className="text-xs text-muted">If you have not changed the local seed, the password is odin-paper-dev.</p>
+        <p className="text-xs text-muted">Local seed password remains odin-paper-dev unless rotated.</p>
       </form>
     </main>
   );

@@ -29,6 +29,31 @@ export class TerminalController {
     return this.terminal.snapshot();
   }
 
+  @Get("terminal/equity")
+  equity(@Query("range") range = "24H") {
+    return this.terminal.equityHistory(range);
+  }
+
+  @Get("terminal/activity")
+  activity(@Query("limit") limit = "80") {
+    return this.terminal.activityFeed(Number(limit) || 80);
+  }
+
+  @Get("terminal/decisions/:id")
+  decision(@Param("id") id: string) {
+    return this.terminal.decisionDetail(id);
+  }
+
+  @Get("terminal/agents/:agent")
+  agent(@Param("agent") agent: string) {
+    return this.terminal.agentDetail(agent);
+  }
+
+  @Get("terminal/logs")
+  logs(@Query("limit") limit = "100") {
+    return this.terminal.systemLogs(Number(limit) || 100);
+  }
+
   @Get("market/observations")
   observations(@Query("pairAddress") pairAddress = "") {
     return this.terminal.observations(pairAddress);
