@@ -50,9 +50,15 @@ importers:
       '@nestjs/websockets':
         specifier: ^11.1.6
         version: 11.2.8(@nestjs/common@11.2.8(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.2.8)(@nestjs/platform-socket.io@11.2.8)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@odin/agent-core':
+        specifier: workspace:*
+        version: link:../../packages/agent-core
       '@odin/analytics':
         specifier: workspace:*
         version: link:../../packages/analytics
+      '@odin/backtest':
+        specifier: workspace:*
+        version: link:../../packages/backtest
       '@odin/market-data':
         specifier: workspace:*
         version: link:../../packages/market-data
@@ -258,6 +264,22 @@ importers:
       '@odin/shared':
         specifier: workspace:*
         version: link:../shared
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/backtest:
+    dependencies:
+      '@odin/analytics':
+        specifier: workspace:*
+        version: link:../analytics
+      '@odin/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@odin/trading-engine':
+        specifier: workspace:*
+        version: link:../trading-engine
     devDependencies:
       typescript:
         specifier: ^5.9.3

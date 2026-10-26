@@ -45,6 +45,20 @@ export const strategyConfigSchema = z
     /** Max pair age in hours for discovery (null = no max). Stored as decimal string hours or empty. */
     discoveryMaxPairAgeHours: decimalString.nullable(),
     discoveryMinPairAgeMinutes: decimalString,
+    /** Relative volume floor for lab entries (null = disabled). */
+    relativeVolumeMin: decimalString.nullable(),
+    /** Trailing stop distance from peak mark as % (null = disabled). */
+    trailingStopPct: decimalString.nullable(),
+    /** Max holding duration in ms (null = no time stop). */
+    maxHoldingMs: z.number().int().nullable(),
+    /** Minimum closed trades before optimisation is accepted. */
+    minSampleTrades: z.number().int(),
+    /** Minimum observation span in ms for a backtest window. */
+    minObservationSpanMs: z.number().int(),
+    /** Require OOS (test) sample before labelling release-ready. */
+    requireOosEvaluation: z.boolean(),
+    /** Max OOS drawdown % allowed by release gate. */
+    releaseMaxDrawdownPct: decimalString,
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -118,6 +132,28 @@ export const strategyConfigSchema = z
         message: "Must be at least the entry threshold",
       });
     }
+    if (value.relativeVolumeMin !== null && !inRange(value.relativeVolumeMin, "0", "100")) {
+      ctx.addIssue({ code: "custom", path: ["relativeVolumeMin"], message: "Must be between 0 and 100 when set" });
+    }
+    if (value.trailingStopPct !== null && !inRange(value.trailingStopPct, "0.1", "100")) {
+      ctx.addIssue({ code: "custom", path: ["trailingStopPct"], message: "Must be between 0.1 and 100 when set" });
+    }
+    if (value.maxHoldingMs !== null && (value.maxHoldingMs < 60_000 || value.maxHoldingMs > 30 * 24 * 3_600_000)) {
+      ctx.addIssue({ code: "custom", path: ["maxHoldingMs"], message: "Must be from 60000 to 2592000000 when set" });
+    }
+    if (value.minSampleTrades < 5 || value.minSampleTrades > 10_000) {
+      ctx.addIssue({ code: "custom", path: ["minSampleTrades"], message: "Must be from 5 to 10000" });
+    }
+    if (value.minObservationSpanMs < 60_000 || value.minObservationSpanMs > 366 * 24 * 3_600_000) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["minObservationSpanMs"],
+        message: "Must be from 60000 to one year in ms",
+      });
+    }
+    if (!inRange(value.releaseMaxDrawdownPct, "0.1", "100")) {
+      ctx.addIssue({ code: "custom", path: ["releaseMaxDrawdownPct"], message: "Must be between 0.1 and 100" });
+    }
   });
 
 export type StrategyConfig = z.infer<typeof strategyConfigSchema>;
@@ -155,6 +191,13 @@ export const strategyPatchSchema = z
     pulseMinObservations: z.number().int().optional(),
     discoveryMaxPairAgeHours: decimalString.nullable().optional(),
     discoveryMinPairAgeMinutes: decimalString.optional(),
+    relativeVolumeMin: decimalString.nullable().optional(),
+    trailingStopPct: decimalString.nullable().optional(),
+    maxHoldingMs: z.number().int().nullable().optional(),
+    minSampleTrades: z.number().int().optional(),
+    minObservationSpanMs: z.number().int().optional(),
+    requireOosEvaluation: z.boolean().optional(),
+    releaseMaxDrawdownPct: decimalString.optional(),
   })
   .strict();
 
@@ -191,6 +234,13 @@ export const DEFAULT_STRATEGY: StrategyConfig = {
   pulseMinObservations: 5,
   discoveryMaxPairAgeHours: null,
   discoveryMinPairAgeMinutes: "0",
+  relativeVolumeMin: null,
+  trailingStopPct: null,
+  maxHoldingMs: null,
+  minSampleTrades: 30,
+  minObservationSpanMs: 24 * 60 * 60 * 1000,
+  requireOosEvaluation: true,
+  releaseMaxDrawdownPct: "15",
 };
 
 export function parseStrategyConfig(value: unknown): StrategyConfig {

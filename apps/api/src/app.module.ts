@@ -7,6 +7,8 @@ import { createPrismaClient, PrismaClient } from "@odin/shared/db";
 import { AuthController } from "./auth.controller.js";
 import { AuthService } from "./auth.service.js";
 import { JwtAuthGuard } from "./http.js";
+import { LabController } from "./lab.controller.js";
+import { LabService } from "./lab.service.js";
 import { TerminalController } from "./terminal.controller.js";
 import { TerminalFanout, TerminalGateway } from "./terminal.gateway.js";
 import { TerminalService } from "./terminal.service.js";
@@ -23,11 +25,12 @@ import { TerminalService } from "./terminal.service.js";
     }),
     BullModule.registerQueue({ name: QUEUES.ingest }),
   ],
-  controllers: [AuthController, TerminalController],
+  controllers: [AuthController, TerminalController, LabController],
   providers: [
     { provide: PrismaClient, useFactory: () => createPrismaClient() },
     AuthService,
     TerminalService,
+    LabService,
     TerminalGateway,
     TerminalFanout,
     { provide: APP_GUARD, useClass: JwtAuthGuard },

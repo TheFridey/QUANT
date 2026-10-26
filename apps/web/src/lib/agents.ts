@@ -7,9 +7,17 @@ export const AGENT_PIPELINE = [
   { id: "ARCHIVIST", role: "Audit & research", accent: "#8b9bb3" },
 ] as const;
 
-export type AgentId = (typeof AGENT_PIPELINE)[number]["id"];
+/** Supervisory advisory module — not part of the live paper fill pipeline. */
+export const ORACLE_AGENT = {
+  id: "ORACLE",
+  role: "Research supervisor (advisory)",
+  accent: "#94a3b8",
+} as const;
+
+export type AgentId = (typeof AGENT_PIPELINE)[number]["id"] | typeof ORACLE_AGENT.id;
 
 export function agentMeta(agent: string) {
+  if (agent === ORACLE_AGENT.id) return ORACLE_AGENT;
   return AGENT_PIPELINE.find((item) => item.id === agent) ?? {
     id: agent,
     role: "Agent",

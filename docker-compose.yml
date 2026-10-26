@@ -1,3 +1,6 @@
+# ODIN // QUANT infrastructure — Postgres + Redis only.
+# App processes (api/worker/web) run via `pnpm dev` against these services.
+# Research lab backtests read MarketObservation from Postgres; they do not invent prices.
 services:
   postgres:
     image: postgres:16-alpine

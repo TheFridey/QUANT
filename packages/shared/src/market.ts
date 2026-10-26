@@ -1,8 +1,10 @@
 import { z } from "zod";
 import { DATA_STATES } from "./freshness.js";
 
-export const AGENT_NAMES = ["SENTINEL", "PULSE", "AEGIS", "ATLAS", "EXECUTOR", "ARCHIVIST"] as const;
+export const AGENT_NAMES = ["SENTINEL", "PULSE", "AEGIS", "ATLAS", "EXECUTOR", "ARCHIVIST", "ORACLE"] as const;
 export type AgentName = (typeof AGENT_NAMES)[number];
+/** Live paper pipeline agents only. ORACLE is supervisory / advisory and never fills. */
+export const PIPELINE_AGENT_NAMES = ["SENTINEL", "PULSE", "AEGIS", "ATLAS", "EXECUTOR", "ARCHIVIST"] as const;
 
 export const ENGINE_STATUSES = ["STOPPED", "RUNNING", "PAUSED", "EMERGENCY_STOP"] as const;
 export type EngineStatus = (typeof ENGINE_STATUSES)[number];

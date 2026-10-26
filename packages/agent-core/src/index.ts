@@ -6,6 +6,7 @@ export * from "./aegis.js";
 export * from "./archivist.js";
 export * from "./llm.js";
 export * from "./research.js";
+export * from "./oracle.js";
 export type { AgentBusEvent } from "./bus.js";
 export { STAGE_AFTER } from "./bus.js";
 export type { DecisionDraft, PlanInput, PositionView, ProposedOrder } from "./types.js";

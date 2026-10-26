@@ -50,3 +50,28 @@ A new position needs a live positive price, liquidity and volume above the floor
 Stops, take-profits, and a 5-minute fade close the whole position. Operator tickets skip the momentum rule, are labeled `OPERATOR_OVERRIDE`, and still pass surveillance, risk, and the locked fill.
 
 Missing marks do not count as zero P&L. Equity is omitted until every open position has a price. Research proposals from the walk-forward loop are never auto-applied to a RUNNING engine.
+
+## Strategy Laboratory & backtesting
+
+The live paper path (SENTINEL→ARCHIVIST) is unchanged. The research lab adds:
+
+- Versioned strategies (`StrategyVersion`) and event-driven historical replay (`packages/backtest`) over persisted `MarketObservation` rows.
+- Train / validation / untouched test splits, Monte Carlo resampling (seeded), baselines, cost-aware fills, and release gates that **never** auto-graduate to real money (there is no real-money venue).
+- ORACLE advisory reviews with human approval — suggestions only; mock LLM when no key.
+- HTML research report export: `GET /api/lab/backtests/:id/report` (auth required).
+
+Workflow:
+
+1. Pause the engine if changing live paper config; or snapshot a version in **Strategy Laboratory**.
+2. Ensure observations exist (live ingest or `DATA_MODE=replay` fixtures).
+3. Open **Backtesting**, select a strategy version, run historical replay.
+4. Compare runs, request ORACLE review, export the HTML report.
+5. Treat release gate `NOT_RELEASE_READY` as authoritative until forward paper evaluation completes.
+
+### Limitations
+
+- Survivorship: delisted / disappeared pairs are **reported**, not repaired.
+- Data gaps and missing liquidity produce rejected orders, not invented fills.
+- Paper accounting ≠ live venue microstructure.
+- Optimisation that only maximises in-sample returns is rejected when sample gates fail.
+- Docker Compose is the intended infra launcher; if Docker is unavailable, point `DATABASE_URL` / `REDIS_URL` at local Postgres/Redis (see acceptance notes under `docs/acceptance/research-lab.md`).

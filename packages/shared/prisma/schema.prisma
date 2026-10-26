@@ -153,6 +153,122 @@ model ResearchProposal {
   @@index([status, createdAt])
 }
 
+/// Frozen strategy snapshot for lab comparison. Never auto-graduates to real money (no real-money venue).
+model StrategyVersion {
+  id        String        @id @default(cuid())
+  name      String
+  version   Int
+  parentId  String?
+  config    Json
+  notes     String?
+  status    String        @default("DRAFT")
+  createdBy String?
+  createdAt DateTime      @default(now())
+  runs      BacktestRun[]
+
+  @@unique([name, version])
+  @@index([status, createdAt])
+}
+
+model BacktestRun {
+  id                String               @id @default(cuid())
+  strategyVersionId String?
+  status            String
+  label             String?
+  params            Json
+  assumptions       Json
+  dataQuality       Json?
+  metrics           Json?
+  baselines         Json?
+  validation        Json?
+  releaseGate       Json?
+  equityCurve       Json?
+  reportHtml        String?
+  error             String?
+  startedAt         DateTime
+  finishedAt        DateTime?
+  createdAt         DateTime             @default(now())
+  strategyVersion   StrategyVersion?     @relation(fields: [strategyVersionId], references: [id])
+  trades            BacktestTrade[]
+  experiments       ExperimentMetrics[]
+  oracleReviews     OracleReview[]
+
+  @@index([status, createdAt])
+  @@index([strategyVersionId])
+}
+
+model BacktestTrade {
+  id            String      @id @default(cuid())
+  runId         String
+  pairAddress   String
+  baseSymbol    String
+  side          String
+  intent        String
+  qty           Decimal     @db.Decimal(24, 8)
+  priceUsd      Decimal     @db.Decimal(24, 8)
+  feeUsd        Decimal     @db.Decimal(24, 8)
+  slippageBps   Decimal     @db.Decimal(16, 6)
+  notionalUsd   Decimal     @db.Decimal(24, 8)
+  pnlUsd        Decimal?    @db.Decimal(24, 8)
+  eventAt       DateTime
+  observationId String?
+  reasonCodes   String[]
+  meta          Json?
+  run           BacktestRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, eventAt])
+  @@index([pairAddress, eventAt])
+}
+
+model ExperimentMetrics {
+  id         String       @id @default(cuid())
+  runId      String?
+  proposalId String?
+  kind       String
+  sampleSize Int
+  observed   Boolean
+  payload    Json
+  createdAt  DateTime     @default(now())
+  run        BacktestRun? @relation(fields: [runId], references: [id])
+
+  @@index([kind, createdAt])
+  @@index([runId])
+}
+
+model ObservabilityEvent {
+  id        String   @id @default(cuid())
+  category  String
+  name      String
+  value     Decimal? @db.Decimal(24, 8)
+  unit      String?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([category, createdAt])
+  @@index([name, createdAt])
+}
+
+/// ORACLE is advisory only. Human approval required; never executes trades or mutates RUNNING config.
+model OracleReview {
+  id           String       @id @default(cuid())
+  runId        String?
+  proposalId   String?
+  status       String
+  summary      String
+  weaknesses   Json
+  suggestions  Json
+  readiness    String
+  provider     String
+  modelVersion String?
+  approvedAt   DateTime?
+  approvedBy   String?
+  createdAt    DateTime     @default(now())
+  run          BacktestRun? @relation(fields: [runId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([runId])
+}
+
 model CycleRun {
   id               String    @id
   trigger          String

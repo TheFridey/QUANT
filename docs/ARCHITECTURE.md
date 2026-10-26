@@ -10,12 +10,15 @@ Birdeye (optional, historical / security / holders only)
     │
     ▼
 BullMQ: sentinel → pulse → aegis → atlas → executor → archivist
+    │                              ▲
+    │                              │ (unchanged live paper path)
+    ▼                              │
+PostgreSQL ledger + research lab ──┘
+  (orders, fills, StrategyVersion, BacktestRun/Trade,
+   ExperimentMetrics, ObservabilityEvent, OracleReview)
     │
-    ▼
-PostgreSQL ledger (orders, fills, positions, cash, equity snapshots, research proposals)
-    │
-    ▼
-NestJS API + Socket.IO ──► Next.js terminal
+    ├── NestJS API + Socket.IO ──► Next.js terminal
+    └── packages/backtest event replay (offline) + ORACLE advisory
 ```
 
 Redis is both the BullMQ broker and the ephemeral fanout (`odin:terminal`, `odin:agent-bus`). PostgreSQL is the durable record. A lost pub/sub message does not lose a fill.
@@ -28,11 +31,12 @@ Redis is both the BullMQ broker and the ephemeral fanout (`odin:terminal`, `odin
 | `packages/market-data` | Provider interface, DexScreener adapter, optional Birdeye adapter |
 | `packages/risk-engine` | Portfolio gates, aggregate exposure, HWM drawdown, circuit breaker |
 | `packages/trading-engine` | Stop-distance sizing, quote/fill with spread + impact, ledger mutation |
-| `packages/agent-core` | Six agents, LLM provider abstraction, offline walk-forward research |
-| `packages/analytics` | Mark-to-market and performance (sample sizes, observed vs incomplete) |
-| `apps/api` | Auth, controls, snapshot (agent status, watchlist, metrics) |
-| `apps/worker` | Scheduled ingest and the agent job chain |
-| `apps/web` | Terminal with per-agent status panel |
+| `packages/agent-core` | Six pipeline agents + optional ORACLE supervisor, LLM abstraction, walk-forward research |
+| `packages/analytics` | Mark-to-market, performance, in-process observability counters |
+| `packages/backtest` | Event-driven historical replay, data-quality reports, validation, baselines, HTML reports |
+| `apps/api` | Auth, controls, snapshot, Strategy Lab / backtest / ORACLE endpoints |
+| `apps/worker` | Scheduled ingest and the agent job chain (live paper path unchanged) |
+| `apps/web` | Terminal with per-agent status, Strategy Laboratory, Backtesting |
 
 ## Data states
 
@@ -96,6 +100,17 @@ Older configs merge missing keys from `DEFAULT_STRATEGY`:
 - `packages/agent-core` model-provider abstraction: hosted OpenAI-compatible APIs, optional Hermes base URL, mock/no-key offline path.
 - Advisory JSON is Zod-validated. It may annotate ARCHIVIST/AEGIS review text only.
 - Offline walk-forward research produces `ResearchProposal` rows. `promoted` stays false until an operator applies a patch outside the RUNNING path. No unsupervised live mutation.
+- **ORACLE** is a seventh optional supervisory module. It does not execute trades, does not size, and does not mutate a RUNNING engine. Human approval is required for suggested paper follow-ups. There is **no real-money venue** and no auto-graduation path.
+
+## Quantitative research laboratory
+
+- `packages/backtest` replays `MarketObservation` / fixture series in `receivedAt` order. Fills use only prices available at event time plus configured latency (no look-ahead).
+- Costs: fee bps, spread estimate, participation impact, liquidity caps, missed/rejected orders, stop/take/trailing/max-hold exits, force liquidation at end.
+- Data quality reports missing prices/liquidity, gaps, disappeared pairs, and inactive tokens — they are **not** silently dropped from the universe.
+- Validation: chronological train/validation/test splits, sample gates, Monte Carlo trade-sequence resampling (seeded), baselines (cash, buy-and-hold when endpoints exist, simple momentum rule), release gates that always require forward paper evaluation.
+- Insufficient evidence is returned as `null` metrics with `INSUFFICIENT_EVIDENCE` labels — never fabricated confidence.
+- HTML research reports: `GET /api/lab/backtests/:id/report`.
+- Limitations: survivorship bias is disclosed not corrected; data gaps block fills; paper ≠ live; one profitable night is never “validated.”
 
 ## Engine
 

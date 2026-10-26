@@ -7,4 +7,5 @@ export const MODEL_VERSIONS: Record<AgentName, string> = {
   ATLAS: "atlas-portfolio-1.1.0",
   EXECUTOR: "executor-paper-1.1.0",
   ARCHIVIST: "archivist-research-1.1.0",
+  ORACLE: "oracle-advisory-1.0.0",
 };
