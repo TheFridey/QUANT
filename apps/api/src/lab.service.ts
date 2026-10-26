@@ -351,8 +351,8 @@ export class LabService {
       });
 
       await this.prisma.backtestTrade.createMany({
-        data: result.trades.map((trade) => ({
-          id: trade.id,
+        data: result.trades.map((trade, index) => ({
+          id: `${runId}_${trade.id}_${index}`,
           runId,
           pairAddress: trade.pairAddress,
           baseSymbol: trade.baseSymbol,

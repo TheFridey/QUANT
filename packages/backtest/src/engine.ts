@@ -179,6 +179,8 @@ export function runBacktest(observations: BacktestObservation[], params: Backtes
   }
 
   // Force liquidation at end — only with last available marks; report misses.
+  // Eligible at the mark's own timestamp (not endAt) so the latency guard does not
+  // reject a fill that uses a historical mark — we are not looking ahead.
   if (params.forceLiquidateAtEnd && positions.size > 0) {
     for (const [pairAddress, pos] of [...positions.entries()]) {
       const mark = lastMark.get(pairAddress);
@@ -197,9 +199,9 @@ export function runBacktest(observations: BacktestObservation[], params: Backtes
         side: "SELL",
         intent: "FLATTEN",
         qty: pos.qty,
-        eligibleAt: params.endAt,
+        eligibleAt: mark.receivedAt,
         reasonCodes: ["FORCE_LIQUIDATE"],
-        submittedAt: params.endAt,
+        submittedAt: mark.receivedAt,
       };
       const filled = tryFill(order, mark, params.config, cash, positions);
       if (!filled.ok) {
@@ -208,7 +210,12 @@ export function runBacktest(observations: BacktestObservation[], params: Backtes
       }
       cash = filled.cash;
       fees = fees.plus(d(filled.trade.feeUsd));
-      trades.push({ ...filled.trade, id: `bt_${++tradeSeq}`, eventAt: params.endAt });
+      trades.push({
+        ...filled.trade,
+        id: `bt_${++tradeSeq}`,
+        eventAt: mark.receivedAt,
+        reasonCodes: [...filled.trade.reasonCodes, "FORCE_LIQUIDATE_AT_END"],
+      });
       if (filled.closedPnl !== null) closedTradePnls.push(filled.closedPnl);
       positions.delete(pairAddress);
     }

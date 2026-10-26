@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>ODIN // QUANT Research Report — btrun_53fea710-b1ca-49c8-9e52-534a4c123ea4</title>
+<style>
+  :root { color-scheme: light; --ink:#0f172a; --muted:#64748b; --line:#e2e8f0; --warn:#b45309; --bad:#b91c1c; --ok:#047857; --sim:#1d4ed8; }
+  body { font-family: "IBM Plex Sans", "Segoe UI", sans-serif; margin: 0; background: linear-gradient(180deg,#f8fafc,#eef2ff); color: var(--ink); }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
+  h2 { font-size: 1.1rem; margin: 1.75rem 0 0.5rem; border-bottom: 1px solid var(--line); padding-bottom: 0.35rem; }
+  .banner { background: #dbeafe; color: #1e3a8a; border: 1px solid #93c5fd; padding: 12px 14px; border-radius: 8px; margin: 16px 0; font-weight: 600; }
+  .warn { background: #fff7ed; color: var(--warn); border-color: #fdba74; }
+  .bad { background: #fef2f2; color: var(--bad); border-color: #fecaca; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.85rem; }
+  .null { color: var(--muted); font-style: italic; }
+  ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+  footer { margin-top: 2rem; color: var(--muted); font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<main>
+  <p class="mono" style="color:var(--muted);margin:0">ODIN // QUANT · paper research laboratory</p>
+  <h1>Research report</h1>
+  <p>Run <span class="mono">btrun_53fea710-b1ca-49c8-9e52-534a4c123ea4</span> · 2026-10-26T20:49:35.895Z · strategy lab-momentum v1</p>
+  <div class="banner">SIMULATION RESULTS — paper venue only. Not live trading. Not real-money validated. There is no real-money graduation path in this system.</div>
+  
+  <div class="banner bad">Release gate: NOT_RELEASE_READY. Real-money graduation: false. Forward paper evaluation required.</div>
+
+  <h2>Assumptions</h2>
+  <ul><li>Observations are processed strictly in receivedAt order.</li><li>Fills use only prices available at event time plus configured latency.</li><li>Missing price or liquidity prevents a fill; it does not invent a mark.</li><li>Pairs that disappear mid-window remain in the universe report.</li><li>Survivorship bias is not corrected; delisted/inactive pairs are disclosed.</li><li>Latency before fill eligibility: 0 ms.</li><li>Fees: 30 bps; max slippage: 150 bps.</li><li>Spread estimate: 5 bps half-spread applied.</li><li>Paper venue only — there is no real-money graduation path.</li><li>Open positions are force-liquidated at end using the last available mark.</li></ul>
+
+  <h2>Data quality</h2>
+  <table>
+    <tr><th>Observations</th><td class="mono">3649</td></tr>
+    <tr><th>Pairs</th><td class="mono">18</td></tr>
+    <tr><th>Span</th><td class="mono">11488604 ms</td></tr>
+    <tr><th>Missing prices</th><td class="mono">153</td></tr>
+    <tr><th>Missing liquidity</th><td class="mono">1049</td></tr>
+    <tr><th>Disappeared pairs</th><td class="mono">4</td></tr>
+    <tr><th>Inactive pairs</th><td class="mono">1</td></tr>
+    <tr><th>Gaps reported</th><td class="mono">14</td></tr>
+  </table>
+  <p><strong>Disappeared / delisted (reported, not dropped)</strong></p><ul><li class="mono">ANT CqGjKAH8VaRfsVHaJ5We1pdYvBv842qcYimTpf1k9jc8 last=2026-10-26T18:20:00.022Z</li><li class="mono">Fartcoin EFX34rwn4GTMfcq9HsNajcMma311UHJEZXBvSUiaYEaU last=2026-10-26T18:20:00.022Z</li><li class="mono">CBUCKS B4Cp45PGifVM5FAXfh6AeV8QZ3eUNQnqGBw7KuC7MHnB last=2026-10-26T19:53:40.025Z</li><li class="mono">Hellcat H2hyLzX9VnjhamfXUkd1c8Q9B8GMSxsdoEuuMSjTcVjf last=2026-10-26T18:20:00.022Z</li></ul>
+  <p><strong>Inactive (no positive price)</strong></p><ul><li class="mono">Earn 3AUQTsJJnZRL7uWV1VM3RG56ffscN3S8nCgP9h87BiG7 (NO_POSITIVE_PRICE)</li></ul>
+
+  <h2>Performance (strategy)</h2>
+  <table>
+    <tr><th>Sample size (closed trades)</th><td class="mono">23</td></tr>
+    <tr><th>Return %</th><td class="mono">-2.2317</td></tr>
+    <tr><th>Win rate</th><td class="mono">0.260870</td></tr>
+    <tr><th>Profit factor</th><td class="mono">0.877979</td></tr>
+    <tr><th>Expectancy USD</th><td class="mono">-0.04654585</td></tr>
+    <tr><th>Max drawdown %</th><td class="mono">5.1452</td></tr>
+    <tr><th>Fees USD</th><td class="mono">2.32252068</td></tr>
+    <tr><th>Final equity USD</th><td class="mono">97.76832135</td></tr>
+    <tr><th>Rejected orders</th><td class="mono">51</td></tr>
+    <tr><th>Observed</th><td class="mono">true</td></tr>
+  </table>
+
+  <h2>Sample / release gates</h2>
+  <table>
+    <tr><th>Sample gate</th><td>SAMPLE_OK · passed=true</td></tr>
+    <tr><th>Sample reasons</th><td>—</td></tr>
+    <tr><th>Release gate</th><td>NOT_RELEASE_READY · passed=false</td></tr>
+    <tr><th>Release reasons</th><td>Mandatory forward paper-trading evaluation has not completed</td></tr>
+  </table>
+
+  <h2>Baselines</h2>
+  <table>
+    <tr><th>Name</th><th>Return %</th><th>Final equity</th><th>Label</th></tr>
+    <tr><td>no_trade_cash</td><td class="mono">0.0000</td><td class="mono">100.00000000</td><td>BASELINE</td></tr><tr><td>buy_and_hold</td><td class="mono">-0.5183</td><td class="mono">99.48167351</td><td>BASELINE</td></tr><tr><td>simple_momentum_rule</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono"><span class="null">null — insufficient evidence</span></td><td>INSUFFICIENT_EVIDENCE</td></tr>
+  </table>
+
+  <h2>Monte Carlo (trade-sequence resample)</h2>
+  <table>
+    <tr><th>Seed</th><td class="mono">42</td></tr>
+    <tr><th>Iterations</th><td class="mono">500</td></tr>
+    <tr><th>Label</th><td>SIMULATED</td></tr>
+    <tr><th>Mean final equity</th><td class="mono">98.72956965</td></tr>
+    <tr><th>p05 / p50 / p95</th><td class="mono">92.21197815 / 98.48549140 / 105.77951711</td></tr>
+  </table>
+
+  
+
+  <h2>Trades (46)</h2>
+  <table>
+    <tr><th>Time</th><th>Side</th><th>Symbol</th><th>Price</th><th>Qty</th><th>Fee</th><th>PnL</th><th>Reasons</th></tr>
+    <tr><td class="mono">2026-10-26T17:41:03.466Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00125651</td><td class="mono">13506.21286061</td><td class="mono">0.05091207</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T17:45:40.022Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00122750</td><td class="mono">13506.21286061</td><td class="mono">0.04973663</td><td class="mono">-0.44155186</td><td class="mono">EXIT_MOMENTUM</td></tr><tr><td class="mono">2026-10-26T17:46:20.049Z</td><td>BUY</td><td>GLITCH</td><td class="mono">0.00256594</td><td class="mono">6465.72684210</td><td class="mono">0.04977200</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T17:52:20.059Z</td><td>SELL</td><td>GLITCH</td><td class="mono">0.00246510</td><td class="mono">6465.72684210</td><td class="mono">0.04781599</td><td class="mono">-0.69981988</td><td class="mono">STOP_LOSS</td></tr><tr><td class="mono">2026-10-26T17:52:40.012Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00125750</td><td class="mono">12929.81725844</td><td class="mono">0.04877774</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T17:53:40.088Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00124250</td><td class="mono">12929.81725844</td><td class="mono">0.04819589</td><td class="mono">-0.24214315</td><td class="mono">EXIT_MOMENTUM</td></tr><tr><td class="mono">2026-10-26T17:54:20.009Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00130752</td><td class="mono">12556.36614384</td><td class="mono">0.04925310</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T17:58:40.016Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00130948</td><td class="mono">12556.36614384</td><td class="mono">0.04932693</td><td class="mono">-0.02471645</td><td class="mono">EXIT_MOMENTUM</td></tr><tr><td class="mono">2026-10-26T17:59:20.041Z</td><td>BUY</td><td>ANT</td><td class="mono">0.00418442</td><td class="mono">3920.35436050</td><td class="mono">0.04921323</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T18:00:00.066Z</td><td>SELL</td><td>ANT</td><td class="mono">0.00459542</td><td class="mono">3920.35436050</td><td class="mono">0.05404702</td><td class="mono">1.55721863</td><td class="mono">TAKE_PROFIT</td></tr><tr><td class="mono">2026-10-26T18:00:20.030Z</td><td>BUY</td><td>ANT</td><td class="mono">0.00495568</td><td class="mono">3621.96574505</td><td class="mono">0.05384791</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T18:01:20.028Z</td><td>SELL</td><td>ANT</td><td class="mono">0.00524921</td><td class="mono">3621.96574505</td><td class="mono">0.05703738</td><td class="mono">1.00611823</td><td class="mono">TAKE_PROFIT</td></tr><tr><td class="mono">2026-10-26T18:01:40.095Z</td><td>BUY</td><td>ANT</td><td class="mono">0.00540780</td><td class="mono">3201.08326985</td><td class="mono">0.05193245</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T18:04:00.066Z</td><td>SELL</td><td>ANT</td><td class="mono">0.00611494</td><td class="mono">3201.08326985</td><td class="mono">0.05872330</td><td class="mono">2.20489072</td><td class="mono">TAKE_PROFIT</td></tr><tr><td class="mono">2026-10-26T18:05:20.031Z</td><td>BUY</td><td>ANT</td><td class="mono">0.00584092</td><td class="mono">2940.18061654</td><td class="mono">0.05152008</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T18:06:00.064Z</td><td>SELL</td><td>ANT</td><td class="mono">0.00537225</td><td class="mono">2940.18061654</td><td class="mono">0.04738616</td><td class="mono">-1.42536061</td><td class="mono">STOP_LOSS</td></tr><tr><td class="mono">2026-10-26T18:06:20.029Z</td><td>BUY</td><td>ANT</td><td class="mono">0.00505766</td><td class="mono">3148.78448827</td><td class="mono">0.04777644</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T18:06:40.090Z</td><td>SELL</td><td>ANT</td><td class="mono">0.00505434</td><td class="mono">3148.78448827</td><td class="mono">0.04774508</td><td class="mono">-0.05819904</td><td class="mono">EXIT_MOMENTUM</td></tr><tr><td class="mono">2026-10-26T18:07:20.036Z</td><td>BUY</td><td>ANT</td><td class="mono">0.00552282</td><td class="mono">3061.74701322</td><td class="mono">0.05072843</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T18:08:40.098Z</td><td>SELL</td><td>ANT</td><td class="mono">0.00592403</td><td class="mono">3061.74701322</td><td class="mono">0.05441364</td><td class="mono">1.17398988</td><td class="mono">TAKE_PROFIT</td></tr><tr><td class="mono">2026-10-26T18:09:00.058Z</td><td>BUY</td><td>ANT</td><td class="mono">0.00678125</td><td class="mono">2884.08968950</td><td class="mono">0.05867320</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T18:11:20.090Z</td><td>SELL</td><td>ANT</td><td class="mono">0.00653684</td><td class="mono">2884.08968950</td><td class="mono">0.05655850</td><td class="mono">-0.76145886</td><td class="mono">STOP_LOSS</td></tr><tr><td class="mono">2026-10-26T18:11:40.055Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00130853</td><td class="mono">13173.60282051</td><td class="mono">0.05171416</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T18:12:00.015Z</td><td>BUY</td><td>ANT</td><td class="mono">0.00648609</td><td class="mono">2614.80981338</td><td class="mono">0.05087968</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T18:12:40.045Z</td><td>SELL</td><td>ANT</td><td class="mono">0.00607805</td><td class="mono">2614.80981338</td><td class="mono">0.04767883</td><td class="mono">-1.11462582</td><td class="mono">STOP_LOSS</td></tr><tr><td class="mono">2026-10-26T18:13:20.097Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00126849</td><td class="mono">13173.60282051</td><td class="mono">0.05013175</td><td class="mono">-0.57760281</td><td class="mono">STOP_LOSS</td></tr><tr><td class="mono">2026-10-26T18:15:40.028Z</td><td>BUY</td><td>GATO</td><td class="mono">0.00392332</td><td class="mono">4246.63175675</td><td class="mono">0.04998269</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T18:19:40.060Z</td><td>SELL</td><td>GATO</td><td class="mono">0.00386770</td><td class="mono">4246.63175675</td><td class="mono">0.04927409</td><td class="mono">-0.28547174</td><td class="mono">EXIT_MOMENTUM</td></tr><tr><td class="mono">2026-10-26T19:48:40.026Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00146657</td><td class="mono">11322.90633015</td><td class="mono">0.04981750</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T19:57:00.043Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00146743</td><td class="mono">11322.90633015</td><td class="mono">0.04984672</td><td class="mono">-0.04010902</td><td class="mono">EXIT_MOMENTUM</td></tr><tr><td class="mono">2026-10-26T19:59:40.080Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00149758</td><td class="mono">11078.41878423</td><td class="mono">0.04977246</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T20:01:40.087Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00147643</td><td class="mono">11078.41878423</td><td class="mono">0.04906953</td><td class="mono">-0.28337808</td><td class="mono">EXIT_MOMENTUM</td></tr><tr><td class="mono">2026-10-26T20:03:40.015Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00158061</td><td class="mono">10461.30875316</td><td class="mono">0.04960575</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T20:05:00.036Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00152242</td><td class="mono">10461.30875316</td><td class="mono">0.04777952</td><td class="mono">-0.65652308</td><td class="mono">STOP_LOSS</td></tr><tr><td class="mono">2026-10-26T20:06:20.062Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00153959</td><td class="mono">10663.53456790</td><td class="mono">0.04925241</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T20:19:00.021Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00162637</td><td class="mono">10663.53456790</td><td class="mono">0.05202856</td><td class="mono">0.87335297</td><td class="mono">TAKE_PROFIT</td></tr><tr><td class="mono">2026-10-26T20:23:00.098Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00166764</td><td class="mono">9927.13244751</td><td class="mono">0.04966465</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T20:29:40.048Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00176232</td><td class="mono">9927.13244751</td><td class="mono">0.05248435</td><td class="mono">0.88741655</td><td class="mono">TAKE_PROFIT</td></tr><tr><td class="mono">2026-10-26T20:30:00.018Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00176067</td><td class="mono">9465.77147475</td><td class="mono">0.04999830</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T20:33:40.048Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00169336</td><td class="mono">9465.77147475</td><td class="mono">0.04808688</td><td class="mono">-0.68522796</td><td class="mono">STOP_LOSS</td></tr><tr><td class="mono">2026-10-26T20:37:20.036Z</td><td>BUY</td><td>CATTLEAXE</td><td class="mono">0.00033758</td><td class="mono">49097.85832839</td><td class="mono">0.04972337</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T20:38:00.068Z</td><td>SELL</td><td>CATTLEAXE</td><td class="mono">0.00032463</td><td class="mono">49097.85832839</td><td class="mono">0.04781591</td><td class="mono">-0.68363317</td><td class="mono">STOP_LOSS</td></tr><tr><td class="mono">2026-10-26T20:38:40.004Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00183269</td><td class="mono">8975.65027838</td><td class="mono">0.04934875</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T20:41:20.060Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00175635</td><td class="mono">8975.65027838</td><td class="mono">0.04729315</td><td class="mono">-0.73249429</td><td class="mono">STOP_LOSS</td></tr><tr><td class="mono">2026-10-26T20:42:00.091Z</td><td>BUY</td><td>REMUS</td><td class="mono">0.00180368</td><td class="mono">9047.74494176</td><td class="mono">0.04895771</td><td class="mono"><span class="null">null — insufficient evidence</span></td><td class="mono">ENTRY_MOMENTUM,BACKTEST_SIGNAL</td></tr><tr><td class="mono">2026-10-26T20:42:40.018Z</td><td>SELL</td><td>REMUS</td><td class="mono">0.00180232</td><td class="mono">9047.74494176</td><td class="mono">0.04892079</td><td class="mono">-0.06122573</td><td class="mono">EXIT_MOMENTUM</td></tr>
+  </table>
+  
+
+  <footer>
+    Reproducible from persisted MarketObservation / fixture provenance. Costs, latency, and liquidity constraints are applied in-engine.
+    Optimisation that merely maximises in-sample returns is rejected when sample gates fail.
+    Generated 2026-10-26T20:49:35.895Z.
+  </footer>
+</main>
+</body>
+</html>
