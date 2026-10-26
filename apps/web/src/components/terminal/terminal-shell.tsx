@@ -183,8 +183,8 @@ export function TerminalShell() {
           <PriceChart points={points} />
         </Panel>
         <Book snapshot={snapshot} pair={pair} position={position} notional={notional} setNotional={setNotional} pending={ticketPending} ticketError={ticketError} onPlace={place} className="row-span-2" />
-        <Panel title="Audit" className="col-span-2">
-          <Audit decisions={snapshot.decisions} agents={agents} />
+        <Panel title="Agents" className="col-span-2">
+          <Audit decisions={snapshot.decisions} agents={agents} status={snapshot.agents} />
         </Panel>
       </section>
 
@@ -202,7 +202,7 @@ export function TerminalShell() {
           <TabsContent value="book">
             <Book snapshot={snapshot} pair={pair} position={position} notional={notional} setNotional={setNotional} pending={ticketPending} ticketError={ticketError} onPlace={place} />
           </TabsContent>
-          <TabsContent value="audit"><Audit decisions={snapshot.decisions} agents={agents} /></TabsContent>
+          <TabsContent value="audit"><Audit decisions={snapshot.decisions} agents={agents} status={snapshot.agents} /></TabsContent>
         </Tabs>
       </section>
 
@@ -283,8 +283,15 @@ function Book({
           <Metric label="Unrealized" value={formatUsd(snapshot.portfolio.unrealizedPnlUsd)} />
           <Metric label="Fees" value={formatUsd(snapshot.portfolio.feesUsd)} />
           <Metric label="Win rate" value={snapshot.portfolio.closedTrades === 0 ? "—" : formatRate(snapshot.portfolio.winRate)} />
+          <Metric label="HWM" value={snapshot.portfolio.highWaterMarkUsd ? formatUsd(snapshot.portfolio.highWaterMarkUsd) : "—"} />
+          <Metric label="Max DD" value={snapshot.portfolio.maxDrawdownPct == null ? "—" : formatPct(snapshot.portfolio.maxDrawdownPct)} />
         </dl>
-        <p className="text-xs text-muted">Win rate is closed trades only. It stays blank until a position is closed. Return {snapshot.portfolio.returnPct === null ? "—" : formatPct(snapshot.portfolio.returnPct)}.</p>
+        <p className="text-xs text-muted">
+          Closed trades n={snapshot.portfolio.sampleSize ?? snapshot.portfolio.closedTrades}. Win rate and expectancy stay blank until closes exist.
+          Return {snapshot.portfolio.returnPct === null ? "—" : formatPct(snapshot.portfolio.returnPct)}
+          {snapshot.portfolio.profitFactor != null ? ` · PF ${snapshot.portfolio.profitFactor}` : ""}.
+          {snapshot.portfolio.observed === false ? " Marks incomplete — metrics observed only where priced." : ""}
+        </p>
         {pair ? (
           <p className="text-xs text-muted">
             Liquidity {formatUsd(pair.liquidityUsd)} · 24h {formatUsd(pair.volume24hUsd)} · 5m {formatPct(pair.priceChangeM5Pct)}
@@ -330,23 +337,42 @@ function Book({
   );
 }
 
-function Audit({ decisions, agents }: { decisions: Snapshot["decisions"]; agents: string[] }) {
+function Audit({
+  decisions,
+  agents,
+  status,
+}: {
+  decisions: Snapshot["decisions"];
+  agents: string[];
+  status?: Snapshot["agents"];
+}) {
   return (
-    <div className="grid h-full grid-cols-1 gap-2 p-2 md:grid-cols-[160px_minmax(0,1fr)]">
+    <div className="grid h-full grid-cols-1 gap-2 p-2 md:grid-cols-[220px_minmax(0,1fr)]">
       <ul className="space-y-1 text-xs">
         {agents.map((agent) => {
-          const latest = [...decisions].reverse().find((decision) => decision.agent === agent);
-          return <li key={agent} className="rounded border border-border px-2 py-1"><div>{agent}</div><div className="text-muted">{latest?.decision ?? "—"}</div></li>;
+          const row = status?.find((item) => item.agent === agent);
+          const latest = row ?? [...decisions].reverse().find((decision) => decision.agent === agent);
+          return (
+            <li key={agent} className="rounded border border-border px-2 py-1">
+              <div className="flex items-center justify-between gap-2">
+                <span>{agent}</span>
+                <span className="text-muted">{row?.decision ?? ("decision" in (latest ?? {}) ? (latest as { decision?: string }).decision : null) ?? "—"}</span>
+              </div>
+              <div className="truncate text-[11px] text-muted">{row?.inputSource ?? "—"} · {row?.durationMs != null ? `${row.durationMs}ms` : "—"}</div>
+              <div className="truncate text-[11px] text-muted">{row?.outcome ?? "—"}</div>
+            </li>
+          );
         })}
       </ul>
       <div className="overflow-auto text-xs">
         {decisions.length === 0 ? <p className="text-muted">No decisions recorded for the latest cycle.</p> : null}
         {decisions.slice(-12).reverse().map((decision) => (
-          <div key={decision.id} className="grid grid-cols-[72px_88px_64px_minmax(0,1fr)] gap-2 border-b border-border/70 py-1">
+          <div key={decision.id} className="grid grid-cols-[72px_88px_64px_56px_minmax(0,1fr)] gap-2 border-b border-border/70 py-1">
             <span className="mono text-muted">{formatLondon(decision.createdAt)}</span>
             <span>{decision.agent}</span>
             <span>{decision.decision}</span>
-            <span className="truncate text-muted">{decision.reasonText.join(" ")}</span>
+            <span className="mono text-muted">{decision.durationMs != null ? `${decision.durationMs}ms` : "—"}</span>
+            <span className="truncate text-muted">{decision.inputSource ? `${decision.inputSource} · ` : ""}{decision.reasonText.join(" ")}</span>
           </div>
         ))}
       </div>
@@ -384,7 +410,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 function ConfigDialog({ open, onOpenChange, snapshot, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; snapshot: Snapshot; onSaved: () => Promise<void> }) {
   const config = snapshot.engine.config;
   const [balance, setBalance] = useState(String(config?.startingBalanceUsd ?? "100"));
-  const [maxPositions, setMaxPositions] = useState(String(config?.maxPositions ?? "3"));
+  const [maxPositions, setMaxPositions] = useState(String(config?.maxPositions ?? "4"));
   const [entry, setEntry] = useState(String(config?.entryM5ChangePct ?? "2"));
   const [anomaly, setAnomaly] = useState(String(config?.maxEntryM5ChangePct ?? "25"));
   const [stop, setStop] = useState(String(config?.stopLossPct ?? "3"));

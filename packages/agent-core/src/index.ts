@@ -1,4 +1,11 @@
 export * from "./versions.js";
 export * from "./plan.js";
+export * from "./sentinel.js";
+export * from "./pulse.js";
+export * from "./aegis.js";
+export * from "./archivist.js";
+export * from "./llm.js";
+export * from "./research.js";
 export type { AgentBusEvent } from "./bus.js";
 export { STAGE_AFTER } from "./bus.js";
+export type { DecisionDraft, PlanInput, PositionView, ProposedOrder } from "./types.js";

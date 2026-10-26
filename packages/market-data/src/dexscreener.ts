@@ -24,6 +24,7 @@ export function parseDexPair(value: unknown): NormalizedPair | null {
   const txns = record(pair.txns);
   const m5 = txns ? record(txns.m5) : null;
   const priceUsd = typeof pair.priceUsd === "string" ? decimalStringFromJson(pair.priceUsd) : null;
+  const pairCreatedAt = pairCreatedAtIso(pair.pairCreatedAt);
   return {
     source: "dexscreener",
     chainId: "solana",
@@ -44,8 +45,21 @@ export function parseDexPair(value: unknown): NormalizedPair | null {
     priceChangeH24Pct: priceChange ? decimalStringFromJson(priceChange.h24) : null,
     txnsM5Buys: m5 ? intFromJson(m5.buys) : null,
     txnsM5Sells: m5 ? intFromJson(m5.sells) : null,
+    pairCreatedAt,
+    fdvUsd: decimalStringFromJson(pair.fdv),
+    marketCapUsd: decimalStringFromJson(pair.marketCap),
     raw: value,
   };
+}
+
+function pairCreatedAtIso(value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  const ms = value < 1_000_000_000_000 ? value * 1000 : value;
+  try {
+    return new Date(ms).toISOString();
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchSolanaUniverse(options: {

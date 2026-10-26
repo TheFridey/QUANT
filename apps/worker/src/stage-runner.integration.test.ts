@@ -14,7 +14,7 @@ describe.skipIf(!enabled)("paper cycle persistence", () => {
   beforeAll(async () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
     await prisma.$executeRawUnsafe(
-      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "CycleRun", "PaperAccount", "EngineControl", "User" RESTART IDENTITY CASCADE`,
+      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "ResearchProposal", "CycleRun", "PaperAccount", "EngineControl", "User" RESTART IDENTITY CASCADE`,
     );
     await ensureFoundation(prisma, {
       email: process.env.ADMIN_EMAIL ?? "admin@odin.local",

@@ -1,80 +1,45 @@
-import { valuePortfolio, type Mark } from "@odin/analytics";
-import { evaluateRisk } from "@odin/risk-engine";
-import {
-  confidenceFixed,
-  d,
-  isTradableQuote,
-  type AgentName,
-  type CyclePair,
-  type EngineStatus,
-  type OperatorOrder,
-  type OrderIntent,
-  type OrderSide,
-  type ReasonCode,
-  type StrategyConfig,
-  Decimal,
-} from "@odin/shared";
+import { valuePortfolio } from "@odin/analytics";
+import { evaluateCircuitBreaker, evaluateRisk } from "@odin/risk-engine";
+import { d, type CyclePair, type OrderIntent, type OrderSide, type ReasonCode, type SecurityAssessment } from "@odin/shared";
 import { applyFill, maxEntryNotional, qtyForNotional, quoteFill, type BookState } from "@odin/trading-engine";
+import { runAegis } from "./aegis.js";
+import { computeResearchMetrics } from "./archivist.js";
+import { runPulse } from "./pulse.js";
+import { rankWatchlist, runSentinel } from "./sentinel.js";
+import {
+  isIntent,
+  type DecisionDraft,
+  type PlanInput,
+  type PositionView,
+  type ProposedOrder,
+} from "./types.js";
 import { MODEL_VERSIONS } from "./versions.js";
 
-export type PositionView = {
-  pairAddress: string;
-  baseSymbol: string;
-  baseQty: string;
-  avgCostUsd: string;
-  realizedPnlUsd: string;
-};
+export type { DecisionDraft, PlanInput, PositionView, ProposedOrder } from "./types.js";
 
-export type DecisionDraft = {
-  agent: AgentName;
-  modelVersion: string;
-  pairAddress: string;
-  decision: "PASS" | "REJECT" | "HOLD" | "ACT";
-  confidence: string;
-  reasonCodes: ReasonCode[];
-  input: Record<string, unknown>;
-  output: Record<string, unknown>;
-};
-
-export type ProposedOrder = {
-  clientOrderId: string;
-  pairAddress: string;
-  baseSymbol: string;
-  side: OrderSide;
-  intent: OrderIntent;
-  qty: string;
-  observationId: string;
-  reasonCodes: ReasonCode[];
-};
-
-export type PlanInput = {
-  cycleId: string;
-  engineStatus: EngineStatus;
-  config: StrategyConfig;
-  cashUsd: string;
-  startingBalanceUsd: string;
-  positions: PositionView[];
-  pairs: CyclePair[];
-  marks: Record<string, Mark | undefined>;
-  dailyPnlUsd: string | null;
-  flatten: boolean;
-  operator: OperatorOrder | null;
-};
-
-export function planCycle(input: PlanInput): { decisions: DecisionDraft[]; orders: ProposedOrder[] } {
+export function planCycle(input: PlanInput): {
+  decisions: DecisionDraft[];
+  orders: ProposedOrder[];
+  watchlist: ReturnType<typeof rankWatchlist>;
+} {
+  const now = input.now ?? new Date();
   const decisions: DecisionDraft[] = [];
   const orders: ProposedOrder[] = [];
   const sentinel = new Map<string, DecisionDraft>();
   const pulses = new Map<string, DecisionDraft>();
+  const candidates = [];
 
   for (const pair of input.pairs) {
-    const surveillance = runSentinel(pair, input.config);
-    sentinel.set(pair.pairAddress, surveillance);
-    decisions.push(surveillance);
-    const pulse = runPulse(pair, findPosition(input.positions, pair.pairAddress), surveillance, input);
+    const surveillance = runSentinel(pair, input.config, now);
+    sentinel.set(pair.pairAddress, surveillance.decision);
+    decisions.push(surveillance.decision);
+    candidates.push(surveillance.candidate);
+    const pulse = runPulse(pair, findPosition(input.positions, pair.pairAddress), surveillance.decision, input);
     pulses.set(pair.pairAddress, pulse);
     decisions.push(pulse);
   }
+
+  const watchlist = rankWatchlist(candidates, input.config.universeLimit);
 
   if (input.operator && !input.pairs.some((pair) => pair.pairAddress === input.operator?.pairAddress)) {
     decisions.push(row("SENTINEL", input.operator.pairAddress, "REJECT", ["PAIR_NOT_IN_SNAPSHOT"], "1.000000"));
@@ -90,7 +55,18 @@ export function planCycle(input: PlanInput): { decisions: DecisionDraft[]; order
 
   let book: BookState = { cashUsd: input.cashUsd, positions: input.positions.map((position) => ({ ...position })) };
   let dailyPnl = input.dailyPnlUsd;
+  let aggregateExposure = input.aggregateExposureUsd ?? "0";
   const ordered = [...input.pairs].sort((left, right) => rank(pulses.get(left.pairAddress)) - rank(pulses.get(right.pairAddress)));
+
+  const valuedSeed = valuePortfolio({ cashUsd: book.cashUsd, positions: book.positions, marks: input.marks });
+  const breaker = evaluateCircuitBreaker({
+    dailyPnlUsd: dailyPnl,
+    startingBalanceUsd: input.startingBalanceUsd,
+    maxDailyLossPct: input.config.maxDailyLossPct,
+    equityUsd: valuedSeed.equityUsd,
+    highWaterMarkUsd: input.highWaterMarkUsd ?? valuedSeed.equityUsd,
+    maxTotalDrawdownPct: input.config.maxTotalDrawdownPct,
+  });
 
   for (const pair of ordered) {
     const pulse = pulses.get(pair.pairAddress);
@@ -98,14 +74,52 @@ export function planCycle(input: PlanInput): { decisions: DecisionDraft[]; order
     const side = pulse.output.side;
     const intent = pulse.output.intent;
     if (pulse.decision !== "ACT" || (side !== "BUY" && side !== "SELL") || !isIntent(intent)) {
-      decisions.push(row("AEGIS", pair.pairAddress, "HOLD", ["NO_INTENT"], "1.000000"));
-      decisions.push(row("ATLAS", pair.pairAddress, "HOLD", ["NO_INTENT"], "1.000000"));
+      const aegis = runAegis({
+        pair,
+        assessment: securityFor(input, pair),
+        hasIntent: false,
+        side: null,
+      });
+      decisions.push(aegis.decision);
+      decisions.push(row("ATLAS", pair.pairAddress, "HOLD", ["NO_INTENT"], "1.000000", {}, {}, "portfolio:idle"));
       decisions.push(row("EXECUTOR", pair.pairAddress, "HOLD", ["NO_ORDER"], "1.000000"));
+      continue;
+    }
+
+    const aegis = runAegis({
+      pair,
+      assessment: securityFor(input, pair),
+      hasIntent: true,
+      side,
+    });
+    decisions.push(aegis.decision);
+    if (aegis.blocksEntry) {
+      decisions.push(row("ATLAS", pair.pairAddress, "HOLD", ["NO_INTENT"], "1.000000", { blockedBy: "AEGIS" }, {}, "portfolio:blocked"));
+      decisions.push(row("EXECUTOR", pair.pairAddress, "HOLD", ["NO_ORDER"], "1.000000", { blockedBy: "AEGIS" }));
       continue;
     }
 
     const valued = valuePortfolio({ cashUsd: book.cashUsd, positions: book.positions, marks: input.marks });
     const openPositions = book.positions.filter((position) => d(position.baseQty).gt(0)).length;
+    const proposedNotional =
+      side === "BUY" && pair.priceUsd && valued.equityUsd
+        ? maxEntryNotional({
+            cashUsd: book.cashUsd,
+            equityUsd: valued.equityUsd,
+            liquidityUsd: pair.liquidityUsd ?? "0",
+            maxPositionPctEquity: input.config.maxPositionPctEquity,
+            maxParticipationPctLiquidity: input.config.maxParticipationPctLiquidity,
+            feeBps: input.config.feeBps,
+            maxSlippageBps: input.config.maxSlippageBps,
+            maxRiskPerTradePct: input.config.maxRiskPerTradePct,
+            stopLossPct: input.config.stopLossPct,
+            midPriceUsd: pair.priceUsd,
+            maxAggregateExposurePct: input.config.maxAggregateExposurePct,
+            aggregateExposureUsd: aggregateExposure,
+            maxPriceImpactBps: input.config.maxPriceImpactBps,
+          })
+        : null;
+
     const risk = evaluateRisk({
       engineStatus: input.engineStatus,
       side,
@@ -118,115 +132,82 @@ export function planCycle(input: PlanInput): { decisions: DecisionDraft[]; order
       startingBalanceUsd: input.startingBalanceUsd,
       maxDailyLossPct: input.config.maxDailyLossPct,
       valuation: valued.valuation,
+      equityUsd: valued.equityUsd,
+      highWaterMarkUsd: input.highWaterMarkUsd ?? valued.equityUsd,
+      maxTotalDrawdownPct: input.config.maxTotalDrawdownPct,
+      aggregateExposureUsd: aggregateExposure,
+      proposedNotionalUsd: proposedNotional,
+      maxAggregateExposurePct: input.config.maxAggregateExposurePct,
+      circuitBreakerOpen: breaker.open,
     });
-    decisions.push(
-      row("AEGIS", pair, risk.decision === "PASS" ? "PASS" : "REJECT", risk.reasonCodes, risk.confidence, {}, {
-        freshness: pair.freshness,
-        valuation: valued.valuation,
-        dailyPnlUsd: dailyPnl,
-        openPositions,
-      }),
-    );
+
+    const atlasStarted = Date.now();
     if (risk.decision !== "PASS") {
-      decisions.push(row("ATLAS", pair.pairAddress, "HOLD", ["NO_INTENT"], "1.000000"));
-      decisions.push(row("EXECUTOR", pair.pairAddress, "HOLD", ["NO_ORDER"], "1.000000", { blockedBy: "AEGIS" }));
+      decisions.push(
+        row("ATLAS", pair, "REJECT", risk.reasonCodes, risk.confidence, {}, {
+          freshness: pair.freshness,
+          valuation: valued.valuation,
+          dailyPnlUsd: dailyPnl,
+          openPositions,
+          circuitBreaker: breaker,
+        }, "portfolio:risk", Date.now() - atlasStarted),
+      );
+      decisions.push(row("EXECUTOR", pair.pairAddress, "HOLD", ["NO_ORDER"], "1.000000", { blockedBy: "ATLAS" }));
       continue;
     }
 
-    const sized = sizeOrder(pair, book, input, side, intent, valued.equityUsd);
-    decisions.push(sized.decision);
+    const sized = sizeOrder(pair, book, input, side, intent, valued.equityUsd, aggregateExposure);
+    decisions.push({
+      ...sized.decision,
+      inputSource: sized.decision.inputSource ?? "portfolio:sizing",
+      durationMs: sized.decision.durationMs ?? Date.now() - atlasStarted,
+    });
     if (sized.decision.decision !== "ACT" || !sized.qty) {
       decisions.push(row("EXECUTOR", pair.pairAddress, "HOLD", ["NO_ORDER"], "1.000000"));
       continue;
     }
-    const executed = executeOrder(input.cycleId, pair, side, intent, sized.qty, book, input.config);
+    const executed = executeOrder(input.cycleId, pair, side, intent, sized.qty, book, input.config, now);
     decisions.push(executed.decision);
     if (executed.order && executed.book) {
       orders.push(executed.order);
       book = executed.book;
+      if (side === "BUY" && pair.priceUsd) {
+        aggregateExposure = d(aggregateExposure).plus(d(sized.qty).mul(d(pair.priceUsd))).toFixed(8);
+      }
       if (dailyPnl !== null && executed.realizedPnlUsd) dailyPnl = d(dailyPnl).plus(d(executed.realizedPnlUsd)).toFixed(8);
     }
   }
 
+  const metrics = computeResearchMetrics({
+    decisions,
+    orders: orders.length,
+    startingBalanceUsd: input.startingBalanceUsd,
+    cashUsd: book.cashUsd,
+    positions: book.positions,
+    marks: input.marks,
+  });
   decisions.push(
-    row("ARCHIVIST", "", "PASS", ["AUDIT_RECORDED"], "1.000000", {
-      decisions: decisions.length + 1,
-      orders: orders.length,
-    }),
+    row(
+      "ARCHIVIST",
+      "",
+      "PASS",
+      metrics.reasonCodes,
+      "1.000000",
+      {
+        decisions: decisions.length + 1,
+        orders: orders.length,
+        watchlistSize: watchlist.length,
+        metrics,
+      },
+      { circuitBreaker: breaker },
+      "ledger+decisions",
+    ),
   );
-  return { decisions, orders };
+  return { decisions, orders, watchlist };
 }
 
-function runSentinel(pair: CyclePair, config: StrategyConfig): DecisionDraft {
-  const reasons: ReasonCode[] = [];
-  if (pair.freshness === "STALE") reasons.push("DATA_STALE");
-  if (pair.freshness === "REPLAY") reasons.push("DATA_REPLAY");
-  if (pair.freshness === "DEMO") reasons.push("DATA_DEMO");
-  if (pair.priceUsd === null) reasons.push("MISSING_PRICE");
-  else if (d(pair.priceUsd).lte(0)) reasons.push("NON_POSITIVE_PRICE");
-  if (pair.liquidityUsd === null) reasons.push("MISSING_LIQUIDITY");
-  else if (d(pair.liquidityUsd).lt(config.minLiquidityUsd)) reasons.push("LIQUIDITY_FLOOR");
-  if (pair.volume24hUsd === null) reasons.push("MISSING_VOLUME");
-  else if (d(pair.volume24hUsd).lt(config.minVolume24hUsd)) reasons.push("VOLUME_FLOOR");
-  if (reasons.length === 0 && pair.freshness === "DELAYED") reasons.push("DATA_DELAYED");
-  if (reasons.length === 0) reasons.push("DATA_OK");
-  const rejected = reasons.some((reason) => reason !== "DATA_OK" && reason !== "DATA_DELAYED");
-  return row("SENTINEL", pair, rejected ? "REJECT" : "PASS", reasons, "1.000000");
-}
-
-function runPulse(pair: CyclePair, position: PositionView | undefined, surveillance: DecisionDraft, input: PlanInput): DecisionDraft {
-  const held = position !== undefined && d(position.baseQty).gt(0);
-  if (input.operator && input.operator.pairAddress !== pair.pairAddress) {
-    return row("PULSE", pair, "HOLD", ["NO_INTENT"], "1.000000");
-  }
-  if (input.operator?.pairAddress === pair.pairAddress) {
-    if (input.operator.side === "SELL") {
-      if (!held) return row("PULSE", pair, "REJECT", ["NO_POSITION"], "1.000000", { side: "SELL", intent: "OPERATOR" });
-      return row("PULSE", pair, "ACT", ["OPERATOR_OVERRIDE", "FULL_POSITION_EXIT"], "1.000000", { side: "SELL", intent: "OPERATOR" });
-    }
-    if (held) return row("PULSE", pair, "HOLD", ["ALREADY_HELD"], "1.000000");
-    return row("PULSE", pair, "ACT", ["OPERATOR_OVERRIDE"], "1.000000", { side: "BUY", intent: "OPERATOR" });
-  }
-  if (input.flatten) {
-    if (!held) return row("PULSE", pair, "HOLD", ["NO_INTENT"], "1.000000");
-    return row("PULSE", pair, "ACT", ["FULL_POSITION_EXIT"], "1.000000", { side: "SELL", intent: "FLATTEN" });
-  }
-  if (!held && surveillance.decision === "REJECT") return row("PULSE", pair, "HOLD", ["BLOCKED_BY_SENTINEL"], "1.000000");
-  if (held && position) {
-    if (pair.priceUsd === null || d(pair.priceUsd).lte(0) || d(position.avgCostUsd).lte(0)) {
-      return row("PULSE", pair, "HOLD", ["MARK_UNAVAILABLE"], "0.000000");
-    }
-    const pnlPct = d(pair.priceUsd).minus(d(position.avgCostUsd)).div(d(position.avgCostUsd)).mul(100);
-    if (pnlPct.lte(d(input.config.stopLossPct).neg())) {
-      return row("PULSE", pair, "ACT", ["STOP_LOSS"], "1.000000", { side: "SELL", intent: "EXIT", pnlPct: pnlPct.toFixed(4) });
-    }
-    if (pnlPct.gte(input.config.takeProfitPct)) {
-      return row("PULSE", pair, "ACT", ["TAKE_PROFIT"], "1.000000", { side: "SELL", intent: "EXIT", pnlPct: pnlPct.toFixed(4) });
-    }
-    if (pair.priceChangeM5Pct !== null && d(pair.priceChangeM5Pct).lte(input.config.exitM5ChangePct)) {
-      return row("PULSE", pair, "ACT", ["EXIT_MOMENTUM"], "1.000000", { side: "SELL", intent: "EXIT" });
-    }
-    return row("PULSE", pair, "HOLD", ["HOLD_POSITION"], "1.000000");
-  }
-  if (pair.priceChangeM5Pct === null || pair.priceChangeH1Pct === null || pair.txnsM5Buys === null || pair.txnsM5Sells === null) {
-    return row("PULSE", pair, "HOLD", ["INSUFFICIENT_DATA"], "0.000000");
-  }
-  if (!isTradableQuote(pair.quoteAddress)) {
-    return row("PULSE", pair, "HOLD", ["QUOTE_NOT_ALLOWED"], "1.000000");
-  }
-  if (d(pair.priceChangeM5Pct).abs().gt(input.config.maxEntryM5ChangePct)) {
-    return row("PULSE", pair, "HOLD", ["PRICE_ANOMALY"], "1.000000", { priceChangeM5Pct: pair.priceChangeM5Pct });
-  }
-  const entry =
-    d(pair.priceChangeM5Pct).gte(input.config.entryM5ChangePct) &&
-    d(pair.priceChangeH1Pct).gte(input.config.minH1ChangePct) &&
-    pair.txnsM5Buys > pair.txnsM5Sells;
-  if (!entry) return row("PULSE", pair, "HOLD", ["NO_EDGE"], "1.000000");
-  const threshold = d(input.config.entryM5ChangePct);
-  const confidence = threshold.eq(0)
-    ? "1.000000"
-    : confidenceFixed(Decimal.min(new Decimal(1), Decimal.max(new Decimal(0), d(pair.priceChangeM5Pct).minus(threshold).div(threshold))));
-  return row("PULSE", pair, "ACT", ["ENTRY_MOMENTUM"], confidence, { side: "BUY", intent: "ENTRY" });
+function securityFor(input: PlanInput, pair: CyclePair): SecurityAssessment | null {
+  return input.securityByMint?.[pair.baseAddress] ?? null;
 }
 
 function sizeOrder(
@@ -236,23 +217,43 @@ function sizeOrder(
   side: OrderSide,
   intent: OrderIntent,
   equityUsd: string | null,
+  aggregateExposureUsd: string,
 ): { decision: DecisionDraft; qty: string | null } {
+  const started = Date.now();
   if (side === "SELL") {
     const position = findPosition(book.positions, pair.pairAddress);
     if (!position || d(position.baseQty).lte(0)) {
-      return { qty: null, decision: row("ATLAS", pair, "REJECT", ["NO_POSITION"], "1.000000") };
+      return {
+        qty: null,
+        decision: row("ATLAS", pair, "REJECT", ["NO_POSITION"], "1.000000", {}, {}, "portfolio:sizing", Date.now() - started),
+      };
     }
     return {
       qty: position.baseQty,
-      decision: row("ATLAS", pair, "ACT", ["SIZE_COMPUTED", "FULL_POSITION_EXIT"], "1.000000", {
-        side,
-        intent,
-        qty: position.baseQty,
-      }),
+      decision: row(
+        "ATLAS",
+        pair,
+        "ACT",
+        ["SIZE_COMPUTED", "FULL_POSITION_EXIT"],
+        "1.000000",
+        { side, intent, qty: position.baseQty },
+        {},
+        "portfolio:sizing",
+        Date.now() - started,
+      ),
     };
   }
   if (pair.priceUsd === null || pair.liquidityUsd === null || equityUsd === null) {
-    return { qty: null, decision: row("ATLAS", pair, "REJECT", ["MARK_UNAVAILABLE"], "0.000000") };
+    return {
+      qty: null,
+      decision: row("ATLAS", pair, "REJECT", ["MARK_UNAVAILABLE"], "0.000000", {}, {}, "portfolio:sizing", Date.now() - started),
+    };
+  }
+  if (d(pair.liquidityUsd).lt(input.config.minLiquidityUsd)) {
+    return {
+      qty: null,
+      decision: row("ATLAS", pair, "REJECT", ["LIQUIDITY_FLOOR"], "1.000000", {}, {}, "portfolio:sizing", Date.now() - started),
+    };
   }
   const cap = maxEntryNotional({
     cashUsd: book.cashUsd,
@@ -262,22 +263,69 @@ function sizeOrder(
     maxParticipationPctLiquidity: input.config.maxParticipationPctLiquidity,
     feeBps: input.config.feeBps,
     maxSlippageBps: input.config.maxSlippageBps,
+    maxRiskPerTradePct: input.config.maxRiskPerTradePct,
+    stopLossPct: input.config.stopLossPct,
+    midPriceUsd: pair.priceUsd,
+    maxAggregateExposurePct: input.config.maxAggregateExposurePct,
+    aggregateExposureUsd,
+    maxPriceImpactBps: input.config.maxPriceImpactBps,
   });
   let notional = cap;
   if (intent === "OPERATOR" && input.operator?.side === "BUY") {
     if (d(input.operator.notionalUsd).gt(d(cap))) {
-      return { qty: null, decision: row("ATLAS", pair, "REJECT", ["SIZE_ABOVE_CAP"], "1.000000", { maxNotionalUsd: cap }) };
+      return {
+        qty: null,
+        decision: row(
+          "ATLAS",
+          pair,
+          "REJECT",
+          ["SIZE_ABOVE_CAP"],
+          "1.000000",
+          { maxNotionalUsd: cap },
+          {},
+          "portfolio:sizing",
+          Date.now() - started,
+        ),
+      };
     }
     notional = input.operator.notionalUsd;
   }
   if (d(notional).lt(input.config.minOrderNotionalUsd)) {
-    return { qty: null, decision: row("ATLAS", pair, "REJECT", ["BELOW_MIN_NOTIONAL"], "1.000000", { notionalUsd: notional }) };
+    return {
+      qty: null,
+      decision: row(
+        "ATLAS",
+        pair,
+        "REJECT",
+        ["BELOW_MIN_NOTIONAL"],
+        "1.000000",
+        { notionalUsd: notional },
+        {},
+        "portfolio:sizing",
+        Date.now() - started,
+      ),
+    };
   }
   const quantity = qtyForNotional(notional, pair.priceUsd);
-  if (d(quantity).lte(0)) return { qty: null, decision: row("ATLAS", pair, "REJECT", ["SIZE_ZERO"], "1.000000") };
+  if (d(quantity).lte(0)) {
+    return {
+      qty: null,
+      decision: row("ATLAS", pair, "REJECT", ["SIZE_ZERO"], "1.000000", {}, {}, "portfolio:sizing", Date.now() - started),
+    };
+  }
   return {
     qty: quantity,
-    decision: row("ATLAS", pair, "ACT", ["SIZE_COMPUTED"], "1.000000", { side, intent, qty: quantity, notionalUsd: notional }),
+    decision: row(
+      "ATLAS",
+      pair,
+      "ACT",
+      ["SIZE_COMPUTED", "STOP_DISTANCE_SIZE", "RISK_PER_TRADE", "COST_ESTIMATED"],
+      "1.000000",
+      { side, intent, qty: quantity, notionalUsd: notional },
+      {},
+      "portfolio:sizing",
+      Date.now() - started,
+    ),
   };
 }
 
@@ -288,10 +336,19 @@ function executeOrder(
   intent: OrderIntent,
   quantity: string,
   book: BookState,
-  config: StrategyConfig,
+  config: PlanInput["config"],
+  now: Date,
 ): { decision: DecisionDraft; order?: ProposedOrder; book?: BookState; realizedPnlUsd?: string } {
+  const started = Date.now();
   if (pair.priceUsd === null || pair.liquidityUsd === null) {
-    return { decision: row("EXECUTOR", pair, "REJECT", ["MISSING_PRICE"], "0.000000") };
+    return {
+      decision: row("EXECUTOR", pair, "REJECT", ["MISSING_PRICE"], "0.000000", {}, {}, "quote", Date.now() - started),
+    };
+  }
+  if (d(quantity).lte(0)) {
+    return {
+      decision: row("EXECUTOR", pair, "REJECT", ["NON_POSITIVE_QTY"], "1.000000", {}, {}, "quote", Date.now() - started),
+    };
   }
   const quoted = quoteFill({
     side,
@@ -300,10 +357,25 @@ function executeOrder(
     liquidityUsd: pair.liquidityUsd,
     feeBps: config.feeBps,
     maxSlippageBps: config.maxSlippageBps,
+    spreadBpsEstimate: config.spreadBpsEstimate,
+    maxPriceImpactBps: config.maxPriceImpactBps,
   });
-  if (!quoted.ok) return { decision: row("EXECUTOR", pair, "REJECT", [quoted.reason], "1.000000") };
+  if (!quoted.ok) {
+    return {
+      decision: row("EXECUTOR", pair, "REJECT", [quoted.reason], "1.000000", {}, {}, "quote", Date.now() - started),
+    };
+  }
+
+  const eligibleAt = new Date(now.getTime() + config.paperLatencyMs);
+  const expiresAt = new Date(eligibleAt.getTime() + config.orderExpiryMs);
   const applied = applyFill(book, { pairAddress: pair.pairAddress, baseSymbol: pair.baseSymbol, side, fill: quoted.fill });
-  if (!applied.ok) return { decision: row("EXECUTOR", pair, "REJECT", [applied.reason], "1.000000") };
+  if (!applied.ok) {
+    return {
+      decision: row("EXECUTOR", pair, "REJECT", [applied.reason], "1.000000", {}, {}, "quote", Date.now() - started),
+    };
+  }
+  const reasonCodes: ReasonCode[] = ["ORDER_PROPOSED", "COST_ESTIMATED", "SPREAD_APPLIED"];
+  if (config.paperLatencyMs > 0) reasonCodes.push("ORDER_PENDING");
   return {
     book: applied.state,
     realizedPnlUsd: applied.realizedPnlUsd,
@@ -315,27 +387,47 @@ function executeOrder(
       intent,
       qty: quoted.fill.qty,
       observationId: pair.observationId,
-      reasonCodes: ["ORDER_PROPOSED"],
+      reasonCodes,
+      eligibleAt: eligibleAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
     },
-    decision: row("EXECUTOR", pair, "ACT", ["ORDER_PROPOSED"], "1.000000", {
-      qty: quoted.fill.qty,
-      priceUsd: quoted.fill.priceUsd,
-      notionalUsd: quoted.fill.notionalUsd,
-      feeUsd: quoted.fill.feeUsd,
-      slippageBps: quoted.fill.slippageBps,
-      venue: "PAPER",
-    }),
+    decision: row(
+      "EXECUTOR",
+      pair,
+      "ACT",
+      reasonCodes,
+      "1.000000",
+      {
+        qty: quoted.fill.qty,
+        priceUsd: quoted.fill.priceUsd,
+        notionalUsd: quoted.fill.notionalUsd,
+        feeUsd: quoted.fill.feeUsd,
+        slippageBps: quoted.fill.slippageBps,
+        estimatedCostUsd: quoted.fill.estimatedCostUsd,
+        spreadBps: quoted.fill.spreadBps,
+        impactBps: quoted.fill.impactBps,
+        venue: "PAPER",
+        paperLatencyMs: config.paperLatencyMs,
+        eligibleAt: eligibleAt.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+      },
+      {},
+      "quote",
+      Date.now() - started,
+    ),
   };
 }
 
 function row(
-  agent: AgentName,
+  agent: DecisionDraft["agent"],
   pair: CyclePair | string,
   decision: DecisionDraft["decision"],
   reasonCodes: ReasonCode[],
   confidence: string,
   output: Record<string, unknown> = {},
   input: Record<string, unknown> = {},
+  inputSource = "rules",
+  durationMs = 0,
 ): DecisionDraft {
   const pairAddress = typeof pair === "string" ? pair : pair.pairAddress;
   return {
@@ -347,6 +439,8 @@ function row(
     reasonCodes,
     input: typeof pair === "string" ? input : { observationId: pair.observationId, freshness: pair.freshness, ...input },
     output,
+    inputSource,
+    durationMs,
   };
 }
 
@@ -356,8 +450,4 @@ function rank(pulse: DecisionDraft | undefined): number {
 
 function findPosition(positions: PositionView[], pairAddress: string): PositionView | undefined {
   return positions.find((position) => position.pairAddress === pairAddress);
-}
-
-function isIntent(value: unknown): value is OrderIntent {
-  return value === "ENTRY" || value === "EXIT" || value === "FLATTEN" || value === "OPERATOR";
 }

@@ -18,7 +18,8 @@
     "@odin/analytics": "workspace:*",
     "@odin/risk-engine": "workspace:*",
     "@odin/shared": "workspace:*",
-    "@odin/trading-engine": "workspace:*"
+    "@odin/trading-engine": "workspace:*",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

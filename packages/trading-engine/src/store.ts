@@ -65,6 +65,8 @@ export async function commitProposedOrder(
     liquidityUsd: observation.liquidityUsd.toString(),
     feeBps: input.config.feeBps,
     maxSlippageBps: input.config.maxSlippageBps,
+    spreadBpsEstimate: input.config.spreadBpsEstimate,
+    maxPriceImpactBps: input.config.maxPriceImpactBps,
   });
   if (!quoted.ok) {
     await reject(tx, input, quoted.reason);
@@ -109,7 +111,11 @@ export async function commitProposedOrder(
       intent: input.order.intent,
       status: "FILLED",
       qty: quoted.fill.qty,
-      reasonCodes: input.order.reasonCodes,
+      filledQty: quoted.fill.qty,
+      observationId: observation.id,
+      reasonCodes: [...input.order.reasonCodes, "COST_ESTIMATED", "SPREAD_APPLIED"],
+      submittedAt: input.now,
+      eligibleAt: input.now,
     },
   });
   const fill = await tx.fill.create({

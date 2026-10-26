@@ -163,8 +163,18 @@ export class TerminalService {
         losses: report.losses,
         closedTrades: report.closedTrades,
         returnPct: report.returnPct,
+        avgWinUsd: report.avgWinUsd,
+        avgLossUsd: report.avgLossUsd,
+        profitFactor: report.profitFactor,
+        expectancyUsd: report.expectancyUsd,
+        maxDrawdownPct: report.maxDrawdownPct,
+        sampleSize: report.sampleSize,
+        observed: report.observed,
+        highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,
         positions: report.valuation.positions,
       },
+      agents: this.agentStatus(decisions),
+      watchlist: await this.watchlist(),
       cycle: cycle
         ? {
             id: cycle.id,
@@ -188,6 +198,8 @@ export class TerminalService {
         confidence: decision.confidence.toString(),
         reasonCodes: decision.reasonCodes,
         reasonText: decision.reasonCodes.map((code) => (isReasonCode(code) ? REASON_TEXT[code] : code)),
+        inputSource: decision.inputSource,
+        durationMs: decision.durationMs,
         createdAt: decision.createdAt.toISOString(),
       })),
       orders: orders.map((order) => ({
@@ -409,6 +421,65 @@ export class TerminalService {
     } catch {
       return false;
     }
+  }
+
+  private agentStatus(
+    decisions: Array<{
+      id: string;
+      agent: string;
+      modelVersion: string;
+      pairAddress: string;
+      decision: string;
+      confidence: { toString(): string };
+      reasonCodes: string[];
+      inputSource: string | null;
+      durationMs: number | null;
+      createdAt: Date;
+      output: unknown;
+    }>,
+  ) {
+    const agents = ["SENTINEL", "PULSE", "AEGIS", "ATLAS", "EXECUTOR", "ARCHIVIST"] as const;
+    return agents.map((agent) => {
+      const latest = [...decisions].reverse().find((decision) => decision.agent === agent);
+      const outcome =
+        latest == null
+          ? "—"
+          : latest.reasonCodes[0]
+            ? isReasonCode(latest.reasonCodes[0])
+              ? REASON_TEXT[latest.reasonCodes[0]]
+              : latest.reasonCodes[0]
+            : latest.decision;
+      return {
+        agent,
+        decision: latest?.decision ?? null,
+        confidence: latest?.confidence.toString() ?? null,
+        reasonCodes: latest?.reasonCodes ?? [],
+        inputSource: latest?.inputSource ?? null,
+        durationMs: latest?.durationMs ?? null,
+        outcome,
+        pairAddress: latest?.pairAddress || null,
+        modelVersion: latest?.modelVersion ?? null,
+        createdAt: latest?.createdAt.toISOString() ?? null,
+      };
+    });
+  }
+
+  private async watchlist() {
+    const rows = await this.prisma.watchlistEntry.findMany({
+      orderBy: [{ rank: "asc" }, { score: "desc" }],
+      take: 20,
+    });
+    return rows.map((row) => ({
+      pairAddress: row.pairAddress,
+      baseSymbol: row.baseSymbol,
+      quoteSymbol: row.quoteSymbol,
+      dexId: row.dexId,
+      score: row.score.toString(),
+      rank: row.rank,
+      source: row.source,
+      reasonCodes: row.reasonCodes,
+      observedAt: row.observedAt.toISOString(),
+    }));
   }
 }
 

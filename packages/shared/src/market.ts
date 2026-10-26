@@ -76,6 +76,12 @@ export const normalizedPairSchema = z.object({
   priceChangeH24Pct: z.string().nullable(),
   txnsM5Buys: z.number().int().nullable(),
   txnsM5Sells: z.number().int().nullable(),
+  /** Pair creation time from provider when available. */
+  pairCreatedAt: z.string().datetime().nullable().optional(),
+  /** Fully diluted valuation when the provider supplies it. */
+  fdvUsd: z.string().nullable().optional(),
+  /** Market cap / valuation when the provider supplies it. */
+  marketCapUsd: z.string().nullable().optional(),
   raw: z.unknown(),
 });
 
@@ -85,6 +91,9 @@ export const cyclePairSchema = normalizedPairSchema.omit({ raw: true }).extend({
   observationId: z.string().min(1),
   freshness: z.enum(DATA_STATES),
   receivedAt: z.string().min(20),
+  pairCreatedAt: z.string().datetime().nullable().optional(),
+  fdvUsd: z.string().nullable().optional(),
+  marketCapUsd: z.string().nullable().optional(),
 });
 
 export type CyclePair = z.infer<typeof cyclePairSchema>;

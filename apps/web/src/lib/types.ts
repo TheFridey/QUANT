@@ -19,13 +19,26 @@ export type PairRow = {
   receivedAt: string;
 };
 
+export type AgentStatus = {
+  agent: string;
+  decision: string | null;
+  confidence: string | null;
+  reasonCodes: string[];
+  inputSource: string | null;
+  durationMs: number | null;
+  outcome: string;
+  pairAddress: string | null;
+  modelVersion: string | null;
+  createdAt: string | null;
+};
+
 export type Snapshot = {
   serverTime: string;
   venue: "PAPER";
   engine: {
     status: "STOPPED" | "RUNNING" | "PAUSED" | "EMERGENCY_STOP";
     flattenRequested: boolean;
-    config: Record<string, string | number | boolean> | null;
+    config: Record<string, string | number | boolean | null> | null;
     configValid: boolean;
     allowedActions: string[];
     updatedAt: string;
@@ -45,6 +58,14 @@ export type Snapshot = {
     losses: number;
     closedTrades: number;
     returnPct: string | null;
+    avgWinUsd?: string | null;
+    avgLossUsd?: string | null;
+    profitFactor?: string | null;
+    expectancyUsd?: string | null;
+    maxDrawdownPct?: string | null;
+    sampleSize?: number;
+    observed?: boolean;
+    highWaterMarkUsd?: string | null;
     positions: Array<{
       pairAddress: string;
       baseSymbol: string;
@@ -57,6 +78,18 @@ export type Snapshot = {
       unrealizedPnlUsd: string | null;
     }>;
   };
+  agents?: AgentStatus[];
+  watchlist?: Array<{
+    pairAddress: string;
+    baseSymbol: string;
+    quoteSymbol: string;
+    dexId: string;
+    score: string;
+    rank: number;
+    source: string;
+    reasonCodes: string[];
+    observedAt: string;
+  }>;
   cycle: {
     id: string;
     trigger: string;
@@ -78,6 +111,8 @@ export type Snapshot = {
     confidence: string;
     reasonCodes: string[];
     reasonText: string[];
+    inputSource?: string | null;
+    durationMs?: number | null;
     createdAt: string;
   }>;
   orders: Array<{

@@ -1,7 +1,7 @@
-import { planCycle, type DecisionDraft } from "@odin/agent-core";
-import { valuePortfolio, type Mark } from "@odin/analytics";
-import { fetchSolanaUniverse, type ProviderResult } from "@odin/market-data";
-import type { NormalizedPair } from "@odin/shared";
+import { assessSecurity, planCycle, unknownAssessment, type DecisionDraft } from "@odin/agent-core";
+import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
+import { BirdeyeClient, fetchSolanaUniverse, type ProviderResult } from "@odin/market-data";
+import type { NormalizedPair, ObservationPoint, SecurityAssessment } from "@odin/shared";
 import {
   AGENT_BUS_CHANNEL,
   TERMINAL_CHANNEL,
@@ -10,6 +10,7 @@ import {
   newId,
   operatorOrderSchema,
   parseStrategyConfig,
+  usd,
   type CyclePair,
   type DataMode,
   type DataState,
@@ -71,7 +72,39 @@ export class StageRunner {
 
   async sentinel(cycleId: string): Promise<void> {
     if (!(await this.ready(cycleId, "created"))) return;
-    await this.persistAgent(cycleId, "SENTINEL");
+    const loaded = await this.loadPlan(cycleId, this.now(), this.prisma);
+    if (!loaded) return;
+    for (const decision of loaded.plan.decisions.filter((item) => item.agent === "SENTINEL")) {
+      await upsertDecision(this.prisma, cycleId, decision);
+    }
+    for (const entry of loaded.plan.watchlist) {
+      await this.prisma.watchlistEntry.upsert({
+        where: { pairAddress: entry.pairAddress },
+        create: {
+          pairAddress: entry.pairAddress,
+          baseAddress: entry.baseAddress,
+          baseSymbol: entry.baseSymbol,
+          quoteAddress: entry.quoteAddress,
+          quoteSymbol: entry.quoteSymbol,
+          dexId: entry.dexId,
+          source: entry.source,
+          score: entry.discoveryScore,
+          rank: entry.rank,
+          reasonCodes: entry.reasonCodes,
+          cycleId,
+          observedAt: new Date(entry.receivedAt),
+        },
+        update: {
+          score: entry.discoveryScore,
+          rank: entry.rank,
+          reasonCodes: entry.reasonCodes,
+          cycleId,
+          observedAt: new Date(entry.receivedAt),
+          baseSymbol: entry.baseSymbol,
+          source: entry.source,
+        },
+      });
+    }
     await this.advance(cycleId, "sentinel");
   }
 
@@ -127,16 +160,23 @@ export class StageRunner {
     if (!(await this.ready(cycleId, "executor"))) return;
     const count = await this.prisma.agentDecision.count({ where: { cycleId } });
     const orders = await this.prisma.order.count({ where: { cycleId, status: "FILLED" } });
-    await upsertDecision(this.prisma, cycleId, {
+    const loaded = await this.loadPlan(cycleId, this.now(), this.prisma);
+    const archivist = loaded?.plan.decisions.find((item) => item.agent === "ARCHIVIST");
+    await upsertDecision(this.prisma, cycleId, archivist ?? {
       agent: "ARCHIVIST",
-      modelVersion: "archivist-1.0.0",
+      modelVersion: "archivist-research-1.1.0",
       pairAddress: "",
       decision: "PASS",
       confidence: "1.000000",
       reasonCodes: ["AUDIT_RECORDED"],
       input: {},
       output: { decisions: count + 1, orders },
+      inputSource: "ledger+decisions",
+      durationMs: 0,
     });
+    if (loaded) {
+      await this.persistEquitySnapshot(cycleId, loaded);
+    }
     await this.prisma.cycleRun.update({
       where: { id: cycleId },
       data: { stage: "complete", status: "COMPLETE", finishedAt: this.now(), orderCount: orders },
@@ -274,9 +314,22 @@ export class StageRunner {
           ? null
           : d(dayRealized).plus(d(valuation.unrealizedPnlUsd)).toFixed(8);
     const operator = parseOperator(cycle.operator);
+    const observationHistory = await this.loadObservationHistory(db, pairs.map((pair) => pair.pairAddress));
+    const securityByMint = await this.loadSecurity(pairs);
+    const aggregateExposureUsd =
+      valuation.equityUsd === null
+        ? "0"
+        : usd(d(valuation.equityUsd).minus(d(account.cashUsd.toString())));
+    const highWaterMarkUsd =
+      account.highWaterMarkUsd?.toString() ??
+      (valuation.equityUsd !== null
+        ? usd(DecimalMax(d(account.startingBalanceUsd.toString()), d(valuation.equityUsd)))
+        : account.startingBalanceUsd.toString());
     return {
       config,
       flattenRequested: engine.flattenRequested,
+      valuation,
+      highWaterMarkUsd,
       plan: planCycle({
         cycleId,
         engineStatus: engine.status as PlanStatus,
@@ -289,8 +342,179 @@ export class StageRunner {
         dailyPnlUsd,
         flatten: engine.flattenRequested,
         operator,
+        observationHistory,
+        securityByMint,
+        highWaterMarkUsd,
+        aggregateExposureUsd,
+        now,
       }),
     };
+  }
+
+  private async loadObservationHistory(
+    db: PrismaClient | Prisma.TransactionClient,
+    pairAddresses: string[],
+  ): Promise<Record<string, ObservationPoint[]>> {
+    const history: Record<string, ObservationPoint[]> = {};
+    for (const pairAddress of pairAddresses) {
+      const rows = await db.marketObservation.findMany({
+        where: { pairAddress },
+        orderBy: { receivedAt: "asc" },
+        take: 40,
+      });
+      history[pairAddress] = rows.map((row) => ({
+        receivedAt: row.receivedAt.toISOString(),
+        priceUsd: row.priceUsd?.toString() ?? null,
+        liquidityUsd: row.liquidityUsd?.toString() ?? null,
+        volume5mUsd: row.volume5mUsd?.toString() ?? null,
+        volume24hUsd: row.volume24hUsd?.toString() ?? null,
+        txnsM5Buys: row.txnsM5Buys,
+        txnsM5Sells: row.txnsM5Sells,
+        priceChangeM5Pct: row.priceChangeM5?.toString() ?? null,
+      }));
+    }
+    return history;
+  }
+
+  private async loadSecurity(pairs: CyclePair[]): Promise<Record<string, SecurityAssessment>> {
+    const out: Record<string, SecurityAssessment> = {};
+    const client = new BirdeyeClient(process.env.BIRDEYE_API_KEY || undefined);
+    const unique = [...new Map(pairs.map((pair) => [pair.baseAddress, pair])).values()];
+    for (const pair of unique.slice(0, 8)) {
+      const cached = await this.prisma.securityAssessment.findUnique({ where: { tokenAddress: pair.baseAddress } });
+      const cachedAssessment = cached ? toSecurityAssessment(cached) : null;
+      if (!process.env.BIRDEYE_API_KEY) {
+        const assessment = unknownAssessment(pair.baseAddress, "unavailable", this.now(), [
+          "SECURITY_UNKNOWN",
+          "UPSTREAM_UNAVAILABLE",
+        ]);
+        out[pair.baseAddress] = assessment;
+        continue;
+      }
+      if (cachedAssessment && cachedAssessment.fetchedAt) {
+        const age = this.now().getTime() - Date.parse(cachedAssessment.fetchedAt);
+        if (Number.isFinite(age) && age < 3_600_000) {
+          out[pair.baseAddress] = { ...cachedAssessment, stale: false };
+          continue;
+        }
+      }
+      const security = await client.getTokenSecurity(pair.baseAddress);
+      const holders = await client.getHolders(pair.baseAddress);
+      const assessment = assessSecurity({
+        tokenAddress: pair.baseAddress,
+        security: security.ok
+          ? { ok: true, fetchedAt: security.fetchedAt, fields: security.data.fields }
+          : { ok: false, code: security.code, error: security.error },
+        holders: holders.ok
+          ? { ok: true, fields: holders.data.fields, holderCount: holders.data.holderCount }
+          : { ok: false, code: holders.code, error: holders.error },
+        liquidityUsd: pair.liquidityUsd,
+        now: this.now(),
+        cached: cachedAssessment,
+      });
+      out[pair.baseAddress] = assessment;
+      await this.prisma.securityAssessment.upsert({
+        where: { tokenAddress: pair.baseAddress },
+        create: {
+          tokenAddress: assessment.tokenAddress,
+          category: assessment.category,
+          confidence: assessment.confidence,
+          reasonCodes: assessment.reasonCodes,
+          mintAuthority: assessment.mintAuthority,
+          freezeAuthority: assessment.freezeAuthority,
+          transferRestricted: assessment.transferRestricted,
+          holderConcentrationTop10Pct: assessment.holderConcentrationTop10Pct,
+          suspiciousDeployer: assessment.suspiciousDeployer,
+          liquidityFragile: assessment.liquidityFragile,
+          largeWalletMove: assessment.largeWalletMove,
+          fraudIndicators: assessment.fraudIndicators,
+          source: assessment.source,
+          stale: assessment.stale,
+          fields: toJson(assessment.fields),
+          fetchedAt: assessment.fetchedAt ? new Date(assessment.fetchedAt) : null,
+        },
+        update: {
+          category: assessment.category,
+          confidence: assessment.confidence,
+          reasonCodes: assessment.reasonCodes,
+          mintAuthority: assessment.mintAuthority,
+          freezeAuthority: assessment.freezeAuthority,
+          transferRestricted: assessment.transferRestricted,
+          holderConcentrationTop10Pct: assessment.holderConcentrationTop10Pct,
+          suspiciousDeployer: assessment.suspiciousDeployer,
+          liquidityFragile: assessment.liquidityFragile,
+          largeWalletMove: assessment.largeWalletMove,
+          fraudIndicators: assessment.fraudIndicators,
+          source: assessment.source,
+          stale: assessment.stale,
+          fields: toJson(assessment.fields),
+          fetchedAt: assessment.fetchedAt ? new Date(assessment.fetchedAt) : null,
+        },
+      });
+    }
+    return out;
+  }
+
+  private async persistEquitySnapshot(
+    cycleId: string,
+    loaded: NonNullable<Awaited<ReturnType<StageRunner["loadPlan"]>>>,
+  ): Promise<void> {
+    const account = await this.prisma.paperAccount.findUnique({ where: { id: "primary" } });
+    if (!account) return;
+    const fees = await this.prisma.ledgerEntry.aggregate({
+      where: { accountId: "primary", type: "FEE" },
+      _sum: { amountUsd: true },
+    });
+    const closed = await this.prisma.ledgerEntry.findMany({
+      where: { accountId: "primary", type: "REALIZED_PNL" },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+    const report = performanceReport({
+      valuation: loaded.valuation,
+      startingBalanceUsd: account.startingBalanceUsd.toString(),
+      feesUsd: usd(d(fees._sum.amountUsd?.toString() ?? "0").abs()),
+      closedTradePnlUsd: closed.map((entry) => entry.amountUsd.toString()),
+    });
+    const equityUsd = loaded.valuation.equityUsd;
+    const hwm =
+      equityUsd === null
+        ? loaded.highWaterMarkUsd
+        : usd(DecimalMax(d(loaded.highWaterMarkUsd), d(equityUsd)));
+    await this.prisma.equitySnapshot.create({
+      data: {
+        cycleId,
+        cashUsd: account.cashUsd.toString(),
+        equityUsd,
+        unrealizedPnlUsd: loaded.valuation.unrealizedPnlUsd,
+        realizedPnlUsd: loaded.valuation.realizedPnlUsd,
+        highWaterMarkUsd: hwm,
+        exposureUsd:
+          equityUsd === null ? null : usd(d(equityUsd).minus(d(account.cashUsd.toString()))),
+        valuation: loaded.valuation.valuation,
+        feesUsd: report.feesUsd,
+        metrics: toJson({
+          winRate: report.winRate,
+          wins: report.wins,
+          losses: report.losses,
+          closedTrades: report.closedTrades,
+          returnPct: report.returnPct,
+          avgWinUsd: report.avgWinUsd,
+          avgLossUsd: report.avgLossUsd,
+          profitFactor: report.profitFactor,
+          expectancyUsd: report.expectancyUsd,
+          maxDrawdownPct: report.maxDrawdownPct,
+          sampleSize: report.sampleSize,
+          observed: report.observed,
+        }),
+      },
+    });
+    if (hwm) {
+      await this.prisma.paperAccount.update({
+        where: { id: "primary" },
+        data: { highWaterMarkUsd: hwm },
+      });
+    }
   }
 
   private async copyReplay(cycleId: string, config: StrategyConfig, now: Date): Promise<number> {
@@ -400,14 +624,17 @@ function observationData(cycleId: string, pair: NormalizedPair, freshness: DataS
     liquidityUsd: pair.liquidityUsd,
     volume24hUsd: pair.volume24hUsd,
     volume5mUsd: pair.volume5mUsd,
-    priceChangeM5: pair.priceChangeM5Pct,
-    priceChangeH1: pair.priceChangeH1Pct,
-    priceChangeH24: pair.priceChangeH24Pct,
-    txnsM5Buys: pair.txnsM5Buys,
-    txnsM5Sells: pair.txnsM5Sells,
-    freshness,
-    receivedAt,
-    raw: toJson(pair.raw ?? {}),
+          priceChangeM5: pair.priceChangeM5Pct,
+          priceChangeH1: pair.priceChangeH1Pct,
+          priceChangeH24: pair.priceChangeH24Pct,
+          txnsM5Buys: pair.txnsM5Buys,
+          txnsM5Sells: pair.txnsM5Sells,
+          pairCreatedAt: pair.pairCreatedAt ? new Date(pair.pairCreatedAt) : null,
+          fdvUsd: pair.fdvUsd ?? null,
+          marketCapUsd: pair.marketCapUsd ?? null,
+          freshness,
+          receivedAt,
+          raw: toJson(pair.raw ?? {}),
   };
 }
 
@@ -432,6 +659,9 @@ function toCyclePair(
     priceChangeH24: { toString(): string } | null;
     txnsM5Buys: number | null;
     txnsM5Sells: number | null;
+    pairCreatedAt?: Date | null;
+    fdvUsd?: { toString(): string } | null;
+    marketCapUsd?: { toString(): string } | null;
     receivedAt: Date;
   },
   now: Date,
@@ -459,6 +689,9 @@ function toCyclePair(
     priceChangeH24Pct: row.priceChangeH24?.toString() ?? null,
     txnsM5Buys: row.txnsM5Buys,
     txnsM5Sells: row.txnsM5Sells,
+    pairCreatedAt: row.pairCreatedAt?.toISOString() ?? null,
+    fdvUsd: row.fdvUsd?.toString() ?? null,
+    marketCapUsd: row.marketCapUsd?.toString() ?? null,
     observationId: row.id,
     freshness: classifyFreshness({
       mode,
@@ -490,6 +723,8 @@ async function upsertDecision(
       reasonCodes: decision.reasonCodes,
       input: toJson(decision.input),
       output: toJson(decision.output),
+      inputSource: decision.inputSource ?? null,
+      durationMs: decision.durationMs ?? null,
     },
     update: {
       modelVersion: decision.modelVersion,
@@ -498,8 +733,53 @@ async function upsertDecision(
       reasonCodes: decision.reasonCodes,
       input: toJson(decision.input),
       output: toJson(decision.output),
+      inputSource: decision.inputSource ?? null,
+      durationMs: decision.durationMs ?? null,
     },
   });
+}
+
+function DecimalMax(left: ReturnType<typeof d>, right: ReturnType<typeof d>) {
+  return left.gte(right) ? left : right;
+}
+
+function toSecurityAssessment(row: {
+  tokenAddress: string;
+  category: string;
+  confidence: { toString(): string };
+  reasonCodes: string[];
+  mintAuthority: string;
+  freezeAuthority: string;
+  transferRestricted: boolean | null;
+  holderConcentrationTop10Pct: { toString(): string } | null;
+  suspiciousDeployer: boolean | null;
+  liquidityFragile: boolean | null;
+  largeWalletMove: boolean | null;
+  fraudIndicators: string[];
+  source: string;
+  stale: boolean;
+  fields: unknown;
+  fetchedAt: Date | null;
+}): SecurityAssessment {
+  return {
+    tokenAddress: row.tokenAddress,
+    category: row.category as SecurityAssessment["category"],
+    confidence: row.confidence.toString(),
+    reasonCodes: row.reasonCodes as SecurityAssessment["reasonCodes"],
+    mintAuthority: row.mintAuthority as SecurityAssessment["mintAuthority"],
+    freezeAuthority: row.freezeAuthority as SecurityAssessment["freezeAuthority"],
+    transferRestricted: row.transferRestricted,
+    token2022Extensions: null,
+    holderConcentrationTop10Pct: row.holderConcentrationTop10Pct?.toString() ?? null,
+    suspiciousDeployer: row.suspiciousDeployer,
+    liquidityFragile: row.liquidityFragile,
+    largeWalletMove: row.largeWalletMove,
+    fraudIndicators: row.fraudIndicators,
+    source: row.source as SecurityAssessment["source"],
+    fetchedAt: row.fetchedAt?.toISOString() ?? null,
+    stale: row.stale,
+    fields: (row.fields ?? {}) as SecurityAssessment["fields"],
+  };
 }
 
 export const liveFeed: MarketFeed = {

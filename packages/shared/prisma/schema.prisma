@@ -28,6 +28,7 @@ model PaperAccount {
   id                 String         @id @default("primary")
   cashUsd            Decimal        @db.Decimal(24, 8)
   startingBalanceUsd Decimal        @db.Decimal(24, 8)
+  highWaterMarkUsd   Decimal?       @db.Decimal(24, 8)
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
   positions          Position[]
@@ -36,7 +37,7 @@ model PaperAccount {
 }
 
 model MarketObservation {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   ingestJobId    String
   source         String
   chainId        String
@@ -48,23 +49,108 @@ model MarketObservation {
   baseName       String
   quoteAddress   String
   quoteSymbol    String
-  priceUsd       Decimal? @db.Decimal(24, 8)
-  liquidityUsd   Decimal? @db.Decimal(24, 8)
-  volume24hUsd   Decimal? @db.Decimal(24, 8)
-  volume5mUsd    Decimal? @db.Decimal(24, 8)
-  priceChangeM5  Decimal? @db.Decimal(16, 6)
-  priceChangeH1  Decimal? @db.Decimal(16, 6)
-  priceChangeH24 Decimal? @db.Decimal(16, 6)
+  priceUsd       Decimal?  @db.Decimal(24, 8)
+  liquidityUsd   Decimal?  @db.Decimal(24, 8)
+  volume24hUsd   Decimal?  @db.Decimal(24, 8)
+  volume5mUsd    Decimal?  @db.Decimal(24, 8)
+  priceChangeM5  Decimal?  @db.Decimal(16, 6)
+  priceChangeH1  Decimal?  @db.Decimal(16, 6)
+  priceChangeH24 Decimal?  @db.Decimal(16, 6)
   txnsM5Buys     Int?
   txnsM5Sells    Int?
+  pairCreatedAt  DateTime?
+  fdvUsd         Decimal?  @db.Decimal(24, 8)
+  marketCapUsd   Decimal?  @db.Decimal(24, 8)
   freshness      String
   receivedAt     DateTime
   raw            Json
-  createdAt      DateTime @default(now())
+  createdAt      DateTime  @default(now())
 
   @@unique([ingestJobId, pairAddress])
   @@index([pairAddress, receivedAt])
   @@index([receivedAt])
+}
+
+model WatchlistEntry {
+  id           String   @id @default(cuid())
+  pairAddress  String
+  baseAddress  String
+  baseSymbol   String
+  quoteAddress String
+  quoteSymbol  String
+  dexId        String
+  source       String
+  score        Decimal  @db.Decimal(16, 6)
+  rank         Int
+  reasonCodes  String[]
+  observationId String?
+  cycleId      String?
+  observedAt   DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([pairAddress])
+  @@index([score, rank])
+  @@index([observedAt])
+}
+
+model SecurityAssessment {
+  id                         String   @id @default(cuid())
+  tokenAddress               String
+  category                   String
+  confidence                 Decimal  @db.Decimal(8, 6)
+  reasonCodes                String[]
+  mintAuthority              String
+  freezeAuthority            String
+  transferRestricted         Boolean?
+  holderConcentrationTop10Pct Decimal? @db.Decimal(16, 6)
+  suspiciousDeployer         Boolean?
+  liquidityFragile           Boolean?
+  largeWalletMove            Boolean?
+  fraudIndicators            String[]
+  source                     String
+  stale                      Boolean  @default(false)
+  fields                     Json
+  fetchedAt                  DateTime?
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  @@unique([tokenAddress])
+  @@index([category, updatedAt])
+}
+
+model EquitySnapshot {
+  id               String   @id @default(cuid())
+  cycleId          String?
+  cashUsd          Decimal  @db.Decimal(24, 8)
+  equityUsd        Decimal? @db.Decimal(24, 8)
+  unrealizedPnlUsd Decimal? @db.Decimal(24, 8)
+  realizedPnlUsd   Decimal  @db.Decimal(24, 8)
+  highWaterMarkUsd Decimal? @db.Decimal(24, 8)
+  exposureUsd      Decimal? @db.Decimal(24, 8)
+  valuation        String
+  feesUsd          Decimal  @db.Decimal(24, 8)
+  metrics          Json
+  createdAt        DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([cycleId])
+}
+
+model ResearchProposal {
+  id              String   @id @default(cuid())
+  status          String
+  parameterPatch  Json
+  rationale       String
+  walkForward     Json?
+  metrics         Json?
+  promoted        Boolean  @default(false)
+  modelVersion    String?
+  createdAt       DateTime @default(now())
+  evaluatedAt     DateTime?
+  approvedAt      DateTime?
+
+  @@index([status, createdAt])
 }
 
 model CycleRun {
@@ -95,6 +181,8 @@ model AgentDecision {
   reasonCodes  String[]
   input        Json
   output       Json
+  inputSource  String?
+  durationMs   Int?
   createdAt    DateTime @default(now())
 
   @@unique([cycleId, agent, pairAddress])
@@ -103,8 +191,8 @@ model AgentDecision {
 }
 
 model Order {
-  id            String   @id @default(cuid())
-  clientOrderId String   @unique
+  id            String    @id @default(cuid())
+  clientOrderId String    @unique
   cycleId       String
   accountId     String
   pairAddress   String
@@ -112,15 +200,21 @@ model Order {
   side          String
   intent        String
   status        String
-  qty           Decimal  @db.Decimal(24, 8)
+  qty           Decimal   @db.Decimal(24, 8)
+  filledQty     Decimal   @default(0) @db.Decimal(24, 8)
   reasonCodes   String[]
   rejectReason  String?
-  createdAt     DateTime @default(now())
+  observationId String?
+  submittedAt   DateTime  @default(now())
+  eligibleAt    DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime  @default(now())
   account       PaperAccount @relation(fields: [accountId], references: [id])
   fills         Fill[]
 
   @@index([createdAt])
   @@index([cycleId])
+  @@index([status, eligibleAt])
 }
 
 model Fill {

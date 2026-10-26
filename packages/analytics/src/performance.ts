@@ -84,6 +84,7 @@ export function performanceReport(input: {
   startingBalanceUsd: string;
   feesUsd: string;
   closedTradePnlUsd: string[];
+  equitySeries?: string[];
 }): {
   valuation: Valuation;
   feesUsd: string;
@@ -93,15 +94,28 @@ export function performanceReport(input: {
   closedTrades: number;
   winRate: string | null;
   returnPct: string | null;
+  avgWinUsd: string | null;
+  avgLossUsd: string | null;
+  profitFactor: string | null;
+  expectancyUsd: string | null;
+  maxDrawdownPct: string | null;
+  sampleSize: number;
+  observed: boolean;
 } {
   let wins = 0;
   let losses = 0;
   let breakeven = 0;
+  let winSum = new Decimal(0);
+  let lossSum = new Decimal(0);
   for (const pnl of input.closedTradePnlUsd) {
     const value = d(pnl);
-    if (value.gt(0)) wins += 1;
-    else if (value.lt(0)) losses += 1;
-    else breakeven += 1;
+    if (value.gt(0)) {
+      wins += 1;
+      winSum = winSum.plus(value);
+    } else if (value.lt(0)) {
+      losses += 1;
+      lossSum = lossSum.plus(value.abs());
+    } else breakeven += 1;
   }
   const closedTrades = input.closedTradePnlUsd.length;
   const winRate = closedTrades === 0 ? null : new Decimal(wins).div(closedTrades).toFixed(6);
@@ -113,6 +127,11 @@ export function performanceReport(input: {
           .div(d(input.startingBalanceUsd))
           .mul(100)
           .toFixed(4);
+  const avgWinUsd = wins === 0 ? null : winSum.div(wins).toFixed(8);
+  const avgLossUsd = losses === 0 ? null : lossSum.div(losses).toFixed(8);
+  const profitFactor = losses === 0 || lossSum.eq(0) ? null : winSum.div(lossSum).toFixed(6);
+  const expectancyUsd = closedTrades === 0 ? null : winSum.minus(lossSum).div(closedTrades).toFixed(8);
+  const maxDrawdownPct = drawdownPct(input.equitySeries ?? []);
   return {
     valuation: input.valuation,
     feesUsd: input.feesUsd,
@@ -122,7 +141,29 @@ export function performanceReport(input: {
     closedTrades,
     winRate,
     returnPct,
+    avgWinUsd,
+    avgLossUsd,
+    profitFactor,
+    expectancyUsd,
+    maxDrawdownPct,
+    sampleSize: closedTrades,
+    observed: input.valuation.marksComplete,
   };
+}
+
+function drawdownPct(series: string[]): string | null {
+  if (series.length < 2) return null;
+  let peak = d(series[0]!);
+  let maxDd = new Decimal(0);
+  for (const point of series) {
+    const equity = d(point);
+    if (equity.gt(peak)) peak = equity;
+    if (peak.gt(0)) {
+      const dd = peak.minus(equity).div(peak).mul(100);
+      if (dd.gt(maxDd)) maxDd = dd;
+    }
+  }
+  return maxDd.toFixed(4);
 }
 
 function valuePosition(
