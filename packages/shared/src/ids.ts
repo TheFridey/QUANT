@@ -4,6 +4,14 @@ export function newId(prefix: string): string {
   return `${prefix}_${randomUUID()}`;
 }
 
+/** BullMQ custom ids may not contain ":" unless they have exactly three segments. */
+export function stageJobId(stage: string, cycleId: string): string {
+  if (!/^[a-z][a-z0-9_-]{0,40}$/i.test(stage) || !/^[A-Za-z0-9_-]{8,80}$/.test(cycleId)) {
+    throw new Error("Invalid stage job id");
+  }
+  return `${stage}-${cycleId}`;
+}
+
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortValue(value));
 }

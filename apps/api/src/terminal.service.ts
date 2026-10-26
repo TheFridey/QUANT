@@ -12,6 +12,7 @@ import {
   mergeStrategy,
   newId,
   operatorOrderSchema,
+  stageJobId,
   parseStrategyConfig,
   strategyPatchSchema,
   usd,
@@ -65,9 +66,17 @@ export class TerminalService {
     const account = await this.prisma.paperAccount.findUnique({ where: { id: "primary" } });
     if (!engineRow || !account) throw new NotFoundException("Paper account is not initialised");
     const config = this.readConfig(engineRow.config);
-    const observations = await this.prisma.marketObservation.findMany({ orderBy: { receivedAt: "desc" }, take: 500 });
-    const latest = new Map<string, (typeof observations)[number]>();
-    for (const row of observations) if (!latest.has(row.pairAddress)) latest.set(row.pairAddress, row);
+    const latestBatch = await this.prisma.cycleRun.findFirst({
+      where: { observationCount: { gt: 0 } },
+      orderBy: { startedAt: "desc" },
+    });
+    const observations = latestBatch
+      ? await this.prisma.marketObservation.findMany({
+          where: { ingestJobId: latestBatch.id },
+          orderBy: { liquidityUsd: "desc" },
+        })
+      : [];
+    const latest = new Map(observations.map((row) => [row.pairAddress, row]));
     const pairs = [...latest.values()]
       .map((row) => this.presentPair(row, now, config))
       .sort((a, b) => Number(b.liquidityUsd ?? 0) - Number(a.liquidityUsd ?? 0))
@@ -277,7 +286,7 @@ export class TerminalService {
     await this.ingest.add(
       "ingest",
       { cycleId, trigger: "operator" },
-      { jobId: `ingest:${cycleId}`, attempts: 3, removeOnComplete: 100, removeOnFail: 50 },
+      { jobId: stageJobId("ingest", cycleId), attempts: 3, removeOnComplete: 100, removeOnFail: 50 },
     );
     const deadline = Date.now() + 12_000;
     let cycle = await this.prisma.cycleRun.findUnique({ where: { id: cycleId } });

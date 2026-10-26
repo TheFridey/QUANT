@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "NODE_OPTIONS='--env-file=../../.env' nest start --watch --builder swc",
+    "dev": "nest start --watch --builder swc",
     "build": "nest build",
-    "start": "NODE_OPTIONS='--env-file=../../.env' node dist/main.js",
+    "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

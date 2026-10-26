@@ -1,5 +1,5 @@
 import { InjectQueue, OnWorkerEvent, Processor, WorkerHost } from "@nestjs/bullmq";
-import { QUEUES } from "@odin/shared";
+import { QUEUES, stageJobId } from "@odin/shared";
 import { Job, Queue } from "bullmq";
 import { StageRunner } from "./stage-runner.js";
 
@@ -10,7 +10,7 @@ async function enqueue(queue: Queue, name: string, cycleId: string): Promise<voi
     name,
     { cycleId },
     {
-      jobId: `${name}:${cycleId}`,
+      jobId: stageJobId(name, cycleId),
       attempts: 3,
       backoff: { type: "exponential", delay: 500 },
       removeOnComplete: 200,

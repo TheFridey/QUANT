@@ -170,7 +170,7 @@ export function TerminalShell() {
       {error ? <div className="border-b border-loss/40 bg-loss/10 px-3 py-2 text-sm text-loss">{error}</div> : null}
       {dataState && dataState !== "LIVE" ? (
         <div className="border-b border-primary/40 bg-primary/10 px-3 py-2 text-sm">
-          Market state is {dataState}. New paper entries stay blocked until a live DexScreener snapshot is on the book.
+          Latest snapshot is {dataState}. A paper buy is accepted only when the selected pair itself is LIVE.
         </div>
       ) : null}
       {snapshot.market.pairs.length === 0 ? (
@@ -244,7 +244,7 @@ function Tape({ pairs, selected, onSelect, className }: { pairs: Snapshot["marke
           <li key={pair.pairAddress}>
             <button type="button" onClick={() => onSelect(pair.pairAddress)} className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-white/5 ${selected === pair.pairAddress ? "bg-white/5" : ""}`}>
               <span>
-                <span className="block text-sm">{pair.baseSymbol}</span>
+                <span className="block text-sm">{pair.baseSymbol} <span className="text-[10px] text-muted">{pair.freshness}</span></span>
                 <span className="text-[11px] text-muted">{pair.quoteSymbol} · {pair.dexId}</span>
               </span>
               <span className="mono text-right text-sm">
@@ -272,7 +272,7 @@ function Book({
   onPlace: (side: "BUY" | "SELL", event?: FormEvent) => Promise<void>;
   className?: string;
 }) {
-  const live = pair?.freshness === "LIVE" && snapshot.engine.status === "RUNNING";
+  const live = pair?.freshness === "LIVE" && pair.priceUsd !== null && snapshot.engine.status === "RUNNING";
   return (
     <Panel title="Book" className={className}>
       <div className="space-y-3 p-3 text-sm">

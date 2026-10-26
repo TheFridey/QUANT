@@ -1,6 +1,7 @@
 node_modules
 dist
 .next
+dump.rdb
 coverage
 playwright-report
 test-results
