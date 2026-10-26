@@ -61,7 +61,7 @@ Each agent is a pure function with a fixed `modelVersion`, a confidence in `[0, 
 | EXECUTOR | Paper fill only. Re-checks the quote inside a row lock. |
 | ARCHIVIST | Closes the cycle and records the decision set |
 
-The default strategy is long-only spot. A 5-minute gain at or above `entryM5ChangePct`, a non-negative 1-hour change, and more 5-minute buys than sells can open a position. Stops, take-profits, and a 5-minute fade close the whole position. If those inputs are absent, the cycle holds.
+The default strategy is long-only spot. A 5-minute gain at or above `entryM5ChangePct` and at most `maxEntryM5ChangePct`, a non-negative 1-hour change, more 5-minute buys than sells, and a quote mint of wrapped SOL, USDC, or USDT can open a position. A wider 5-minute print is `PRICE_ANOMALY` and does not open risk. Stops, take-profits, and a 5-minute fade still close an open position from the observed mark. If those inputs are absent, the cycle holds.
 
 Operator tickets skip the momentum rule and are labeled `OPERATOR_OVERRIDE`. They still pass SENTINEL, AEGIS, ATLAS, and the locked fill.
 

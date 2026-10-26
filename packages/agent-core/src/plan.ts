@@ -3,6 +3,7 @@ import { evaluateRisk } from "@odin/risk-engine";
 import {
   confidenceFixed,
   d,
+  isTradableQuote,
   type AgentName,
   type CyclePair,
   type EngineStatus,
@@ -209,6 +210,12 @@ function runPulse(pair: CyclePair, position: PositionView | undefined, surveilla
   }
   if (pair.priceChangeM5Pct === null || pair.priceChangeH1Pct === null || pair.txnsM5Buys === null || pair.txnsM5Sells === null) {
     return row("PULSE", pair, "HOLD", ["INSUFFICIENT_DATA"], "0.000000");
+  }
+  if (!isTradableQuote(pair.quoteAddress)) {
+    return row("PULSE", pair, "HOLD", ["QUOTE_NOT_ALLOWED"], "1.000000");
+  }
+  if (d(pair.priceChangeM5Pct).abs().gt(input.config.maxEntryM5ChangePct)) {
+    return row("PULSE", pair, "HOLD", ["PRICE_ANOMALY"], "1.000000", { priceChangeM5Pct: pair.priceChangeM5Pct });
   }
   const entry =
     d(pair.priceChangeM5Pct).gte(input.config.entryM5ChangePct) &&

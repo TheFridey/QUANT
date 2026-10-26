@@ -45,6 +45,17 @@ export const AGENT_BUS_CHANNEL = "odin:agent-bus";
 
 export const EXECUTION_VENUE = "PAPER" as const;
 
+/** Quote mints accepted for automatic entries. Symbols are not trusted. */
+export const TRADABLE_QUOTE_MINTS = [
+  "So11111111111111111111111111111111111111112",
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+] as const;
+
+export function isTradableQuote(quoteAddress: string): boolean {
+  return (TRADABLE_QUOTE_MINTS as readonly string[]).includes(quoteAddress);
+}
+
 export const normalizedPairSchema = z.object({
   source: z.enum(["dexscreener", "birdeye", "replay"]),
   chainId: z.literal("solana"),

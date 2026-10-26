@@ -42,7 +42,7 @@ pnpm lint
 
 ## Trading rules
 
-The default strategy is long-only. A new position needs a live positive price, liquidity and volume above the floors, a 5-minute move of at least 2%, a non-negative 1-hour move, and more 5-minute buys than sells. Size is capped by cash, a percentage of equity, and a percentage of pool liquidity. The fill price is the observed mid adjusted by `notional / liquidity`. If that slippage exceeds the configured maximum, the order is rejected.
+The default strategy is long-only. A new position needs a live positive price, liquidity and volume above the floors, a SOL, USDC, or USDT quote mint, a 5-minute move of at least 2% and at most 25%, a non-negative 1-hour move, and more 5-minute buys than sells. A larger 5-minute print is treated as an anomaly and does not open risk. Size is capped by cash, a percentage of equity, and a percentage of pool liquidity. The fill price is the observed mid adjusted by `notional / liquidity`. If that slippage exceeds the configured maximum, the order is rejected.
 
 Stops, take-profits, and a 5-minute fade close the whole position. Operator tickets skip the momentum rule, are labeled `OPERATOR_OVERRIDE`, and still pass surveillance, risk, and the locked fill.
 

@@ -11,6 +11,7 @@ export const strategyConfigSchema = z
     minLiquidityUsd: decimalString,
     minVolume24hUsd: decimalString,
     entryM5ChangePct: decimalString,
+    maxEntryM5ChangePct: decimalString,
     minH1ChangePct: decimalString,
     exitM5ChangePct: decimalString,
     stopLossPct: decimalString,
@@ -35,6 +36,7 @@ export const strategyConfigSchema = z
       ["minLiquidityUsd", "0", "1000000000000"],
       ["minVolume24hUsd", "0", "1000000000000"],
       ["entryM5ChangePct", "0", "100"],
+      ["maxEntryM5ChangePct", "0.1", "100"],
       ["minH1ChangePct", "-100", "100"],
       ["exitM5ChangePct", "-100", "100"],
       ["stopLossPct", "0.1", "100"],
@@ -66,6 +68,13 @@ export const strategyConfigSchema = z
         message: "Must be greater than liveMaxAgeMs and at most 3600000",
       });
     }
+    if (d(value.maxEntryM5ChangePct).lt(value.entryM5ChangePct)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["maxEntryM5ChangePct"],
+        message: "Must be at least the entry threshold",
+      });
+    }
   });
 
 export type StrategyConfig = z.infer<typeof strategyConfigSchema>;
@@ -78,6 +87,7 @@ export const strategyPatchSchema = z
     minLiquidityUsd: decimalString.optional(),
     minVolume24hUsd: decimalString.optional(),
     entryM5ChangePct: decimalString.optional(),
+    maxEntryM5ChangePct: decimalString.optional(),
     minH1ChangePct: decimalString.optional(),
     exitM5ChangePct: decimalString.optional(),
     stopLossPct: decimalString.optional(),
@@ -102,6 +112,7 @@ export const DEFAULT_STRATEGY: StrategyConfig = {
   minLiquidityUsd: "25000",
   minVolume24hUsd: "50000",
   entryM5ChangePct: "2",
+  maxEntryM5ChangePct: "25",
   minH1ChangePct: "0",
   exitM5ChangePct: "-1.5",
   stopLossPct: "3",
@@ -119,7 +130,11 @@ export const DEFAULT_STRATEGY: StrategyConfig = {
 };
 
 export function parseStrategyConfig(value: unknown): StrategyConfig {
-  return strategyConfigSchema.parse(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return strategyConfigSchema.parse(DEFAULT_STRATEGY);
+  }
+  const stored = Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
+  return strategyConfigSchema.parse({ ...DEFAULT_STRATEGY, ...stored });
 }
 
 export function mergeStrategy(current: StrategyConfig, patch: unknown): StrategyConfig {

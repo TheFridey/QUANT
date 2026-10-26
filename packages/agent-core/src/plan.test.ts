@@ -89,6 +89,36 @@ describe("agent plan", () => {
     expect(plan.orders[0]?.intent).toBe("EXIT");
   });
 
+  it("does not open risk on an anomalous print or an unlisted quote mint", () => {
+    const spike = planCycle(input({ pairs: [pair({ priceChangeM5Pct: "8090" })] }));
+    expect(spike.orders).toHaveLength(0);
+    expect(spike.decisions.some((decision) => decision.reasonCodes.includes("PRICE_ANOMALY"))).toBe(true);
+    const exotic = planCycle(
+      input({
+        pairs: [pair({ quoteAddress: "11111111111111111111111111111111exotic", quoteSymbol: "AMD" })],
+      }),
+    );
+    expect(exotic.orders).toHaveLength(0);
+    expect(exotic.decisions.some((decision) => decision.reasonCodes.includes("QUOTE_NOT_ALLOWED"))).toBe(true);
+    const held = planCycle(
+      input({
+        cashUsd: "75.00000000",
+        positions: [
+          {
+            pairAddress,
+            baseSymbol: "SOL",
+            baseQty: "0.25000000",
+            avgCostUsd: "100.00000000",
+            realizedPnlUsd: "0.00000000",
+          },
+        ],
+        pairs: [pair({ priceUsd: "90", priceChangeM5Pct: "8090", quoteAddress: "11111111111111111111111111111111exotic" })],
+        marks: { [pairAddress]: { priceUsd: "90", freshness: "LIVE" } },
+      }),
+    );
+    expect(held.orders.map((order) => order.intent)).toEqual(["EXIT"]);
+  });
+
   it("labels an operator ticket as an override and still rejects it above the cap", () => {
     const allowed = planCycle(
       input({

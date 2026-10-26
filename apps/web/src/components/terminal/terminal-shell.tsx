@@ -285,6 +285,12 @@ function Book({
           <Metric label="Win rate" value={snapshot.portfolio.closedTrades === 0 ? "—" : formatRate(snapshot.portfolio.winRate)} />
         </dl>
         <p className="text-xs text-muted">Win rate is closed trades only. It stays blank until a position is closed. Return {snapshot.portfolio.returnPct === null ? "—" : formatPct(snapshot.portfolio.returnPct)}.</p>
+        {pair ? (
+          <p className="text-xs text-muted">
+            Liquidity {formatUsd(pair.liquidityUsd)} · 24h {formatUsd(pair.volume24hUsd)} · 5m {formatPct(pair.priceChangeM5Pct)}
+          </p>
+        ) : null}
+        <PairAudit decisions={snapshot.decisions} pairAddress={pair?.pairAddress ?? null} />
         {snapshot.portfolio.positions.length === 0 ? <p className="text-muted">No open paper positions.</p> : (
           <ul className="space-y-2">
             {snapshot.portfolio.positions.map((item) => (
@@ -348,6 +354,24 @@ function Audit({ decisions, agents }: { decisions: Snapshot["decisions"]; agents
   );
 }
 
+function PairAudit({ decisions, pairAddress }: { decisions: Snapshot["decisions"]; pairAddress: string | null }) {
+  if (!pairAddress) return null;
+  const latest = ["SENTINEL", "PULSE", "AEGIS", "ATLAS", "EXECUTOR"]
+    .map((agent) => [...decisions].reverse().find((decision) => decision.agent === agent && decision.pairAddress === pairAddress))
+    .filter((decision) => decision !== undefined);
+  if (latest.length === 0) return <p className="text-xs text-muted">No decision yet for this pair in the latest cycle.</p>;
+  return (
+    <ul className="space-y-1 text-xs">
+      {latest.map((decision) => (
+        <li key={decision.id} className="flex justify-between gap-2">
+          <span>{decision.agent} {decision.decision}</span>
+          <span className="truncate text-muted">{decision.reasonText[0]}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -362,6 +386,9 @@ function ConfigDialog({ open, onOpenChange, snapshot, onSaved }: { open: boolean
   const [balance, setBalance] = useState(String(config?.startingBalanceUsd ?? "100"));
   const [maxPositions, setMaxPositions] = useState(String(config?.maxPositions ?? "3"));
   const [entry, setEntry] = useState(String(config?.entryM5ChangePct ?? "2"));
+  const [anomaly, setAnomaly] = useState(String(config?.maxEntryM5ChangePct ?? "25"));
+  const [stop, setStop] = useState(String(config?.stopLossPct ?? "3"));
+  const [target, setTarget] = useState(String(config?.takeProfitPct ?? "5"));
   const [message, setMessage] = useState<string | null>(null);
 
   async function save(event: FormEvent) {
@@ -374,6 +401,9 @@ function ConfigDialog({ open, onOpenChange, snapshot, onSaved }: { open: boolean
           startingBalanceUsd: balance,
           maxPositions: Number(maxPositions),
           entryM5ChangePct: entry,
+          maxEntryM5ChangePct: anomaly,
+          stopLossPct: stop,
+          takeProfitPct: target,
         }),
       });
       await onSaved();
@@ -387,7 +417,7 @@ function ConfigDialog({ open, onOpenChange, snapshot, onSaved }: { open: boolean
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogTitle>Risk and strategy</DialogTitle>
-        <DialogDescription className="mt-1 text-sm text-muted">Limits apply to the next cycle. The starting balance changes only while stopped and before any order.</DialogDescription>
+        <DialogDescription className="mt-1 text-sm text-muted">Pause the engine before saving. Automatic entries also require a SOL, USDC, or USDT quote mint. The starting balance changes only while stopped and before any order.</DialogDescription>
         <form className="mt-3 space-y-2" onSubmit={(event) => void save(event)}>
           <Label htmlFor="balance">Starting balance USD</Label>
           <Input id="balance" value={balance} onChange={(event) => setBalance(event.target.value)} />
@@ -395,6 +425,12 @@ function ConfigDialog({ open, onOpenChange, snapshot, onSaved }: { open: boolean
           <Input id="positions" value={maxPositions} onChange={(event) => setMaxPositions(event.target.value)} />
           <Label htmlFor="entry">Entry 5-minute change %</Label>
           <Input id="entry" value={entry} onChange={(event) => setEntry(event.target.value)} />
+          <Label htmlFor="anomaly">Maximum 5-minute change %</Label>
+          <Input id="anomaly" value={anomaly} onChange={(event) => setAnomaly(event.target.value)} />
+          <Label htmlFor="stop">Stop loss %</Label>
+          <Input id="stop" value={stop} onChange={(event) => setStop(event.target.value)} />
+          <Label htmlFor="target">Take profit %</Label>
+          <Input id="target" value={target} onChange={(event) => setTarget(event.target.value)} />
           {message ? <p className="text-sm text-loss">{message}</p> : null}
           <Button type="submit">Save</Button>
         </form>
