@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/market-data" },
+    { "path": "packages/risk-engine" },
+    { "path": "packages/trading-engine" },
+    { "path": "packages/analytics" },
+    { "path": "packages/backtest" },
+    { "path": "packages/agent-core" },
+    { "path": "packages/evolution" }
+  ]
+}

@@ -11,8 +11,8 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "tsc -b --pretty false",
+    "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
     "@odin/agent-core": "workspace:*",
