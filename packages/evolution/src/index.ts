@@ -12,3 +12,6 @@ export * from "./oracle-research.js";
 export * from "./budget-store.js";
 export * from "./fixture-provider.js";
 export * from "./pipeline.js";
+export * from "./promotion.js";
+export * from "./data-integrity.js";
+export * from "./outcomes.js";

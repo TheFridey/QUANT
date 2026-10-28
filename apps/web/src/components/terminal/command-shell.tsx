@@ -14,6 +14,12 @@ import {
   ResearchCentreSection,
   ResearchMemorySection,
 } from "@/components/terminal/sections/evolution-sections";
+import {
+  DataIntegritySection,
+  ForgeMonitorSection,
+  ResearchConfidenceSection,
+  ResearchOperationsSection,
+} from "@/components/terminal/sections/genesis-panels";
 import { HistorySection } from "@/components/terminal/sections/history-section";
 import { LogsSection } from "@/components/terminal/sections/logs-section";
 import { OverviewSection } from "@/components/terminal/sections/overview-section";
@@ -123,8 +129,16 @@ function renderSection(section: TerminalSection) {
       return <BacktestingSection />;
     case "research":
       return <ResearchCentreSection />;
+    case "operations":
+      return <ResearchOperationsSection />;
+    case "forge":
+      return <ForgeMonitorSection />;
     case "genome":
       return <GenomeSection />;
+    case "integrity":
+      return <DataIntegritySection />;
+    case "confidence":
+      return <ResearchConfidenceSection />;
     case "memory":
       return <ResearchMemorySection />;
     case "risk":

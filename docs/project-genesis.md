@@ -87,3 +87,22 @@ Completed 2026-10-28 17:35.
 Reconstruction keeps BEFORE (market structure, momentum, liquidity, volume, volatility, agent signals, historical context, strategy version, entry hypothesis, risk calculations), DURING (price path, MFE, MAE, slippage, liquidity changes, regime, risk events, execution events), and AFTER (exit rationale, net P&L, costs, compliance, post-exit behaviour, missed opportunities, unexpected outcomes) as separate records. Entry features are built only from `memoryForEntryDecision`, which drops AFTER and post-exit rows and omits P&L and exit fields. Winner and loser cohorts require a decimal net P&L. A missing net result is `UNMEASURABLE` and is not counted as a winner. The API exposes `/evolution/memory/reconstruction` and `/evolution/memory/factors` from persisted `TradeMemory` rows.
 
 `pnpm exec vitest run packages/evolution/src/archivist.test.ts packages/evolution/src/challenge.test.ts` — 6 passed. `pnpm typecheck` and `pnpm lint` passed.
+
+## Phase 7 — Dashboard
+
+Completed 2026-10-28 17:41.
+
+The command centre keeps its existing shell. New modules read persisted API state:
+
+- Research Operations: `/evolution/research` queue, capability list, limits, and deterministic proposals
+- FORGE Monitor: `/evolution/forge` experiment reports
+- AI Model Operations: `/evolution/models` health, including `UNAVAILABLE` when no key is configured
+- Strategy Evolution: existing genome and lifecycle audits
+- Data Integrity: `/evolution/integrity` over stored observations
+- Research Confidence: `/evolution/confidence` outcome tones
+
+`PIPELINE_COMPLETED` uses the recorded/open tone. The confidence badges do not use the profit colour. A pipeline stage is not shown as a successful strategy.
+
+Browser check on 2026-10-28 17:40 Europe/London with headless Chrome: logged in as the local admin, opened Research Operations, FORGE Monitor, AI Model Operations, Strategy Evolution, Data Integrity, Research Confidence, and Research Memory at desktop width, and Research Confidence at 390px. Confidence badge class for `PIPELINE_COMPLETED` was `border-border text-muted`. Panel copy showed return unavailable. FORGE showed no stored reports. Integrity showed one usable observation. Model operations showed `challenge-primary` and unavailable endpoints. Research operations showed `REVIEW_PERFORMANCE`.
+
+`pnpm typecheck` and `pnpm lint` passed.

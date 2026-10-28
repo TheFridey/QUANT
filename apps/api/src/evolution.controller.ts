@@ -109,6 +109,21 @@ export class EvolutionController {
     return this.evolution.researchCentre();
   }
 
+  @Get("forge")
+  forgeMonitor() {
+    return this.evolution.forgeMonitor();
+  }
+
+  @Get("integrity")
+  integrity() {
+    return this.evolution.dataIntegrityPanel();
+  }
+
+  @Get("confidence")
+  confidence() {
+    return this.evolution.researchConfidence();
+  }
+
   @UseGuards(AdminGuard)
   @Post("queue")
   enqueue(@Body() body: unknown) {

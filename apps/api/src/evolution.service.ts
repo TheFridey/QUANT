@@ -7,6 +7,8 @@ import {
   DEFAULT_ASSIGNMENTS,
   ModelRouter,
   assertKnownTier,
+  RESEARCH_OUTCOMES,
+  assessObservationIntegrity,
   capturePhaseContext,
   featuresForEntry,
   queryWinnersAndLosers,
@@ -482,6 +484,90 @@ export class EvolutionService {
         entry: featuresForEntry({ records: scoped }, id),
       };
     });
+  }
+
+  async forgeMonitor() {
+    const reports = await this.prisma.experimentReport.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    });
+    return {
+      runs: reports.map((row) => {
+        const payload = row.payload as {
+          reproducibility?: { codeHash?: string };
+          results?: { returnPct?: string | null; sampleSize?: number };
+          outcomes?: Record<string, { met?: boolean; detail?: string }>;
+        };
+        return {
+          id: row.id,
+          hypothesisId: row.hypothesisId,
+          strategyModuleId: row.strategyModuleId,
+          strategyVersion: row.strategyVersion,
+          approvalStatus: row.approvalStatus,
+          contentHash: row.contentHash,
+          codeHash: payload.reproducibility?.codeHash ?? null,
+          returnPct: payload.results?.returnPct ?? null,
+          sampleSize: payload.results?.sampleSize ?? null,
+          pipelineCompleted: payload.outcomes?.PIPELINE_COMPLETED?.met === true,
+          resultsMeasurable: payload.outcomes?.RESULTS_MEASURABLE?.met === true,
+          deploymentEligible: payload.outcomes?.DEPLOYMENT_ELIGIBLE?.met === true,
+          createdAt: row.createdAt.toISOString(),
+        };
+      }),
+    };
+  }
+
+  async dataIntegrityPanel() {
+    const rows = await this.prisma.marketObservation.findMany({
+      orderBy: { receivedAt: "asc" },
+      take: 400,
+    });
+    const observations = rows.map((row) => ({
+      id: row.id,
+      pairAddress: row.pairAddress,
+      baseSymbol: row.baseSymbol,
+      quoteAddress: row.quoteAddress,
+      quoteSymbol: row.quoteSymbol,
+      priceUsd: row.priceUsd?.toString() ?? null,
+      liquidityUsd: row.liquidityUsd?.toString() ?? null,
+      volume24hUsd: row.volume24hUsd?.toString() ?? null,
+      volume5mUsd: row.volume5mUsd?.toString() ?? null,
+      priceChangeM5Pct: row.priceChangeM5?.toString() ?? null,
+      priceChangeH1Pct: row.priceChangeH1?.toString() ?? null,
+      txnsM5Buys: row.txnsM5Buys,
+      txnsM5Sells: row.txnsM5Sells,
+      receivedAt: row.receivedAt.toISOString(),
+      freshness: (["LIVE", "DELAYED", "STALE", "REPLAY", "DEMO"].includes(row.freshness)
+        ? row.freshness
+        : "STALE") as "LIVE" | "DELAYED" | "STALE" | "REPLAY" | "DEMO",
+      provenance: `MarketObservation:${row.id}`,
+    }));
+    const assessed = assessObservationIntegrity(observations);
+    return {
+      observationCount: observations.length,
+      usableCount: assessed.usable.length,
+      blocking: assessed.blocking,
+      issues: assessed.issues.slice(0, 40),
+    };
+  }
+
+  async researchConfidence() {
+    const latest = await this.prisma.experimentReport.findFirst({ orderBy: { createdAt: "desc" } });
+    const payload = (latest?.payload ?? {}) as {
+      outcomes?: Record<string, { met?: boolean; detail?: string }>;
+      results?: { returnPct?: string | null };
+    };
+    return {
+      reportId: latest?.id ?? null,
+      returnPct: payload.results?.returnPct ?? null,
+      note: "Pipeline completion is a recorded stage. It is not a validated strategy and it is not a profit result.",
+      outcomes: RESEARCH_OUTCOMES.map((name) => {
+        const row = payload.outcomes?.[name];
+        const met = row?.met === true;
+        const tone = !met ? "open" : name === "PIPELINE_COMPLETED" ? "recorded" : "measured";
+        return { name, met, detail: row?.detail ?? "No persisted assessment", tone };
+      }),
+    };
   }
 
   async memoryFactors() {
