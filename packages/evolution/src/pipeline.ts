@@ -40,7 +40,7 @@ export type PipelineRunResult = {
  * End-to-end research pipeline (isolated from live paper BullMQ path).
  * Uses deterministic template forge when no LLM key; never invents fill prices.
  */
-export function runResearchPipeline(input: {
+export async function runResearchPipeline(input: {
   hypothesis: Hypothesis;
   autonomy: AutonomyPolicy;
   /** Synthetic measurable test metrics from a real backtest caller — nulls stay null. */
@@ -55,7 +55,7 @@ export function runResearchPipeline(input: {
     endAt: string | null;
   };
   router?: ModelRouter;
-}): PipelineRunResult {
+}): Promise<PipelineRunResult> {
   const stages: string[] = ["OBSERVE"];
   const transitions: LifecycleTransition[] = [];
   let lifecycle: StrategyLifecycle = "DRAFT";
@@ -95,7 +95,7 @@ export function runResearchPipeline(input: {
   Object.assign(oracle, enq.state);
 
   stages.push("FORGE");
-  const forged = forgeStrategyModule({ hypothesis: input.hypothesis });
+  const forged = await forgeStrategyModule({ hypothesis: input.hypothesis });
   const forgeResult = forged.ok
     ? { ok: true as const, sourceHash: forged.sourceHash, workspacePath: forged.workspacePath }
     : { ok: false as const, error: forged.error };

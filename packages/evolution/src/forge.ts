@@ -1,54 +1,39 @@
-import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
 import type { Hypothesis } from "@odin/shared";
+import { compileStrategySource, sha256 } from "./compile-strategy.js";
+import { executeCompiledStrategy, probeIsolation, type RunnerConfiguration } from "./sandbox-runner.js";
+import { inspectSource, STRATEGY_DEPENDENCY_ALLOWLIST } from "./static-gate.js";
 import {
+  STRATEGY_CONTRACT_VERSION,
   strategyModuleManifestSchema,
   strategySignalSchema,
   type StrategyBar,
-  type StrategyContext,
-  type StrategyModule,
   type StrategyModuleManifest,
+  type StrategySignal,
 } from "./strategy-interface.js";
 
-export const FORGE_ALLOWED_DEPENDENCIES = [
-  "@odin/shared",
-  "@odin/evolution",
-  "zod",
-  "decimal.js",
-] as const;
+export { staticCheck } from "./static-gate.js";
 
-const FORBIDDEN_IMPORT_PATTERNS = [
-  /from\s+["']fs["']/,
-  /from\s+["']node:fs["']/,
-  /from\s+["']child_process["']/,
-  /from\s+["']node:child_process["']/,
-  /from\s+["']net["']/,
-  /from\s+["']node:net["']/,
-  /from\s+["']http["']/,
-  /from\s+["']node:http["']/,
-  /from\s+["']https["']/,
-  /from\s+["']node:https["']/,
-  /process\.env/,
-  /DATABASE_URL/,
-  /REDIS_URL/,
-  /PRIVATE_KEY/,
-  /API_KEY/,
-  /SECRET/,
-  /broker/i,
-  /real[_-]?money/i,
-  /placeOrder\s*\(/,
-  /overrideRisk/i,
-];
+export const FORGE_ALLOWED_DEPENDENCIES = STRATEGY_DEPENDENCY_ALLOWLIST;
 
-export type ForgeLimits = {
-  maxCpuMs: number;
-  maxMemoryMb: number;
-  maxFsBytes: number;
-  timeoutMs: number;
-  workspaceRoot: string;
+export type ExperimentIntegrity = {
+  source: string;
+  sourceHash: string;
+  compiledArtifactHash: string | null;
+  strategyVersion: string;
+  contractVersion: typeof STRATEGY_CONTRACT_VERSION;
+  modelIdentifier: string;
+  hypothesisId: string;
+  datasetIds: string[];
+  runner: RunnerConfiguration;
+  dependencies: readonly string[];
+  executionResult: string;
+  exitStatus: number | null;
+  testOutcomes: Array<{ name: string; status: "PASS" | "FAIL" | "SKIP" }>;
+  signalsClaimed: boolean;
 };
 
 export type ForgeResult =
@@ -57,50 +42,164 @@ export type ForgeResult =
       workspacePath: string;
       manifest: StrategyModuleManifest;
       sourceHash: string;
-      module: StrategyModule;
-      staticFindings: string[];
+      artifactHash: string;
+      signals: StrategySignal[];
+      integrity: ExperimentIntegrity;
+      provenance: "TEMPLATE" | "PROVIDED_SOURCE";
+      signalsClaimed: true;
     }
   | {
       ok: false;
-      code: "STATIC_REJECT" | "CONTRACT_FAIL" | "SANDBOX_LIMIT" | "INVALID";
+      code: "STATIC_REJECT" | "COMPILE_FAIL" | "CONTRACT_FAIL" | "SANDBOX_LIMIT" | "ISOLATION_DISABLED" | "SANDBOX_TIMEOUT" | "SANDBOX_EXIT" | "HASH_MISMATCH" | "INVALID";
       error: string;
       findings: string[];
+      integrity: ExperimentIntegrity;
+      signalsClaimed: false;
+      workspacePath?: string;
     };
 
+export type ForgeLimits = {
+  maxFsBytes: number;
+  timeoutMs: number;
+  workspaceRoot: string;
+};
+
 const DEFAULT_LIMITS: ForgeLimits = {
-  maxCpuMs: 2_000,
-  maxMemoryMb: 128,
   maxFsBytes: 256_000,
-  timeoutMs: 5_000,
+  timeoutMs: 4_000,
   workspaceRoot: join(tmpdir(), "odin-forge"),
 };
 
+const CONTRACT_BAR: StrategyBar = {
+  instrumentId: "solana:spot:universe",
+  pairAddress: "So11111111111111111111111111111111111111112demoPairAddress0001",
+  receivedAt: "2026-01-01T00:00:00.000Z",
+  priceUsd: "1.25",
+  liquidityUsd: "100000",
+  volume24hUsd: "500000",
+  priceChangeM5Pct: "3",
+  priceChangeH1Pct: "1",
+  txnsM5Buys: 10,
+  txnsM5Sells: 4,
+  dataState: "LIVE",
+};
+
 /**
- * Isolated research forge.
- * Generates versioned strategy modules into a sandbox workspace.
- * No broker creds, live exec, prod DB, host FS escape, or unrestricted net.
+ * Forge writes, validates, compiles, and — only inside bubblewrap — executes strategy source.
+ * There is no in-process evaluator for generated code.
  */
-export function forgeStrategyModule(input: {
+export async function forgeStrategyModule(input: {
   hypothesis: Hypothesis;
-  /** Optional LLM/template source. When absent, uses deterministic template. */
   source?: string;
   version?: string;
+  modelIdentifier?: string;
+  datasetIds?: string[];
   limits?: Partial<ForgeLimits>;
-}): ForgeResult {
+  /** Test seam. Production callers leave this unset so the real probe decides. */
+  isolation?: "auto" | "disabled";
+  bars?: StrategyBar[];
+}): Promise<ForgeResult> {
   const limits = { ...DEFAULT_LIMITS, ...input.limits };
+  const provenance = input.source?.trim() ? "PROVIDED_SOURCE" : "TEMPLATE";
   const source = input.source?.trim() ? input.source : renderTemplate(input.hypothesis);
-  const staticFindings = staticCheck(source);
+  const modelIdentifier = input.modelIdentifier ?? (provenance === "TEMPLATE" ? "TEMPLATE" : "UNATTRIBUTED_SOURCE");
+  const version = input.version ?? "0.1.0";
+  const id = `strat_${slug(input.hypothesis.title)}`;
+  const hypothesisId = input.hypothesis.id ?? "hyp";
+  const runner = input.isolation === "disabled" ? { ...probeIsolation(), runtime: "disabled" as const, available: false, reason: "Isolation disabled by caller" } : probeIsolation();
+
+  const baseIntegrity = (patch: Partial<ExperimentIntegrity>): ExperimentIntegrity => ({
+    source,
+    sourceHash: sha256(source),
+    compiledArtifactHash: null,
+    strategyVersion: version,
+    contractVersion: STRATEGY_CONTRACT_VERSION,
+    modelIdentifier,
+    hypothesisId,
+    datasetIds: input.datasetIds ?? [],
+    runner,
+    dependencies: STRATEGY_DEPENDENCY_ALLOWLIST,
+    executionResult: "NOT_RUN",
+    exitStatus: null,
+    testOutcomes: [],
+    signalsClaimed: false,
+    ...patch,
+  });
+
+  const staticFindings = inspectSource(source);
   if (staticFindings.length > 0) {
     return {
       ok: false,
       code: "STATIC_REJECT",
-      error: "Generated source failed static security checks",
-      findings: staticFindings,
+      error: "Generated source failed the static source gate",
+      findings: staticFindings.map((finding) => `${finding.code}: ${finding.detail}`),
+      signalsClaimed: false,
+      integrity: baseIntegrity({
+        executionResult: "STATIC_REJECT",
+        testOutcomes: [{ name: "static_source_gate", status: "FAIL" }],
+      }),
     };
   }
 
-  const id = `strat_${slug(input.hypothesis.title)}`;
-  const version = input.version ?? "0.1.0";
+  const compiled = compileStrategySource(source);
+  if (!compiled.ok) {
+    return {
+      ok: false,
+      code: "COMPILE_FAIL",
+      error: compiled.error,
+      findings: [compiled.error],
+      signalsClaimed: false,
+      integrity: baseIntegrity({
+        executionResult: "COMPILE_FAIL",
+        testOutcomes: [
+          { name: "static_source_gate", status: "PASS" },
+          { name: "compilation", status: "FAIL" },
+        ],
+      }),
+    };
+  }
+
+  if (!runner.available) {
+    return {
+      ok: false,
+      code: "ISOLATION_DISABLED",
+      error: runner.reason,
+      findings: [runner.reason],
+      signalsClaimed: false,
+      integrity: baseIntegrity({
+        compiledArtifactHash: compiled.artifactHash,
+        executionResult: "ISOLATION_DISABLED",
+        testOutcomes: [
+          { name: "static_source_gate", status: "PASS" },
+          { name: "compilation", status: "PASS" },
+          { name: "isolated_execution", status: "SKIP" },
+        ],
+      }),
+    };
+  }
+
+  const sourceBytes = Buffer.byteLength(source, "utf8");
+  if (sourceBytes > limits.maxFsBytes) {
+    return {
+      ok: false,
+      code: "SANDBOX_LIMIT",
+      error: `Source exceeds workspace limit (${sourceBytes} > ${limits.maxFsBytes})`,
+      findings: [],
+      signalsClaimed: false,
+      integrity: baseIntegrity({
+        compiledArtifactHash: compiled.artifactHash,
+        executionResult: "SANDBOX_LIMIT",
+      }),
+    };
+  }
+
+  const manifest = strategyModuleManifestSchema.parse({
+    id,
+    version,
+    instrumentIds: input.hypothesis.instrumentIds,
+    hypothesisId,
+    entrypoint: "strategy.js",
+  });
   const workspacePath = resolve(limits.workspaceRoot, id, version);
   try {
     mkdirSync(workspacePath, { recursive: true });
@@ -110,86 +209,102 @@ export function forgeStrategyModule(input: {
       code: "SANDBOX_LIMIT",
       error: error instanceof Error ? error.message : "workspace create failed",
       findings: [],
+      signalsClaimed: false,
+      integrity: baseIntegrity({ compiledArtifactHash: compiled.artifactHash, executionResult: "SANDBOX_LIMIT" }),
     };
   }
 
-  const manifest: StrategyModuleManifest = strategyModuleManifestSchema.parse({
-    id,
-    version,
-    instrumentIds: input.hypothesis.instrumentIds,
-    hypothesisId: input.hypothesis.id,
-    entrypoint: "strategy.js",
+  writeFileSync(join(workspacePath, "strategy.ts"), source);
+  writeFileSync(join(workspacePath, "strategy.js"), compiled.javascript);
+  writeFileSync(join(workspacePath, "manifest.json"), JSON.stringify(manifest, null, 2));
+
+  const bars = input.bars ?? [{ ...CONTRACT_BAR, instrumentId: input.hypothesis.instrumentIds[0] ?? CONTRACT_BAR.instrumentId }];
+  const execution = await executeCompiledStrategy({
+    javascript: compiled.javascript,
+    artifactHash: compiled.artifactHash,
+    bars,
+    metadata: { strategyId: id, version, hypothesisId },
+    timeoutMs: limits.timeoutMs,
   });
 
-  const sourceBytes = Buffer.byteLength(source, "utf8");
-  if (sourceBytes > limits.maxFsBytes) {
+  const integrity = baseIntegrity({
+    compiledArtifactHash: compiled.artifactHash,
+    executionResult: execution.code,
+    exitStatus: execution.exitStatus,
+    signalsClaimed: execution.signalsClaimed,
+    runner: execution.runner,
+    testOutcomes: [
+      { name: "static_source_gate", status: "PASS" },
+      { name: "compilation", status: "PASS" },
+      { name: "isolated_execution", status: execution.ok ? "PASS" : "FAIL" },
+      {
+        name: "artifact_hash_matches_execution",
+        status: execution.executedHash === compiled.artifactHash ? "PASS" : "FAIL",
+      },
+    ],
+  });
+  writeFileSync(join(workspacePath, "integrity.json"), JSON.stringify(integrity, null, 2));
+  writeFileSync(
+    join(workspacePath, "sandbox.json"),
+    JSON.stringify({ runner: execution.runner, dependencies: STRATEGY_DEPENDENCY_ALLOWLIST }, null, 2),
+  );
+
+  if (!execution.ok || !execution.signalsClaimed) {
+    const code = mapExecutionCode(execution.code);
     return {
       ok: false,
-      code: "SANDBOX_LIMIT",
-      error: `Source exceeds FS limit (${sourceBytes} > ${limits.maxFsBytes})`,
-      findings: [],
+      code,
+      error: execution.error ?? "Isolated execution failed",
+      findings: execution.error ? [execution.error] : [],
+      signalsClaimed: false,
+      workspacePath,
+      integrity: { ...integrity, signalsClaimed: false },
     };
   }
 
-  writeFileSync(join(workspacePath, "manifest.json"), JSON.stringify(manifest, null, 2));
-  writeFileSync(join(workspacePath, "strategy.ts"), source);
-  writeFileSync(join(workspacePath, "strategy.js"), compileTemplateToJs(input.hypothesis, id, version));
-  writeFileSync(
-    join(workspacePath, "sandbox.json"),
-    JSON.stringify(
-      {
-        allowedDependencies: FORGE_ALLOWED_DEPENDENCIES,
-        denied: [
-          "broker_credentials",
-          "live_execution",
-          "prod_database",
-          "host_filesystem",
-          "unrestricted_network",
-          "risk_policy_mutation",
-        ],
-        limits,
-      },
-      null,
-      2,
-    ),
-  );
-
-  const module = loadSandboxedModule(workspacePath, manifest, input.hypothesis);
-  const contract = runContractTests(module);
-  if (!contract.ok) {
-    return { ok: false, code: "CONTRACT_FAIL", error: contract.error, findings: contract.findings };
+  const signals: StrategySignal[] = [];
+  for (const signal of execution.signals) {
+    const parsed = strategySignalSchema.safeParse(signal);
+    if (!parsed.success) {
+      return {
+        ok: false,
+        code: "CONTRACT_FAIL",
+        error: "Strategy signal failed the contract schema",
+        findings: parsed.error.issues.map((issue) => issue.message),
+        signalsClaimed: false,
+        workspacePath,
+        integrity: {
+          ...integrity,
+          signalsClaimed: false,
+          executionResult: "CONTRACT_FAIL",
+          testOutcomes: integrity.testOutcomes.map((row) =>
+            row.name === "isolated_execution" ? { ...row, status: "FAIL" } : row,
+          ),
+        },
+      };
+    }
+    signals.push(parsed.data);
   }
 
-  const sourceHash = createHash("sha256").update(source).digest("hex");
   return {
     ok: true,
     workspacePath,
     manifest,
-    sourceHash,
-    module,
-    staticFindings: [],
+    sourceHash: integrity.sourceHash,
+    artifactHash: compiled.artifactHash,
+    signals,
+    integrity: { ...integrity, signalsClaimed: true },
+    provenance,
+    signalsClaimed: true,
   };
 }
 
-export function staticCheck(source: string): string[] {
-  const findings: string[] = [];
-  if (!source) return findings;
-  for (const pattern of FORBIDDEN_IMPORT_PATTERNS) {
-    if (pattern.test(source)) {
-      findings.push(`Forbidden pattern: ${pattern}`);
-    }
-  }
-  // Dependency allowlist: any non-relative import must be allowlisted.
-  const importRe = /from\s+["']([^"']+)["']/g;
-  let match: RegExpExecArray | null;
-  while ((match = importRe.exec(source))) {
-    const spec = match[1]!;
-    if (spec.startsWith(".") || spec.startsWith("/")) continue;
-    if (!(FORGE_ALLOWED_DEPENDENCIES as readonly string[]).includes(spec)) {
-      findings.push(`Dependency not allowlisted: ${spec}`);
-    }
-  }
-  return findings;
+function mapExecutionCode(
+  code: string,
+): "ISOLATION_DISABLED" | "SANDBOX_TIMEOUT" | "HASH_MISMATCH" | "CONTRACT_FAIL" | "SANDBOX_EXIT" {
+  if (code === "ISOLATION_DISABLED" || code === "SANDBOX_TIMEOUT" || code === "HASH_MISMATCH") return code;
+  if (code === "CONTRACT" || code.startsWith("SIGNAL_")) return "CONTRACT_FAIL";
+  return "SANDBOX_EXIT";
 }
 
 export function destroyForgeWorkspace(workspacePath: string, root = join(tmpdir(), "odin-forge")): void {
@@ -201,151 +316,19 @@ export function destroyForgeWorkspace(workspacePath: string, root = join(tmpdir(
   if (existsSync(resolved)) rmSync(resolved, { recursive: true, force: true });
 }
 
-function loadSandboxedModule(
-  workspacePath: string,
-  manifest: StrategyModuleManifest,
-  hypothesis: Hypothesis,
-): StrategyModule {
-  // Execute only the compiled template JS (no eval of arbitrary LLM text in-process).
-  // LLM/source text is persisted for review; runtime uses the deterministic sandbox module.
-  void readFileSync(join(workspacePath, "strategy.ts"), "utf8");
-  const instrumentIds = [...manifest.instrumentIds];
-  return {
-    id: manifest.id,
-    version: manifest.version,
-    instrumentIds,
-    onBar(bar: StrategyBar, context: StrategyContext) {
-      void hypothesis;
-      const price = bar.priceUsd;
-      if (!price || bar.dataState !== "LIVE" && bar.dataState !== "REPLAY") {
-        return strategySignalSchema.parse({
-          instrumentId: bar.instrumentId,
-          pairAddress: bar.pairAddress,
-          intent: "HOLD",
-          reasonCodes: ["NO_TRADEABLE_MARK"],
-        });
-      }
-      const m5 = bar.priceChangeM5Pct ? Number(bar.priceChangeM5Pct) : null;
-      const entry = Number(context.config.entryM5ChangePct);
-      const maxEntry = Number(context.config.maxEntryM5ChangePct);
-      if (m5 !== null && Number.isFinite(m5) && m5 >= entry && m5 <= maxEntry) {
-        return strategySignalSchema.parse({
-          instrumentId: bar.instrumentId,
-          pairAddress: bar.pairAddress,
-          intent: "ENTER_LONG",
-          reasonCodes: ["TEMPLATE_M5_ENTRY"],
-          confidence: 0.5,
-        });
-      }
-      if (m5 !== null && Number.isFinite(m5) && m5 <= Number(context.config.exitM5ChangePct)) {
-        return strategySignalSchema.parse({
-          instrumentId: bar.instrumentId,
-          pairAddress: bar.pairAddress,
-          intent: "EXIT_LONG",
-          reasonCodes: ["TEMPLATE_M5_EXIT"],
-        });
-      }
-      return strategySignalSchema.parse({
-        instrumentId: bar.instrumentId,
-        pairAddress: bar.pairAddress,
-        intent: "HOLD",
-        reasonCodes: ["NO_SIGNAL"],
-      });
-    },
-  };
-}
-
-function runContractTests(module: StrategyModule): { ok: true } | { ok: false; error: string; findings: string[] } {
-  const findings: string[] = [];
-  const bar: StrategyBar = {
-    instrumentId: module.instrumentIds[0] ?? "solana:spot:universe",
-    pairAddress: "So11111111111111111111111111111111111111112demoPairAddress0001",
-    receivedAt: new Date().toISOString(),
-    priceUsd: "1.25",
-    liquidityUsd: "100000",
-    volume24hUsd: "500000",
-    priceChangeM5Pct: "3",
-    priceChangeH1Pct: "1",
-    txnsM5Buys: 10,
-    txnsM5Sells: 4,
-    dataState: "LIVE",
-  };
-  const context: StrategyContext = {
-    config: {
-      startingBalanceUsd: "100",
-      feeBps: "30",
-      maxSlippageBps: "150",
-      minLiquidityUsd: "25000",
-      minVolume24hUsd: "50000",
-      entryM5ChangePct: "2",
-      maxEntryM5ChangePct: "25",
-      minH1ChangePct: "0",
-      exitM5ChangePct: "-1.5",
-      stopLossPct: "3",
-      takeProfitPct: "5",
-      maxPositions: 4,
-      maxPositionPctEquity: "5",
-      maxDailyLossPct: "3",
-      maxParticipationPctLiquidity: "1",
-      minOrderNotionalUsd: "5",
-      allowDelayedExits: true,
-      flattenOnEmergency: false,
-      universeLimit: 12,
-      liveMaxAgeMs: 45000,
-      delayedMaxAgeMs: 180000,
-      maxRiskPerTradePct: "0.5",
-      maxAggregateExposurePct: "20",
-      maxTotalDrawdownPct: "10",
-      maxPriceImpactBps: "150",
-      paperLatencyMs: 0,
-      spreadBpsEstimate: "5",
-      orderExpiryMs: 60_000,
-      pulseMinObservations: 5,
-      discoveryMaxPairAgeHours: null,
-      discoveryMinPairAgeMinutes: "0",
-      relativeVolumeMin: null,
-      trailingStopPct: null,
-      maxHoldingMs: null,
-      minSampleTrades: 30,
-      minObservationSpanMs: 24 * 60 * 60 * 1000,
-      requireOosEvaluation: true,
-      releaseMaxDrawdownPct: "15",
-    },
-    openPositions: [],
-    history: [],
-  };
-  try {
-    const signal = module.onBar(bar, context);
-    strategySignalSchema.parse(signal);
-  } catch (error) {
-    findings.push(error instanceof Error ? error.message : "contract failure");
-    return { ok: false, error: "Strategy contract test failed", findings };
-  }
-  return { ok: true };
-}
-
 function renderTemplate(hypothesis: Hypothesis): string {
+  const title = hypothesis.title.replace(/\*\//g, "");
   return `/**
- * Auto-forged research strategy (template).
- * Hypothesis: ${hypothesis.title.replace(/\*\//g, "")}
- * This module emits intents only. Risk/sizing/fills are external.
+ * TEMPLATE research strategy. This source is a deterministic template.
+ * Hypothesis title: ${title}
+ * The module emits intents. Risk, sizing, and fills stay outside this file.
  */
-export const manifest = {
-  id: "template",
-  instrumentIds: ${JSON.stringify(hypothesis.instrumentIds)},
-};
-export function onBar(bar, context) {
-  void context;
-  if (!bar.priceUsd) return { instrumentId: bar.instrumentId, intent: "HOLD", reasonCodes: ["NO_PRICE"] };
-  return { instrumentId: bar.instrumentId, intent: "HOLD", reasonCodes: ["TEMPLATE"] };
+export function onBar(input) {
+  if (!input.bar || !input.bar.priceUsd) {
+    return { intent: "HOLD", reasonCodes: ["NO_PRICE"] };
+  }
+  return { intent: "HOLD", reasonCodes: ["TEMPLATE"], confidence: 0 };
 }
-`;
-}
-
-function compileTemplateToJs(hypothesis: Hypothesis, id: string, version: string): string {
-  return `export const id = ${JSON.stringify(id)};
-export const version = ${JSON.stringify(version)};
-export const instrumentIds = ${JSON.stringify(hypothesis.instrumentIds)};
 `;
 }
 

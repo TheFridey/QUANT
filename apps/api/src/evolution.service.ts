@@ -257,7 +257,7 @@ export class EvolutionService {
     }
 
     const router = new ModelRouter({ budgetCapUsd: Number(autonomy.maxResearchBudgetUsd) });
-    const result = runResearchPipeline({
+    const result = await runResearchPipeline({
       hypothesis: {
         id: hypothesis.id,
         title: hypothesis.title,
@@ -629,7 +629,7 @@ export class EvolutionService {
       .parse(body);
     const hypothesis = await this.prisma.hypothesis.findUnique({ where: { id: parsed.hypothesisId } });
     if (!hypothesis) throw new NotFoundException("Hypothesis not found");
-    const forged = forgeStrategyModule({
+    const forged = await forgeStrategyModule({
       hypothesis: {
         id: hypothesis.id,
         title: hypothesis.title,

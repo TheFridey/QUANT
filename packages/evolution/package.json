@@ -19,10 +19,10 @@
     "@odin/backtest": "workspace:*",
     "@odin/market-data": "workspace:*",
     "@odin/shared": "workspace:*",
+    "typescript": "^5.9.3",
     "zod": "4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^22.18.6",
-    "typescript": "^5.9.3"
+    "@types/node": "^22.18.6"
   }
 }

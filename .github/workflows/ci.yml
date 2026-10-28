@@ -48,6 +48,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:deploy
       - run: pnpm test

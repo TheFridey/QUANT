@@ -21,3 +21,29 @@ Local verification against PostgreSQL `odin_test` and Redis on `127.0.0.1`:
 - `pnpm lint` — exit 0
 
 Remote CI on this branch is recorded after the push.
+
+## Phase 2 — Forge execution
+
+Completed 2026-10-28 17:13.
+
+`loadSandboxedModule()` no longer runs a predetermined template. Generated TypeScript is checked by a static source gate (named as a static gate, not as isolation), compiled with the TypeScript compiler, and executed only in a separate bubblewrap process.
+
+Runner configuration that was actually probed on this machine:
+
+- Runtime: bubblewrap 0.9.0
+- User namespace uid 65534
+- Network namespace unshared (`ENETUNREACH` on connect)
+- Root filesystem read-only, including the strategy workspace
+- Host project directory and secrets are not mounted
+- Environment cleared before the strategy runs
+- tmpfs `/tmp` capped at 8 MiB
+- `prlimit` nproc 16, nofile 32, cpu 3 seconds
+- Node heap cap 64 MB
+- Wall-clock kill, stdout cap 200 KB
+- Dependencies allowlist is empty; the strategy receives only the harness input
+
+The harness passes historical bars strictly before the decision bar and checks that the SHA-256 of the file it imports matches the compiled artifact hash. A logic change in `onBar` changes the returned intent. Template source is labelled `TEMPLATE`. Disabling isolation returns `ISOLATION_DISABLED` and `signalsClaimed: false`.
+
+Runtime containment tests ran here and passed: host environment canary absent, workspace file read blocked, outbound connect blocked, infinite loop terminated, allocation terminated. CI installs `bubblewrap` so the same tests can run there. If `bwrap` is missing, execution stays disabled and those tests skip.
+
+Local: `pnpm exec vitest run packages/evolution/src/forge.test.ts packages/evolution/src/pipeline.test.ts` — 11 passed. `pnpm typecheck` and `pnpm lint` passed after the change.

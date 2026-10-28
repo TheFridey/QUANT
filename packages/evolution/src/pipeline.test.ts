@@ -19,8 +19,8 @@ const hypothesis: Hypothesis = {
 };
 
 describe("research pipeline e2e", () => {
-  it("runs OBSERVE→REVIEW with honest acceptance flags", () => {
-    const result = runResearchPipeline({
+  it("runs OBSERVE→REVIEW with honest acceptance flags", async () => {
+    const result = await runResearchPipeline({
       hypothesis,
       autonomy: DEFAULT_AUTONOMY,
       testMetrics: {
