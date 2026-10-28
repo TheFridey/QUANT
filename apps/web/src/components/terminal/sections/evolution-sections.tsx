@@ -201,9 +201,20 @@ export function ResearchCentreSection() {
 export function ModelOpsSection() {
   const [data, setData] = useState<{
     tiers: string[];
-    endpoints: Array<{ id: string; kind: string; tier: string; model: string }>;
+    endpoints: Array<{ id: string; kind: string; tier: string; model: string; availability?: string }>;
     assignments: Array<{ agentOrTask: string; tier: string; primaryEndpointId: string }>;
-    usage: Array<{ agentOrTask: string; endpointId: string; ok: boolean; latencyMs: number; costUsdEst: string; createdAt: string }>;
+    separatedReviewer?: { separated: boolean; forgeEndpointId: string; challengeEndpointId: string };
+    liveCallsEnabled?: boolean;
+    usage: Array<{
+      agentOrTask: string;
+      endpointId: string;
+      ok: boolean;
+      latencyMs: number;
+      costUsdEst: string;
+      provenance?: string;
+      costKind?: string;
+      createdAt: string;
+    }>;
   } | null>(null);
 
   useEffect(() => {
@@ -212,7 +223,7 @@ export function ModelOpsSection() {
 
   return (
     <div className="grid gap-3 lg:grid-cols-2 animate-odin-fade">
-      <Panel title="Model Operations" extra="FAST / DEEP / ENGINEERING">
+      <Panel title="AI Model Operations" extra={data?.liveCallsEnabled ? "Live endpoints configured" : "Live calls disabled"}>
         {!data ? (
           <EmptyState title="No model ops data" />
         ) : (
@@ -226,10 +237,16 @@ export function ModelOpsSection() {
             </div>
             <ul className="space-y-1 text-xs">
               {data.endpoints.map((endpoint) => (
-                <li key={endpoint.id} className="mono">
-                  {endpoint.id} · {endpoint.kind} · {endpoint.tier} · model={endpoint.model}
+                <li key={endpoint.id} className="mono text-muted">
+                  {endpoint.id} · {endpoint.kind} · {endpoint.tier} · model={endpoint.model} · {endpoint.availability ?? "UNAVAILABLE"}
                 </li>
               ))}
+              {data.separatedReviewer ? (
+                <li className="text-muted">
+                  Reviewer separation {String(data.separatedReviewer.separated)} · {data.separatedReviewer.forgeEndpointId} /{" "}
+                  {data.separatedReviewer.challengeEndpointId}
+                </li>
+              ) : null}
             </ul>
             <div className="text-[10px] uppercase tracking-[0.14em] text-muted">Assignments</div>
             <ul className="space-y-1 text-xs">
@@ -247,7 +264,7 @@ export function ModelOpsSection() {
           {(data?.usage ?? []).slice(0, 40).map((row, index) => (
             <li key={`${row.createdAt}-${index}`} className="flex justify-between gap-2 px-3 py-2">
               <span>
-                {row.agentOrTask} · {row.endpointId} · {row.ok ? "ok" : "fail"}
+                {row.agentOrTask} · {row.endpointId} · {row.provenance ?? (row.ok ? "recorded" : "unavailable")} · {row.costKind ?? "ESTIMATED"}
               </span>
               <span className="mono text-muted">
                 {row.latencyMs}ms · ${row.costUsdEst}
@@ -265,7 +282,7 @@ export function ModelOpsSection() {
 
 export function GenomeSection() {
   const [data, setData] = useState<{
-    strategies: Array<{ id: string; name: string; version: number; status: string }>;
+    strategies: Array<{ id: string; name: string; version: number; status: string; parentId: string | null }>;
     transitions: Array<{ strategyId: string; from: string; to: string; actor: string; evidenceHash: string; at: string }>;
   } | null>(null);
 
@@ -275,12 +292,15 @@ export function GenomeSection() {
 
   return (
     <div className="grid gap-3 lg:grid-cols-2 animate-odin-fade">
-      <Panel title="Strategy Genome">
+      <Panel title="Strategy Evolution">
         <ul className="divide-y divide-border text-sm">
           {(data?.strategies ?? []).map((row) => (
             <li key={row.id} className="flex justify-between gap-2 px-3 py-2">
               <span>
                 {row.name} v{row.version}
+                <span className="mt-0.5 block text-xs text-muted">
+                  {row.parentId ? `child of ${row.parentId}` : "root strategy"}
+                </span>
               </span>
               <span className="mono text-xs text-muted">{row.status}</span>
             </li>

@@ -17,7 +17,15 @@ export type LlmRequest = {
   messages: LlmMessage[];
   maxTokens: number;
   timeoutMs: number;
-  purpose: "classify" | "summarise" | "research" | "post_trade";
+  purpose:
+    | "classify"
+    | "summarise"
+    | "research"
+    | "post_trade"
+    | "fast_observer"
+    | "deep_hypothesis"
+    | "engineering_source"
+    | "challenge_review";
 };
 
 export type LlmResult<T> =
@@ -37,7 +45,7 @@ export class MockModelProvider implements ModelProvider {
     const started = Date.now();
     if (request.purpose === "summarise" || request.purpose === "post_trade" || request.purpose === "research") {
       const draft = {
-        summary: "Advisory-only review. Deterministic risk and sizing remain authoritative.",
+        summary: "MOCK advisory-only review. Advisory commentary only. Deterministic risk and sizing remain authoritative.",
         tone: "neutral" as const,
         bullets: ["No private keys or live execution involved.", "Treat this text as commentary only."],
       };
@@ -157,18 +165,36 @@ export function createHermesProvider(apiKey: string | undefined, baseUrl: string
   return new OpenAiCompatibleProvider({ id: "hermes", apiKey, baseUrl });
 }
 
-export function createModelProvider(env: {
-  OPENAI_API_KEY?: string;
-  HERMES_BASE_URL?: string;
-  HERMES_API_KEY?: string;
-}): ModelProvider {
+/** Explicit unavailable provider. It does not emit mock research. */
+export class UnavailableModelProvider implements ModelProvider {
+  readonly id = "unconfigured";
+
+  async completeJson<T>(): Promise<LlmResult<T>> {
+    return {
+      ok: false,
+      code: "UNAVAILABLE",
+      error: "No model provider is configured",
+      provider: this.id,
+    };
+  }
+}
+
+export function createModelProvider(
+  env: {
+    OPENAI_API_KEY?: string;
+    HERMES_BASE_URL?: string;
+    HERMES_API_KEY?: string;
+  },
+  options?: { allowMock?: boolean },
+): ModelProvider {
   if (env.HERMES_BASE_URL) {
     return createHermesProvider(env.HERMES_API_KEY || env.OPENAI_API_KEY, env.HERMES_BASE_URL);
   }
   if (env.OPENAI_API_KEY) {
     return new OpenAiCompatibleProvider({ apiKey: env.OPENAI_API_KEY });
   }
-  return new MockModelProvider();
+  if (options?.allowMock) return new MockModelProvider();
+  return new UnavailableModelProvider();
 }
 
 /** Advisory hook for ARCHIVIST / AEGIS review text. Never fed into fill/size/risk gates. */

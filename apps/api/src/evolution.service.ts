@@ -5,14 +5,23 @@ import {
 } from "@nestjs/common";
 import {
   DEFAULT_ASSIGNMENTS,
-  DEFAULT_ENDPOINTS,
   ModelRouter,
+  assertKnownTier,
+  RESEARCH_OUTCOMES,
+  assessObservationIntegrity,
   capturePhaseContext,
+  featuresForEntry,
+  queryWinnersAndLosers,
+  reconstructTrade,
   compareStrategies,
   createOracleSupervisor,
   dailyBriefing,
   detectDeterioration,
+  DEFAULT_ORACLE_LIMITS,
+  ORACLE_CAPABILITIES,
+  admitOracleItem,
   enqueueResearch,
+  proposeOracleCycle,
   forgeStrategyModule,
   parseAutonomyPolicy,
   runChallengeReview,
@@ -20,6 +29,10 @@ import {
   searchTradeMemory,
   transitionLifecycle,
   verifyExperimentReport,
+  engineControlDataFromSlot,
+  promoteToPaperEngine,
+  promotionBodySchema,
+  slotFromEngineControl,
   type ExperimentReport,
 } from "@odin/evolution";
 import {
@@ -30,6 +43,7 @@ import {
 import {
   DEFAULT_AUTONOMY,
   SEED_INSTRUMENTS,
+  d,
   hypothesisSchema,
   newId,
 } from "@odin/shared";
@@ -159,19 +173,18 @@ export class EvolutionService {
   }
 
   async modelOps() {
+    const router = new ModelRouter({ env: process.env, mode: "live" });
     const usage = await this.prisma.modelUsageLog.findMany({
       orderBy: { createdAt: "desc" },
       take: 100,
     });
     return {
-      tiers: ["FAST_OBSERVERS", "DEEP_RESEARCHERS", "ENGINEERING_AGENTS"],
-      endpoints: DEFAULT_ENDPOINTS.map((endpoint) => ({
-        id: endpoint.id,
-        kind: endpoint.kind,
-        tier: endpoint.tier,
-        model: endpoint.model,
-      })),
+      tiers: [...assertKnownTier()],
+      endpoints: router.health(),
       assignments: DEFAULT_ASSIGNMENTS,
+      separatedReviewer: router.assertSeparatedReviewer(),
+      budget: router.budget(),
+      liveCallsEnabled: router.health().some((row) => row.availability === "CONFIGURED"),
       usage: usage.map((row) => ({
         id: row.id,
         agentOrTask: row.agentOrTask,
@@ -182,6 +195,8 @@ export class EvolutionService {
         ok: row.ok,
         latencyMs: row.latencyMs,
         costUsdEst: row.costUsdEst.toString(),
+        costKind: row.costKind,
+        provenance: row.provenance,
         createdAt: row.createdAt.toISOString(),
       })),
     };
@@ -245,19 +260,13 @@ export class EvolutionService {
         : DEFAULT_AUTONOMY,
     );
 
-    let observationCount = 0;
-    let startAt: string | null = null;
-    let endAt: string | null = null;
-    if (parsed.useLiveObservationCount !== false) {
-      observationCount = await this.prisma.marketObservation.count();
-      const first = await this.prisma.marketObservation.findFirst({ orderBy: { receivedAt: "asc" } });
-      const last = await this.prisma.marketObservation.findFirst({ orderBy: { receivedAt: "desc" } });
-      startAt = first?.receivedAt.toISOString() ?? null;
-      endAt = last?.receivedAt.toISOString() ?? null;
-    }
+    const observationRows =
+      parsed.useLiveObservationCount === false
+        ? []
+        : await this.prisma.marketObservation.findMany({ orderBy: { receivedAt: "asc" }, take: 400 });
 
     const router = new ModelRouter({ budgetCapUsd: Number(autonomy.maxResearchBudgetUsd) });
-    const result = runResearchPipeline({
+    const result = await runResearchPipeline({
       hypothesis: {
         id: hypothesis.id,
         title: hypothesis.title,
@@ -275,16 +284,26 @@ export class EvolutionService {
       },
       autonomy,
       router,
-      testMetrics: {
-        sampleSize: observationCount > 0 ? Math.min(40, Math.max(5, Math.floor(observationCount / 50))) : 12,
-        returnPct: null,
-        maxDrawdownPct: null,
-        oosSampleSize: observationCount > 1000 ? 35 : null,
-        releaseGateLabel: "NOT_RELEASE_READY",
-        observationCount,
-        startAt,
-        endAt,
-      },
+      observations: observationRows.map((row) => ({
+        id: row.id,
+        pairAddress: row.pairAddress,
+        baseSymbol: row.baseSymbol,
+        quoteAddress: row.quoteAddress,
+        quoteSymbol: row.quoteSymbol,
+        priceUsd: row.priceUsd?.toString() ?? null,
+        liquidityUsd: row.liquidityUsd?.toString() ?? null,
+        volume24hUsd: row.volume24hUsd?.toString() ?? null,
+        volume5mUsd: row.volume5mUsd?.toString() ?? null,
+        priceChangeM5Pct: row.priceChangeM5?.toString() ?? null,
+        priceChangeH1Pct: row.priceChangeH1?.toString() ?? null,
+        txnsM5Buys: row.txnsM5Buys,
+        txnsM5Sells: row.txnsM5Sells,
+        receivedAt: row.receivedAt.toISOString(),
+        freshness: (["LIVE", "DELAYED", "STALE", "REPLAY", "DEMO"].includes(row.freshness)
+          ? row.freshness
+          : "STALE") as "LIVE" | "DELAYED" | "STALE" | "REPLAY" | "DEMO",
+        provenance: `MarketObservation:${row.id}`,
+      })),
     });
 
     for (const usage of router.usage) {
@@ -301,6 +320,8 @@ export class EvolutionService {
           promptTokensEst: usage.promptTokensEst,
           completionTokensEst: usage.completionTokensEst,
           costUsdEst: usage.costUsdEst,
+          costKind: usage.costKind,
+          provenance: usage.provenance,
           error: usage.error ?? null,
         },
       });
@@ -445,6 +466,128 @@ export class EvolutionService {
     });
   }
 
+  async reconstructMemory(tradeId?: string) {
+    const rows = await this.prisma.tradeMemory.findMany({
+      where: tradeId ? { tradeId } : undefined,
+      orderBy: { capturedAt: "asc" },
+      take: 500,
+    });
+    const records = rows.map((row) => ({
+      tradeId: row.tradeId,
+      pairAddress: row.pairAddress,
+      phase: row.phase as "BEFORE" | "DURING" | "AFTER",
+      capturedAt: row.capturedAt.toISOString(),
+      context: row.context as Record<string, unknown>,
+      postExit: row.postExit,
+    }));
+    const ids = [...new Set(records.map((row) => row.tradeId))];
+    return ids.map((id) => {
+      const scoped = records.filter((row) => row.tradeId === id);
+      return {
+        reconstruction: reconstructTrade(scoped),
+        entry: featuresForEntry({ records: scoped }, id),
+      };
+    });
+  }
+
+  async forgeMonitor() {
+    const reports = await this.prisma.experimentReport.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    });
+    return {
+      runs: reports.map((row) => {
+        const payload = row.payload as {
+          reproducibility?: { codeHash?: string };
+          results?: { returnPct?: string | null; sampleSize?: number };
+          outcomes?: Record<string, { met?: boolean; detail?: string }>;
+        };
+        return {
+          id: row.id,
+          hypothesisId: row.hypothesisId,
+          strategyModuleId: row.strategyModuleId,
+          strategyVersion: row.strategyVersion,
+          approvalStatus: row.approvalStatus,
+          contentHash: row.contentHash,
+          codeHash: payload.reproducibility?.codeHash ?? null,
+          returnPct: payload.results?.returnPct ?? null,
+          sampleSize: payload.results?.sampleSize ?? null,
+          pipelineCompleted: payload.outcomes?.PIPELINE_COMPLETED?.met === true,
+          resultsMeasurable: payload.outcomes?.RESULTS_MEASURABLE?.met === true,
+          deploymentEligible: payload.outcomes?.DEPLOYMENT_ELIGIBLE?.met === true,
+          createdAt: row.createdAt.toISOString(),
+        };
+      }),
+    };
+  }
+
+  async dataIntegrityPanel() {
+    const rows = await this.prisma.marketObservation.findMany({
+      orderBy: { receivedAt: "asc" },
+      take: 400,
+    });
+    const observations = rows.map((row) => ({
+      id: row.id,
+      pairAddress: row.pairAddress,
+      baseSymbol: row.baseSymbol,
+      quoteAddress: row.quoteAddress,
+      quoteSymbol: row.quoteSymbol,
+      priceUsd: row.priceUsd?.toString() ?? null,
+      liquidityUsd: row.liquidityUsd?.toString() ?? null,
+      volume24hUsd: row.volume24hUsd?.toString() ?? null,
+      volume5mUsd: row.volume5mUsd?.toString() ?? null,
+      priceChangeM5Pct: row.priceChangeM5?.toString() ?? null,
+      priceChangeH1Pct: row.priceChangeH1?.toString() ?? null,
+      txnsM5Buys: row.txnsM5Buys,
+      txnsM5Sells: row.txnsM5Sells,
+      receivedAt: row.receivedAt.toISOString(),
+      freshness: (["LIVE", "DELAYED", "STALE", "REPLAY", "DEMO"].includes(row.freshness)
+        ? row.freshness
+        : "STALE") as "LIVE" | "DELAYED" | "STALE" | "REPLAY" | "DEMO",
+      provenance: `MarketObservation:${row.id}`,
+    }));
+    const assessed = assessObservationIntegrity(observations);
+    return {
+      observationCount: observations.length,
+      usableCount: assessed.usable.length,
+      blocking: assessed.blocking,
+      issues: assessed.issues.slice(0, 40),
+    };
+  }
+
+  async researchConfidence() {
+    const latest = await this.prisma.experimentReport.findFirst({ orderBy: { createdAt: "desc" } });
+    const payload = (latest?.payload ?? {}) as {
+      outcomes?: Record<string, { met?: boolean; detail?: string }>;
+      results?: { returnPct?: string | null };
+    };
+    return {
+      reportId: latest?.id ?? null,
+      returnPct: payload.results?.returnPct ?? null,
+      note: "Pipeline completion is a recorded stage. It is not a validated strategy and it is not a profit result.",
+      outcomes: RESEARCH_OUTCOMES.map((name) => {
+        const row = payload.outcomes?.[name];
+        const met = row?.met === true;
+        const tone = !met ? "open" : name === "PIPELINE_COMPLETED" ? "recorded" : "measured";
+        return { name, met, detail: row?.detail ?? "No persisted assessment", tone };
+      }),
+    };
+  }
+
+  async memoryFactors() {
+    const rows = await this.prisma.tradeMemory.findMany({ orderBy: { capturedAt: "asc" }, take: 500 });
+    return queryWinnersAndLosers(
+      rows.map((row) => ({
+        tradeId: row.tradeId,
+        pairAddress: row.pairAddress,
+        phase: row.phase as "BEFORE" | "DURING" | "AFTER",
+        capturedAt: row.capturedAt.toISOString(),
+        context: row.context as Record<string, unknown>,
+        postExit: row.postExit,
+      })),
+    );
+  }
+
   async recordMemory(body: unknown) {
     const parsed = z
       .object({
@@ -552,8 +695,34 @@ export class EvolutionService {
         hypothesisId: item.hypothesisId,
         strategyId: item.strategyId,
         budgetUsd: item.budgetUsd.toString(),
+        capability: item.capability,
+        provenance: item.provenance,
+        aiDiscovery: item.aiDiscovery,
+        retries: item.retries,
+        failureStreak: item.failureStreak,
         createdAt: item.createdAt.toISOString(),
       })),
+      oracle: {
+        capabilities: [...ORACLE_CAPABILITIES],
+        limits: DEFAULT_ORACLE_LIMITS,
+        proposals: proposeOracleCycle({
+          performance: {
+            returnPct: null,
+            sampleSize: 0,
+            maxDrawdownPct: null,
+          },
+          memory: [],
+          challengePassed: null,
+          challengeFindings: [],
+          baselines: comparison.ranking.map((row) => ({
+            id: row.id,
+            returnPct: null,
+            sampleSize: 0,
+          })),
+          hypothesisId: hypotheses[0]?.id ?? null,
+          openConditions: hypotheses.slice(0, 3).map((row) => row.title),
+        }),
+      },
       reports: reports.map((row) => ({
         id: row.id,
         hypothesisId: row.hypothesisId,
@@ -576,19 +745,22 @@ export class EvolutionService {
     const parsed = z
       .object({
         kind: z.enum(["EXPERIMENT", "CHALLENGE", "PAPER_REVIEW", "RETIREMENT", "BRIEFING"]),
+        capability: z.enum(ORACLE_CAPABILITIES).optional(),
         priority: z.number().int().min(0).max(100),
         hypothesisId: z.string().nullable().optional(),
         strategyId: z.string().nullable().optional(),
         reason: z.string().min(1).max(1000),
         budgetUsd: z.string().regex(/^\d+(\.\d{1,4})?$/).default("0.10"),
+        retries: z.number().int().min(0).max(10).optional(),
       })
       .strict()
       .parse(body);
     const autonomy = parseAutonomyPolicy(await this.getAutonomy());
+    const rows = await this.prisma.researchQueueItem.findMany();
     const state = createOracleSupervisor();
-    const existing = await this.prisma.researchQueueItem.count();
-    state.iterations = existing;
-    const result = enqueueResearch(
+    state.iterations = rows.filter((row) => row.status !== "CANCELLED").length;
+    state.spentBudgetUsd = rows.reduce((sum, row) => sum + Number(row.budgetUsd.toString()), 0);
+    const gate = enqueueResearch(
       state,
       {
         id: newId("rq"),
@@ -602,21 +774,75 @@ export class EvolutionService {
       },
       autonomy,
     );
-    if (!result.accepted) throw new BadRequestException(result.reason);
-    const item = result.state.queue[0]!;
+    if (!gate.accepted) throw new BadRequestException(gate.reason);
+    const spent = rows.reduce((sum, row) => sum.plus(d(row.budgetUsd.toString())), d("0"));
+    const admitted = admitOracleItem(
+      {
+        items: rows.map((row) => ({
+          id: row.id,
+          capability: (ORACLE_CAPABILITIES as readonly string[]).includes(row.capability)
+            ? (row.capability as (typeof ORACLE_CAPABILITIES)[number])
+            : "RECOMMEND_EXPERIMENT",
+          priority: row.priority,
+          hypothesisId: row.hypothesisId,
+          strategyId: row.strategyId,
+          status: row.status as "QUEUED" | "RUNNING" | "DONE" | "CANCELLED" | "BLOCKED",
+          reason: row.reason,
+          createdAt: row.createdAt.toISOString(),
+          budgetUsd: row.budgetUsd.toString(),
+          fingerprint: row.fingerprint,
+          retries: row.retries,
+          failureStreak: row.failureStreak,
+          provenance: row.provenance === "MODEL" ? "MODEL" : "DETERMINISTIC_SUPERVISOR",
+          aiDiscovery: row.aiDiscovery,
+          modelIdentifier: null,
+        })),
+        spentUsd: spent.toFixed(4),
+        failureStreak: rows.reduce((max, row) => Math.max(max, row.failureStreak), 0),
+        terminated: false,
+        terminationReason: null,
+      },
+      {
+        id: gate.state.queue[0]?.id ?? newId("rq"),
+        capability: parsed.capability ?? "RECOMMEND_EXPERIMENT",
+        priority: parsed.priority,
+        hypothesisId: parsed.hypothesisId ?? null,
+        strategyId: parsed.strategyId ?? null,
+        reason: parsed.reason,
+        createdAt: new Date().toISOString(),
+        budgetUsd: parsed.budgetUsd,
+        retries: parsed.retries ?? 0,
+        provenance: "DETERMINISTIC_SUPERVISOR",
+        modelIdentifier: null,
+        aiDiscovery: false,
+      },
+      {
+        ...DEFAULT_ORACLE_LIMITS,
+        maxExperimentsPerCycle: autonomy.maxResearchIterations,
+        maxSpendUsdPerDay: autonomy.maxResearchBudgetUsd,
+      },
+    );
+    if (!admitted.accepted || !admitted.record) throw new BadRequestException(admitted.reason);
+    const record = admitted.record;
     await this.prisma.researchQueueItem.create({
       data: {
-        id: item.id,
-        kind: item.kind,
-        priority: item.priority,
-        hypothesisId: item.hypothesisId,
-        strategyId: item.strategyId,
-        status: item.status,
-        reason: item.reason,
-        budgetUsd: item.budgetUsd,
+        id: record.id,
+        kind: parsed.kind,
+        priority: record.priority,
+        hypothesisId: record.hypothesisId,
+        strategyId: record.strategyId,
+        status: record.status,
+        reason: record.reason,
+        budgetUsd: record.budgetUsd,
+        fingerprint: record.fingerprint,
+        retries: record.retries,
+        capability: record.capability,
+        provenance: record.provenance,
+        aiDiscovery: false,
+        failureStreak: record.failureStreak,
       },
     });
-    return item;
+    return { ...record, kind: parsed.kind, aiDiscovery: false };
   }
 
   async forgeOnly(body: unknown) {
@@ -629,7 +855,7 @@ export class EvolutionService {
       .parse(body);
     const hypothesis = await this.prisma.hypothesis.findUnique({ where: { id: parsed.hypothesisId } });
     if (!hypothesis) throw new NotFoundException("Hypothesis not found");
-    const forged = forgeStrategyModule({
+    const forged = await forgeStrategyModule({
       hypothesis: {
         id: hypothesis.id,
         title: hypothesis.title,
@@ -696,6 +922,33 @@ export class EvolutionService {
       .strict()
       .parse(body);
     return runChallengeReview(parsed);
+  }
+
+  async promotePaperStrategy(body: unknown, operatorId: string) {
+    const operator = operatorId.trim();
+    if (!operator) throw new BadRequestException("Promotion requires an explicit operator identity");
+    const parsed = promotionBodySchema.parse(body);
+    const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
+    if (!engine) throw new NotFoundException("Engine is not initialised");
+    const slot = slotFromEngineControl({ config: engine.config, activeStrategy: engine.activeStrategy });
+    const result = promoteToPaperEngine(slot, {
+      operatorId: operator,
+      authorised: true,
+      caller: "OPERATOR",
+      evidence: parsed.evidence,
+      config: parsed.config,
+    });
+    if (!result.appliedToPaperEngine) return result;
+    const write = engineControlDataFromSlot(slot);
+    await this.prisma.engineControl.update({
+      where: { id: "primary" },
+      data: {
+        config: toJson(write.config),
+        activeStrategy: toJson(write.activeStrategy),
+        updatedBy: operator,
+      },
+    });
+    return result;
   }
 
   async getReport(id: string) {

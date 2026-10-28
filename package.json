@@ -7,9 +7,9 @@
   },
   "scripts": {
     "dev": "pnpm build:packages && pnpm exec concurrently -n api,worker,web -c blue,magenta,green \"pnpm --filter @odin/api dev\" \"pnpm --filter @odin/worker dev\" \"pnpm --filter @odin/web dev\"",
-    "build:packages": "pnpm --filter @odin/shared build && pnpm --filter @odin/market-data --filter @odin/risk-engine --filter @odin/trading-engine --filter @odin/analytics build && pnpm --filter @odin/backtest build && pnpm --filter @odin/agent-core build && pnpm --filter @odin/evolution build",
+    "build:packages": "tsc -b --pretty false",
     "build": "pnpm build:packages && pnpm --filter @odin/api --filter @odin/worker --filter @odin/web build",
-    "typecheck": "pnpm -r --if-present typecheck",
+    "typecheck": "tsc -b --pretty false && pnpm --filter @odin/api --filter @odin/worker --filter @odin/web typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",

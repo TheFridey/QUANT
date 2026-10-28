@@ -11,18 +11,20 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "tsc -b --pretty false",
+    "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
     "@odin/agent-core": "workspace:*",
     "@odin/backtest": "workspace:*",
     "@odin/market-data": "workspace:*",
+    "@odin/risk-engine": "workspace:*",
     "@odin/shared": "workspace:*",
+    "@odin/trading-engine": "workspace:*",
+    "typescript": "^5.9.3",
     "zod": "4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^22.18.6",
-    "typescript": "^5.9.3"
+    "@types/node": "^22.18.6"
   }
 }

@@ -2,8 +2,17 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "composite": true
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  "exclude": ["src/**/*.test.ts"],
+  "references": [
+    { "path": "../shared" },
+    { "path": "../agent-core" },
+    { "path": "../backtest" },
+    { "path": "../market-data" },
+    { "path": "../risk-engine" },
+    { "path": "../trading-engine" }
+  ]
 }

@@ -46,6 +46,9 @@ export const experimentReportSchema = z
       configHash: z.string().min(8),
       seed: z.number().int().nullable(),
     }),
+    outcomes: z
+      .record(z.string(), z.object({ met: z.boolean(), detail: z.string() }))
+      .optional(),
     contentHash: z.string().min(16),
     signature: z.string().min(16),
   })
@@ -96,6 +99,7 @@ export function buildExperimentReport(input: {
   challenge: ChallengeReport;
   approval?: ExperimentReport["approval"];
   reproducibility: ExperimentReport["reproducibility"];
+  outcomes?: ExperimentReport["outcomes"];
 }): ExperimentReport {
   return signExperimentReport({
     reportId: input.reportId,
@@ -115,6 +119,7 @@ export function buildExperimentReport(input: {
     },
     approval: input.approval ?? { status: "PENDING", approvedBy: null, approvedAt: null },
     reproducibility: input.reproducibility,
+    outcomes: input.outcomes,
   });
 }
 

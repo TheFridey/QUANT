@@ -65,6 +65,16 @@ export class EvolutionController {
     return this.evolution.genome();
   }
 
+  @Get("memory/reconstruction")
+  reconstruction(@Query("tradeId") tradeId?: string) {
+    return this.evolution.reconstructMemory(tradeId);
+  }
+
+  @Get("memory/factors")
+  factors() {
+    return this.evolution.memoryFactors();
+  }
+
   @Get("memory")
   memory(
     @Query("q") q?: string,
@@ -99,6 +109,21 @@ export class EvolutionController {
     return this.evolution.researchCentre();
   }
 
+  @Get("forge")
+  forgeMonitor() {
+    return this.evolution.forgeMonitor();
+  }
+
+  @Get("integrity")
+  integrity() {
+    return this.evolution.dataIntegrityPanel();
+  }
+
+  @Get("confidence")
+  confidence() {
+    return this.evolution.researchConfidence();
+  }
+
   @UseGuards(AdminGuard)
   @Post("queue")
   enqueue(@Body() body: unknown) {
@@ -108,5 +133,11 @@ export class EvolutionController {
   @Get("reports/:id")
   report(@Param("id") id: string) {
     return this.evolution.getReport(id);
+  }
+
+  @UseGuards(AdminGuard)
+  @Post("promote")
+  promote(@Body() body: unknown, @Req() request: RequestWithUser) {
+    return this.evolution.promotePaperStrategy(body, request.user?.email ?? "");
   }
 }

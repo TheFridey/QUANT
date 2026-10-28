@@ -299,9 +299,18 @@ importers:
       '@odin/market-data':
         specifier: workspace:*
         version: link:../market-data
+      '@odin/risk-engine':
+        specifier: workspace:*
+        version: link:../risk-engine
       '@odin/shared':
         specifier: workspace:*
         version: link:../shared
+      '@odin/trading-engine':
+        specifier: workspace:*
+        version: link:../trading-engine
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -309,9 +318,6 @@ importers:
       '@types/node':
         specifier: ^22.18.6
         version: 22.20.5
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
 
   packages/market-data:
     dependencies:
