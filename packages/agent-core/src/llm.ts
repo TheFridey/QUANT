@@ -17,7 +17,15 @@ export type LlmRequest = {
   messages: LlmMessage[];
   maxTokens: number;
   timeoutMs: number;
-  purpose: "classify" | "summarise" | "research" | "post_trade";
+  purpose:
+    | "classify"
+    | "summarise"
+    | "research"
+    | "post_trade"
+    | "fast_observer"
+    | "deep_hypothesis"
+    | "engineering_source"
+    | "challenge_review";
 };
 
 export type LlmResult<T> =

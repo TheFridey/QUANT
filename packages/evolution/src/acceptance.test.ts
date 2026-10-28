@@ -6,6 +6,7 @@ import { featuresForEntry, reconstructTrade } from "./archivist.js";
 import { FixtureModelProvider } from "./fixture-provider.js";
 import { forgeStrategyModule } from "./forge.js";
 import { appendTradeMemory, capturePhaseContext, createTradeMemoryStore } from "./memory.js";
+import { runBoundedResearchCycle } from "./oracle-cycle.js";
 import { labelAsAiDiscovery, proposeOracleCycle } from "./oracle-research.js";
 import { reviewPromotion } from "./promotion.js";
 import { runResearchPipeline } from "./pipeline.js";
@@ -273,5 +274,74 @@ describe("project genesis acceptance", () => {
     expect(reconstruction?.before?.entryHypothesis).toBe("continuation");
     expect(reconstruction?.after?.netPnlUsd).toBe("2");
     expect(featuresForEntry(store, "accept-1").features.netPnlUsd).toBeUndefined();
+  });
+
+  it.skipIf(!isolationAvailable())(
+    "drives one bounded cycle from a fixture and changes signals when only the decision logic changes",
+    async () => {
+    const fixtureFor = (source: string) => {
+      const fixture = new FixtureModelProvider({
+        fast_observer: { weaknesses: ["thin follow-through"] },
+        deep_hypothesis: {
+          title: "M5 continuation fails out of sample",
+          falsifier: "Untouched window return is null or negative",
+          conditions: "m5 thrust continues for one bar",
+        },
+        engineering_source: { source },
+        challenge_review: { verdict: "REJECT", findings: ["SAMPLE_SIZE"] },
+      });
+      return new ModelRouter({
+        providers: new Map([
+          ["hermes-primary", fixture],
+          ["openai-primary", fixture],
+          ["anthropic-primary", fixture],
+          ["challenge-primary", fixture],
+        ]),
+        mode: "live",
+        env: {},
+        budgetCapUsd: "5",
+      });
+    };
+    const inputFor = (router: ModelRouter) => ({
+      router,
+      performance: { returnPct: null, sampleSize: 0, maxDrawdownPct: null },
+      memory: [],
+      baselines: [{ id: "baseline", returnPct: "0.10", sampleSize: 40 }],
+      hypothesisId: hypothesis.id ?? "hyp_accept",
+      instrumentIds: hypothesis.instrumentIds,
+      bars: [
+        {
+          instrumentId: hypothesis.instrumentIds[0] ?? "solana:spot:universe",
+          receivedAt: "2026-01-01T00:00:00.000Z",
+          priceUsd: "1",
+          liquidityUsd: "100000",
+          volume24hUsd: "100000",
+          priceChangeM5Pct: "1",
+          priceChangeH1Pct: "1",
+          txnsM5Buys: 3,
+          txnsM5Sells: 1,
+          dataState: "REPLAY",
+        },
+        {
+          instrumentId: hypothesis.instrumentIds[0] ?? "solana:spot:universe",
+          receivedAt: "2026-01-01T00:05:00.000Z",
+          priceUsd: "1.01",
+          liquidityUsd: "100000",
+          volume24hUsd: "100000",
+          priceChangeM5Pct: "1",
+          priceChangeH1Pct: "1",
+          txnsM5Buys: 3,
+          txnsM5Sells: 1,
+          dataState: "REPLAY",
+        },
+      ],
+    });
+    const hold = await runBoundedResearchCycle(inputFor(fixtureFor(holdSource)));
+    const enter = await runBoundedResearchCycle(inputFor(fixtureFor(enterSource)));
+    expect(hold.steps).toHaveLength(13);
+    expect(hold.signals.map((signal) => signal.intent)).not.toEqual(enter.signals.map((signal) => signal.intent));
+    expect(hold.steps.find((step) => step.capability === "RECOMMEND_EXPERIMENT")?.status).toBe("RECORDED");
+    expect(hold.aiDiscoveryStored).toBe(false);
+    expect(hold.routerUsage.filter((row) => row.ok).every((row) => row.provenance === "FIXTURE" && row.costKind === "ESTIMATED")).toBe(true);
   });
 });
