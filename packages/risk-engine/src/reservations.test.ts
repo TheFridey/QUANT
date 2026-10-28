@@ -17,6 +17,7 @@ function req(id: string, exposure = "300.00000000"): Parameters<ReservationLedge
   return {
     id: `res_${id}`,
     accountId: "primary",
+    mode: "PAPER",
     clientOrderId: id,
     cashUsd: exposure,
     exposureUsd: exposure,
@@ -60,12 +61,71 @@ describe("atomic risk reservations", () => {
     const ledger = new ReservationLedger(budget());
     expect(ledger.reserve(req("partial", "200")).ok).toBe(true);
     expect(ledger.consume("partial")?.status).toBe("CONSUMED");
-    ledger.releasePartial("partial", {
+    const partial = ledger.releasePartial("partial", {
       cashUsd: "50.00000000",
       exposureUsd: "50.00000000",
       riskUsd: "10.00000000",
       slots: 0,
     });
+    expect(partial.ok).toBe(true);
     expect(Number(ledger.snapshot().cashAvailableUsd)).toBeCloseTo(850, 4);
+  });
+
+  it("rejects double partial release / over-release / negative release", () => {
+    const ledger = new ReservationLedger(budget());
+    expect(ledger.reserve(req("adv", "200")).ok).toBe(true);
+    expect(ledger.consume("adv")?.status).toBe("CONSUMED");
+    expect(
+      ledger.releasePartial("adv", {
+        cashUsd: "150.00000000",
+        exposureUsd: "150.00000000",
+        riskUsd: "30.00000000",
+        slots: 0,
+      }).ok,
+    ).toBe(true);
+    const over = ledger.releasePartial("adv", {
+      cashUsd: "100.00000000",
+      exposureUsd: "100.00000000",
+      riskUsd: "10.00000000",
+      slots: 0,
+    });
+    expect(over.ok).toBe(false);
+    if (!over.ok) expect(over.reason).toBe("OVER_RELEASE");
+
+    const neg = ledger.releasePartial("adv", {
+      cashUsd: "-1.00000000",
+      exposureUsd: "0",
+      riskUsd: "0",
+      slots: 0,
+    });
+    expect(neg.ok).toBe(false);
+    if (!neg.ok) expect(neg.reason).toBe("NEGATIVE_RELEASE");
+
+    // Exact remainder once is OK
+    const rest = ledger.releasePartial("adv", {
+      cashUsd: "50.00000000",
+      exposureUsd: "50.00000000",
+      riskUsd: "10.00000000",
+      slots: 0,
+    });
+    expect(rest.ok).toBe(true);
+    if (rest.ok) {
+      expect(rest.reservation.remainingCashUsd).toBe("0.00000000");
+    }
+    const again = ledger.releasePartial("adv", {
+      cashUsd: "0.00000001",
+      exposureUsd: "0",
+      riskUsd: "0",
+      slots: 0,
+    });
+    expect(again.ok).toBe(false);
+  });
+
+  it("idempotent reserve on same account/mode/clientOrderId while HELD", () => {
+    const ledger = new ReservationLedger(budget());
+    const first = ledger.reserve(req("idem", "100"));
+    const second = ledger.reserve(req("idem", "100"));
+    expect(first.ok && second.ok).toBe(true);
+    expect(ledger.snapshot().slotsUsed).toBe(1);
   });
 });

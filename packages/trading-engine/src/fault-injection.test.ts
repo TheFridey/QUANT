@@ -37,6 +37,8 @@ describe("fault injection regressions", () => {
     const group = armOco({
       groupId: "oco_fault",
       positionKey: "primary:pair",
+      direction: "LONG",
+      protectedQty: "1",
       stopPriceUsd: "90",
       takeProfitPriceUsd: "120",
       origin: "SYNTHETIC_ENGINE",

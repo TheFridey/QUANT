@@ -162,6 +162,9 @@ export type Snapshot = {
     pauseNewEntries: boolean;
     allowDemoPaperEntries: boolean;
     multiMarketPaperIngest: boolean;
+    tradingEnvironment?: "FIXTURE" | "REPLAY" | "MARKET_DATA_PAPER" | "EXTERNAL_DEMO" | string;
+    fixtureMode?: boolean;
+    unresolvedProtection?: number;
     entriesSuspended: boolean;
   };
   activeStrategy?: {

@@ -14,7 +14,7 @@ import {
 import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
 import {
   BirdeyeClient,
-  buildPaperMultiMarketPairs,
+  buildFixturePairsAtStep,
   fetchSolanaUniverse,
   type ProviderResult,
 } from "@odin/market-data";
@@ -22,6 +22,7 @@ import type { NormalizedPair, ObservationPoint, SecurityAssessment } from "@odin
 import {
   AGENT_BUS_CHANNEL,
   TERMINAL_CHANNEL,
+  assertEnvironmentIsolation,
   assertPaperOrSandboxOnly,
   classifyFreshness,
   d,
@@ -34,6 +35,7 @@ import {
   type DataState,
   type OperatorOrder,
   type StrategyConfig,
+  type TradingEnvironment,
 } from "@odin/shared";
 import { Prisma, PrismaClient, toJson } from "@odin/shared/db";
 import {
@@ -302,10 +304,29 @@ export class StageRunner {
       return;
     }
     const result = await this.feed.fetchUniverse(config.universeLimit);
+    const tradingEnvironment: TradingEnvironment = config.tradingEnvironment ?? "MARKET_DATA_PAPER";
+    // Fixtures only when explicitly in FIXTURE environment (or legacy flag + FIXTURE).
+    // Never inject fixture pairs into MARKET_DATA_PAPER / EXTERNAL_DEMO / REPLAY accounts.
     const paperExtras =
-      config.multiMarketPaperIngest === true
-        ? buildPaperMultiMarketPairs({ now })
+      tradingEnvironment === "FIXTURE" ||
+      (config.multiMarketPaperIngest === true && tradingEnvironment === "FIXTURE")
+        ? buildFixturePairsAtStep({ stepIndex: Math.floor(now.getTime() / 60_000) % 9, now })
         : [];
+    if (paperExtras.length > 0) {
+      const isolation = assertEnvironmentIsolation("FIXTURE_SEQUENCE", tradingEnvironment);
+      if (!isolation.ok) {
+        await this.prisma.cycleRun.update({
+          where: { id: cycleId },
+          data: {
+            dataState: "STALE",
+            observationCount: 0,
+            error: isolation.reason,
+          },
+        });
+        await upsertDecision(this.prisma, cycleId, emptyDecision("FIXTURE_ISOLATION", isolation.reason));
+        return;
+      }
+    }
     if (!result.ok && paperExtras.length === 0) {
       await this.prisma.cycleRun.update({
         where: { id: cycleId },

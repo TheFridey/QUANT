@@ -132,6 +132,7 @@ describe("multi-market paper E2E", () => {
       const reserved = ledger.reserve({
         id: `res_${i}`,
         accountId: "primary",
+        mode: "PAPER",
         clientOrderId: `slot_${i}`,
         cashUsd: "1000",
         exposureUsd: "1000",
@@ -142,6 +143,8 @@ describe("multi-market paper E2E", () => {
       const oco = armOco({
         groupId: `oco_${i}`,
         positionKey: `primary:pos_${i}`,
+        direction: "LONG",
+        protectedQty: "1",
         stopPriceUsd: "9",
         takeProfitPriceUsd: "12",
         origin: "SYNTHETIC_ENGINE",

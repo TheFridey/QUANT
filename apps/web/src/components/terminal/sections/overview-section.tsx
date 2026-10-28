@@ -18,8 +18,22 @@ export function OverviewSection() {
   if (!snapshot) return null;
   const status = snapshot.agents ?? [];
 
+  const fixtureMode = snapshot.execution?.fixtureMode === true
+    || snapshot.execution?.tradingEnvironment === "FIXTURE";
+
   return (
     <div className="space-y-3">
+      {fixtureMode ? (
+        <div
+          role="status"
+          className="rounded border border-amber-700/60 bg-amber-950/40 px-4 py-3 text-sm text-amber-100"
+        >
+          <strong className="font-semibold tracking-wide">FIXTURE MODE</strong>
+          <span className="ml-2 text-amber-100/80">
+            Synthetic sequences only — isolated from market-data paper accounts, metrics, and reports.
+          </span>
+        </div>
+      ) : null}
       <PortfolioSection />
       <Panel title="Agent pipeline" extra="Click a card for inputs / outputs">
         <div className="grid gap-2 p-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">

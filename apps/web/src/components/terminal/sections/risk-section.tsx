@@ -64,6 +64,14 @@ export function RiskSection() {
             <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Multi-market ingest</dt>
             <dd className="mono">{execution?.multiMarketPaperIngest ? "on" : "off"}</dd>
           </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Trading environment</dt>
+            <dd className="mono">{execution?.tradingEnvironment ?? "MARKET_DATA_PAPER"}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Unresolved protection</dt>
+            <dd className="mono">{execution?.unresolvedProtection ?? 0}</dd>
+          </div>
           {execution?.refuseReason ? (
             <div className="col-span-2">
               <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Refuse reason</dt>

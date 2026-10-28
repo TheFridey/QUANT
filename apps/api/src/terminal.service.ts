@@ -193,11 +193,14 @@ export class TerminalService {
       take: 40,
     });
     const protections = await this.prisma.protectionOrder.findMany({
-      where: { status: "OPEN" },
+      where: { status: { in: ["ARMED", "TRIGGERED", "SUBMITTED", "CONFIRMED", "FAILED"] } },
       orderBy: { createdAt: "desc" },
       take: 100,
     });
     const protectedKeys = new Set(protections.map((row) => row.positionKey));
+    const unresolvedProtection = await this.prisma.protectionIntent.count({
+      where: { status: "UNRESOLVED" },
+    });
     const whyBlocked = decisions
       .filter((decision) => decision.decision === "REJECT" || decision.reasonCodes.some((code) => /BLOCK|REJECT|PAUSE|SUSPEND|BREAKER|STALE|DEMO/.test(code)))
       .slice(0, 24)
@@ -219,6 +222,9 @@ export class TerminalService {
         pauseNewEntries: config?.pauseNewEntries === true,
         allowDemoPaperEntries: config?.allowDemoPaperEntries === true,
         multiMarketPaperIngest: config?.multiMarketPaperIngest === true,
+        tradingEnvironment: config?.tradingEnvironment ?? "MARKET_DATA_PAPER",
+        fixtureMode: (config?.tradingEnvironment ?? "MARKET_DATA_PAPER") === "FIXTURE",
+        unresolvedProtection,
         entriesSuspended: alerts.some((alert) => alert.code === "ENTRIES_SUSPENDED"),
       },
       activeStrategy,

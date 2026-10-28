@@ -27,6 +27,7 @@ describe("load / capacity report (D57)", () => {
       const reserved = ledger.reserve({
         id: `load_${i}`,
         accountId: "primary",
+        mode: "PAPER",
         clientOrderId: `load_slot_${i}`,
         cashUsd: "1000",
         exposureUsd: "1000",
@@ -96,8 +97,9 @@ describe("load / capacity report (D57)", () => {
       metTarget: admitted >= TARGET_PROTECTED_SLOTS,
       multiMarketPlanBuys: buys,
       note: admitted >= TARGET_PROTECTED_SLOTS
-        ? "Reservation ledger admits target protected slots in-process"
+        ? "IN-PROCESS ONLY — ReservationLedger admits 50 slots; not a production queue/worker/DB capacity claim"
         : "UNDER TARGET — reservation capacity below 50 in this fixture",
+      productionShaped: false,
     };
 
     // Honest assertion: capacity helper itself is deterministic; report remains explicit.

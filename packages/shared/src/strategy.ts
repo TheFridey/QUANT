@@ -22,15 +22,23 @@ export const strategyConfigSchema = z
     maxParticipationPctLiquidity: decimalString,
     minOrderNotionalUsd: decimalString,
     allowDelayedExits: z.boolean(),
-    /** Allow DEMO-labelled paper entries for FX/ETF stubs (never relabelled LIVE). */
+    /** Allow DEMO-labelled paper entries (MARKET_DATA_PAPER delayed/demo only — never fixtures). */
     allowDemoPaperEntries: z.boolean(),
     /** Operator control: block new entries while still allowing risk-reducing exits. */
     pauseNewEntries: z.boolean(),
     /** Activate breakeven stop after this unrealized gain % (null = disabled). */
     breakevenActivatePct: decimalString.nullable(),
     flattenOnEmergency: z.boolean(),
-    /** Include FX/ETF paper instruments in worker ingest alongside Solana. */
+    /**
+     * Legacy flag: inject FIXTURE multi-market pairs into the primary paper account.
+     * Default false — fixtures require tradingEnvironment=FIXTURE + explicit launch.
+     */
     multiMarketPaperIngest: z.boolean(),
+    /**
+     * Explicit trading environment. FIXTURE / REPLAY / EXTERNAL_DEMO use isolated accounts.
+     * Default MARKET_DATA_PAPER (Solana live feed + optional delayed market data — no fixtures).
+     */
+    tradingEnvironment: z.enum(["FIXTURE", "REPLAY", "MARKET_DATA_PAPER", "EXTERNAL_DEMO"]),
     universeLimit: z.number().int(),
     liveMaxAgeMs: z.number().int(),
     delayedMaxAgeMs: z.number().int(),
@@ -210,6 +218,7 @@ export const strategyPatchSchema = z
     breakevenActivatePct: decimalString.nullable().optional(),
     flattenOnEmergency: z.boolean().optional(),
     multiMarketPaperIngest: z.boolean().optional(),
+    tradingEnvironment: z.enum(["FIXTURE", "REPLAY", "MARKET_DATA_PAPER", "EXTERNAL_DEMO"]).optional(),
     universeLimit: z.number().int().optional(),
     liveMaxAgeMs: z.number().int().optional(),
     delayedMaxAgeMs: z.number().int().optional(),
@@ -261,7 +270,8 @@ export const DEFAULT_STRATEGY: StrategyConfig = {
   pauseNewEntries: false,
   breakevenActivatePct: "2",
   flattenOnEmergency: false,
-  multiMarketPaperIngest: true,
+  multiMarketPaperIngest: false,
+  tradingEnvironment: "MARKET_DATA_PAPER",
   universeLimit: 24,
   liveMaxAgeMs: 45000,
   delayedMaxAgeMs: 180000,

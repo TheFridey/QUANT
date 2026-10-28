@@ -31,6 +31,7 @@ export async function ensureFoundation(
           id: "primary",
           cashUsd: starting,
           startingBalanceUsd: starting,
+          tradingEnvironment: config.tradingEnvironment ?? "MARKET_DATA_PAPER",
         },
       });
     }

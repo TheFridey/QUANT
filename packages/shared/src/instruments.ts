@@ -21,6 +21,9 @@ export const MARKET_PROVIDER_IDS = [
   "fx_stub",
   "commodity_stub",
   "external_demo",
+  "frankfurter_fx",
+  "alpaca_paper",
+  "oanda_practice",
 ] as const;
 export type MarketProviderId = (typeof MARKET_PROVIDER_IDS)[number];
 

@@ -9,4 +9,5 @@ export * from "./instruments.js";
 export * from "./sessions.js";
 export * from "./session-equity.js";
 export * from "./execution-gate.js";
+export * from "./environments.js";
 export * from "./evolution.js";

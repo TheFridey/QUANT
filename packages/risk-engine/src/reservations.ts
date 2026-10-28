@@ -5,7 +5,9 @@ export type ReservationKind = "CASH" | "EXPOSURE" | "SLOT" | "RISK";
 export type ReservationRequest = {
   id: string;
   accountId: string;
-  /** Client order / intent id — unique per reservation. */
+  /** Execution / trading mode for idempotency scope. */
+  mode: string;
+  /** Client order / intent id — unique per account+mode. */
   clientOrderId: string;
   cashUsd: string;
   exposureUsd: string;
@@ -25,19 +27,51 @@ export type ReservationBudget = {
 
 export type ReservationRecord = ReservationRequest & {
   status: "HELD" | "RELEASED" | "CONSUMED";
+  /** Remaining unreleased amounts (post partial release). */
+  remainingCashUsd: string;
+  remainingExposureUsd: string;
+  remainingRiskUsd: string;
+  remainingSlots: number;
   createdAtMs: number;
 };
 
+export type ReservationMutation =
+  | { type: "RESERVE"; atMs: number; request: ReservationRequest }
+  | { type: "RELEASE"; atMs: number; clientOrderId: string }
+  | {
+      type: "RELEASE_PARTIAL";
+      atMs: number;
+      clientOrderId: string;
+      unused: { cashUsd: string; exposureUsd: string; riskUsd: string; slots: number };
+    }
+  | { type: "CONSUME"; atMs: number; clientOrderId: string };
+
 export type ReservationResult =
   | { ok: true; reservation: ReservationRecord; budget: ReservationBudget }
-  | { ok: false; reason: "INSUFFICIENT_CASH" | "AGGREGATE_EXPOSURE" | "MAX_POSITIONS" | "RISK_BUDGET" | "DUPLICATE_RESERVATION" };
+  | {
+      ok: false;
+      reason:
+        | "INSUFFICIENT_CASH"
+        | "AGGREGATE_EXPOSURE"
+        | "MAX_POSITIONS"
+        | "RISK_BUDGET"
+        | "DUPLICATE_RESERVATION"
+        | "OVER_RELEASE"
+        | "NEGATIVE_RELEASE"
+        | "INVALID_STATE";
+    };
+
+function keyOf(accountId: string, mode: string, clientOrderId: string): string {
+  return `${accountId}::${mode}::${clientOrderId}`;
+}
 
 /**
- * In-process atomic reservation ledger for parallel admission.
- * Durable Postgres table mirrors this for restart; unit tests use this pure store.
+ * In-process atomic reservation ledger — **test reference only**.
+ * Production admission must use PostgresReservationAuthority.
  */
 export class ReservationLedger {
   private readonly held = new Map<string, ReservationRecord>();
+  private readonly mutations: ReservationMutation[] = [];
 
   constructor(private budget: ReservationBudget) {}
 
@@ -49,13 +83,19 @@ export class ReservationLedger {
     return [...this.held.values()].filter((row) => row.status === "HELD");
   }
 
+  mutationLog(): readonly ReservationMutation[] {
+    return this.mutations;
+  }
+
   /**
    * Atomically admit a reservation if budgets allow.
-   * Parallel callers must serialize on the same ledger instance (or DB FOR UPDATE).
+   * Idempotent on accountId+mode+clientOrderId while HELD.
    */
   reserve(request: ReservationRequest, nowMs = Date.now()): ReservationResult {
-    if (this.held.has(request.clientOrderId)) {
-      const existing = this.held.get(request.clientOrderId)!;
+    const mode = request.mode || "PAPER";
+    const key = keyOf(request.accountId, mode, request.clientOrderId);
+    if (this.held.has(key)) {
+      const existing = this.held.get(key)!;
       if (existing.status === "HELD") return { ok: true, reservation: existing, budget: this.snapshot() };
       return { ok: false, reason: "DUPLICATE_RESERVATION" };
     }
@@ -64,6 +104,9 @@ export class ReservationLedger {
     const exposureNeed = d(request.exposureUsd);
     const riskNeed = d(request.riskUsd);
     const slotsNeed = request.slots;
+    if (cashNeed.lt(0) || exposureNeed.lt(0) || riskNeed.lt(0) || slotsNeed < 0) {
+      return { ok: false, reason: "NEGATIVE_RELEASE" };
+    }
 
     if (cashNeed.gt(this.budget.cashAvailableUsd)) return { ok: false, reason: "INSUFFICIENT_CASH" };
     if (d(this.budget.exposureUsedUsd).plus(exposureNeed).gt(this.budget.exposureCapUsd)) {
@@ -86,61 +129,113 @@ export class ReservationLedger {
 
     const reservation: ReservationRecord = {
       ...request,
+      mode,
       status: "HELD",
+      remainingCashUsd: usd(cashNeed),
+      remainingExposureUsd: usd(exposureNeed),
+      remainingRiskUsd: usd(riskNeed),
+      remainingSlots: slotsNeed,
       createdAtMs: nowMs,
     };
-    this.held.set(request.clientOrderId, reservation);
+    this.held.set(key, reservation);
+    this.mutations.push({ type: "RESERVE", atMs: nowMs, request: { ...request, mode } });
     return { ok: true, reservation, budget: this.snapshot() };
   }
 
   /** Release unused reservation on cancel / reject / expiry. */
-  release(clientOrderId: string): ReservationRecord | null {
-    const row = this.held.get(clientOrderId);
+  release(clientOrderId: string, accountId = "primary", mode = "PAPER"): ReservationRecord | null {
+    const key = keyOf(accountId, mode, clientOrderId);
+    const row = this.held.get(key);
     if (!row || row.status !== "HELD") return null;
     this.budget = {
       ...this.budget,
-      cashAvailableUsd: usd(d(this.budget.cashAvailableUsd).plus(d(row.cashUsd))),
-      exposureUsedUsd: usd(Decimal.max(d("0"), d(this.budget.exposureUsedUsd).minus(d(row.exposureUsd)))),
-      slotsUsed: Math.max(0, this.budget.slotsUsed - row.slots),
-      riskUsedUsd: usd(Decimal.max(d("0"), d(this.budget.riskUsedUsd).minus(d(row.riskUsd)))),
+      cashAvailableUsd: usd(d(this.budget.cashAvailableUsd).plus(d(row.remainingCashUsd))),
+      exposureUsedUsd: usd(Decimal.max(d("0"), d(this.budget.exposureUsedUsd).minus(d(row.remainingExposureUsd)))),
+      slotsUsed: Math.max(0, this.budget.slotsUsed - row.remainingSlots),
+      riskUsedUsd: usd(Decimal.max(d("0"), d(this.budget.riskUsedUsd).minus(d(row.remainingRiskUsd)))),
     };
-    const updated = { ...row, status: "RELEASED" as const };
-    this.held.set(clientOrderId, updated);
+    const updated: ReservationRecord = {
+      ...row,
+      status: "RELEASED",
+      remainingCashUsd: "0.00000000",
+      remainingExposureUsd: "0.00000000",
+      remainingRiskUsd: "0.00000000",
+      remainingSlots: 0,
+    };
+    this.held.set(key, updated);
+    this.mutations.push({ type: "RELEASE", atMs: Date.now(), clientOrderId });
+    return updated;
+  }
+
+  /** Consume on fill — budgets stay reserved until remainder released. */
+  consume(clientOrderId: string, accountId = "primary", mode = "PAPER"): ReservationRecord | null {
+    const key = keyOf(accountId, mode, clientOrderId);
+    const row = this.held.get(key);
+    if (!row || row.status !== "HELD") return null;
+    const updated = { ...row, status: "CONSUMED" as const };
+    this.held.set(key, updated);
+    this.mutations.push({ type: "CONSUME", atMs: Date.now(), clientOrderId });
     return updated;
   }
 
   /**
-   * Consume on fill. Partial: pass remaining fractions to release afterward via
-   * `releasePartial` for unused cash/exposure/risk/slots.
+   * Release unused remainder after a partial fill.
+   * Rejects double-release, over-release, and negative amounts.
+   * Releases only against remaining*; never restores more than was held.
    */
-  consume(clientOrderId: string): ReservationRecord | null {
-    const row = this.held.get(clientOrderId);
-    if (!row || row.status !== "HELD") return null;
-    const updated = { ...row, status: "CONSUMED" as const };
-    this.held.set(clientOrderId, updated);
-    return updated;
-  }
-
-  /** Release unused remainder after a partial fill (does not restore slots if position opened). */
   releasePartial(
     clientOrderId: string,
     unused: { cashUsd: string; exposureUsd: string; riskUsd: string; slots: number },
-  ): ReservationRecord | null {
-    const row = this.held.get(clientOrderId);
-    if (!row || (row.status !== "HELD" && row.status !== "CONSUMED")) return null;
+    accountId = "primary",
+    mode = "PAPER",
+  ): ReservationResult {
+    const key = keyOf(accountId, mode, clientOrderId);
+    const row = this.held.get(key);
+    if (!row) return { ok: false, reason: "INVALID_STATE" };
+    if (row.status !== "HELD" && row.status !== "CONSUMED") {
+      return { ok: false, reason: "INVALID_STATE" };
+    }
+
+    const cash = d(unused.cashUsd);
+    const exposure = d(unused.exposureUsd);
+    const risk = d(unused.riskUsd);
+    const slots = unused.slots;
+    if (cash.lt(0) || exposure.lt(0) || risk.lt(0) || slots < 0) {
+      return { ok: false, reason: "NEGATIVE_RELEASE" };
+    }
+    if (
+      cash.gt(row.remainingCashUsd) ||
+      exposure.gt(row.remainingExposureUsd) ||
+      risk.gt(row.remainingRiskUsd) ||
+      slots > row.remainingSlots
+    ) {
+      return { ok: false, reason: "OVER_RELEASE" };
+    }
+
     this.budget = {
       ...this.budget,
-      cashAvailableUsd: usd(d(this.budget.cashAvailableUsd).plus(d(unused.cashUsd))),
-      exposureUsedUsd: usd(Decimal.max(d("0"), d(this.budget.exposureUsedUsd).minus(d(unused.exposureUsd)))),
-      slotsUsed: Math.max(0, this.budget.slotsUsed - unused.slots),
-      riskUsedUsd: usd(Decimal.max(d("0"), d(this.budget.riskUsedUsd).minus(d(unused.riskUsd)))),
+      cashAvailableUsd: usd(d(this.budget.cashAvailableUsd).plus(cash)),
+      exposureUsedUsd: usd(Decimal.max(d("0"), d(this.budget.exposureUsedUsd).minus(exposure))),
+      slotsUsed: Math.max(0, this.budget.slotsUsed - slots),
+      riskUsedUsd: usd(Decimal.max(d("0"), d(this.budget.riskUsedUsd).minus(risk))),
     };
-    if (row.status === "HELD") {
-      const updated = { ...row, status: "CONSUMED" as const };
-      this.held.set(clientOrderId, updated);
-      return updated;
-    }
-    return row;
+
+    const updated: ReservationRecord = {
+      ...row,
+      status: "CONSUMED",
+      remainingCashUsd: usd(d(row.remainingCashUsd).minus(cash)),
+      remainingExposureUsd: usd(d(row.remainingExposureUsd).minus(exposure)),
+      remainingRiskUsd: usd(d(row.remainingRiskUsd).minus(risk)),
+      remainingSlots: row.remainingSlots - slots,
+    };
+    this.held.set(key, updated);
+    this.mutations.push({
+      type: "RELEASE_PARTIAL",
+      atMs: Date.now(),
+      clientOrderId,
+      unused,
+    });
+    return { ok: true, reservation: updated, budget: this.snapshot() };
   }
 }
 

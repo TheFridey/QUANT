@@ -32,6 +32,8 @@ model PaperAccount {
   highWaterMarkUsd      Decimal?       @db.Decimal(24, 8)
   sessionStartEquityUsd Decimal?       @db.Decimal(24, 8)
   sessionStartedAt      DateTime?
+  /// FIXTURE | REPLAY | MARKET_DATA_PAPER | EXTERNAL_DEMO — isolation boundary
+  tradingEnvironment    String         @default("MARKET_DATA_PAPER")
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt
   positions             Position[]
@@ -550,35 +552,101 @@ model AutonomyControl {
 }
 
 model RiskReservation {
-  id            String   @id @default(cuid())
-  accountId     String
-  clientOrderId String   @unique
-  status        String
-  cashUsd       Decimal  @db.Decimal(24, 8)
-  exposureUsd   Decimal  @db.Decimal(24, 8)
-  slots         Int
-  riskUsd       Decimal  @db.Decimal(24, 8)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                     String   @id @default(cuid())
+  accountId              String
+  mode                   String   @default("PAPER")
+  clientOrderId          String
+  status                 String
+  cashUsd                Decimal  @db.Decimal(24, 8)
+  exposureUsd            Decimal  @db.Decimal(24, 8)
+  slots                  Int
+  riskUsd                Decimal  @db.Decimal(24, 8)
+  remainingCashUsd       Decimal  @db.Decimal(24, 8) @default(0)
+  remainingExposureUsd   Decimal  @db.Decimal(24, 8) @default(0)
+  remainingRiskUsd       Decimal  @db.Decimal(24, 8) @default(0)
+  remainingSlots         Int      @default(0)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  events                 RiskReservationEvent[]
 
+  @@unique([accountId, mode, clientOrderId])
   @@index([accountId, status])
 }
 
+model RiskReservationEvent {
+  id            String   @id @default(cuid())
+  reservationId String
+  accountId     String
+  mode          String
+  clientOrderId String
+  type          String
+  payload       Json
+  createdAt     DateTime @default(now())
+  reservation   RiskReservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+  @@index([reservationId, createdAt])
+}
+
 model ProtectionOrder {
-  id              String   @id @default(cuid())
-  accountId       String
-  positionKey     String
-  ocoGroupId      String
-  kind            String
-  origin          String
-  triggerPriceUsd Decimal? @db.Decimal(24, 8)
-  trailPct        Decimal? @db.Decimal(16, 6)
-  status          String
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  accountId           String
+  positionKey         String
+  ocoGroupId          String
+  kind                String
+  origin              String
+  direction           String   @default("LONG")
+  protectedQty        Decimal  @db.Decimal(24, 8) @default(0)
+  remainingQty        Decimal  @db.Decimal(24, 8) @default(0)
+  triggerPriceUsd     Decimal? @db.Decimal(24, 8)
+  trailPct            Decimal? @db.Decimal(16, 6)
+  extremePriceUsd     Decimal? @db.Decimal(24, 8)
+  status              String
+  claimWorkerId       String?
+  strategyInstanceId  String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@index([ocoGroupId])
   @@index([positionKey, status])
+  @@index([status, updatedAt])
+}
+
+model ProtectionIntent {
+  id          String    @id @default(cuid())
+  accountId   String
+  ocoGroupId  String
+  legId       String
+  status      String
+  reason      String
+  attempts    Int       @default(0)
+  retryAfter  DateTime?
+  resolvedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status, retryAfter])
+  @@index([ocoGroupId])
+}
+
+model StrategyInstance {
+  id              String   @id @default(cuid())
+  name            String
+  version         String
+  accountId       String
+  instrumentIds   String[]
+  timeframe       String   @default("M5")
+  params          Json
+  budgetUsd       Decimal  @db.Decimal(24, 8)
+  health          String   @default("HEALTHY")
+  status          String   @default("ACTIVE")
+  artifactHash    String?
+  sourceHash      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([accountId, status])
+  @@index([status, updatedAt])
 }
 
 model OpportunityFunnelEvent {
