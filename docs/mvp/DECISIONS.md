@@ -68,3 +68,23 @@
 
 **Decision:** Persist opportunity funnel events from each executor plan with stage reason codes. Persist durable alerts for live-gate refuse and reconcile suspend; resolve (`acked`) suspension alerts on clean paper reconcile. Terminal snapshot exposes execution mode, funnel, protected flags, why-blocked, alerts.
 **Date:** 2026-10-28
+
+## D013 — Explicit trading environments; fixtures isolated
+
+**Decision:** `tradingEnvironment` ∈ {FIXTURE, REPLAY, MARKET_DATA_PAPER, EXTERNAL_DEMO}. Default MARKET_DATA_PAPER with `multiMarketPaperIngest=false`. Fixture sequences only when FIXTURE; permanent UI banner; no fixture quotes into market-data paper accounts/metrics. FX/ETF fixtures omit fabricated DEX txn counts.
+**Date:** 2026-10-28
+
+## D014 — Named external providers; generic key insufficient
+
+**Decision:** Replace placeholder ExternalDemoAdapter with Alpaca paper + OANDA practice. Readiness: MISSING_CREDENTIALS | INVALID_CONFIGURATION | AUTH_FAILED | READY | …. `EXTERNAL_DEMO_API_KEY` alone never unblocks. Frankfurter supplies free DELAYED FX marks for MARKET_DATA_PAPER when `marketDataPaperFxIngest=true`.
+**Date:** 2026-10-28
+
+## D015 — Postgres is reservation authority; in-memory is test reference
+
+**Decision:** All production admission uses `PostgresReservationAuthority` with account `FOR UPDATE`, remaining amounts, immutable events, idempotent account+mode+clientOrderId. In-memory `ReservationLedger` is adversarial test reference only. releasePartial rejects double/over/negative.
+**Date:** 2026-10-28
+
+## D016 — Trigger ≠ execution; failed protection stays unresolved
+
+**Decision:** OCO TRIGGERED claims are transactional. Synthetic exit failure creates durable `ProtectionIntent` UNRESOLVED + alert; never permanently suppress because helper status was TRIGGERED. Long and short geometry supported. Alert ACK does not clear safety suspension — only clean reconcile does.
+**Date:** 2026-10-28

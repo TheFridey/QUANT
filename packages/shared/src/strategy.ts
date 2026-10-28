@@ -39,6 +39,8 @@ export const strategyConfigSchema = z
      * Default MARKET_DATA_PAPER (Solana live feed + optional delayed market data — no fixtures).
      */
     tradingEnvironment: z.enum(["FIXTURE", "REPLAY", "MARKET_DATA_PAPER", "EXTERNAL_DEMO"]),
+    /** Pull delayed FX marks from Frankfurter into MARKET_DATA_PAPER (not fixtures). */
+    marketDataPaperFxIngest: z.boolean(),
     universeLimit: z.number().int(),
     liveMaxAgeMs: z.number().int(),
     delayedMaxAgeMs: z.number().int(),
@@ -219,6 +221,7 @@ export const strategyPatchSchema = z
     flattenOnEmergency: z.boolean().optional(),
     multiMarketPaperIngest: z.boolean().optional(),
     tradingEnvironment: z.enum(["FIXTURE", "REPLAY", "MARKET_DATA_PAPER", "EXTERNAL_DEMO"]).optional(),
+    marketDataPaperFxIngest: z.boolean().optional(),
     universeLimit: z.number().int().optional(),
     liveMaxAgeMs: z.number().int().optional(),
     delayedMaxAgeMs: z.number().int().optional(),
@@ -272,6 +275,7 @@ export const DEFAULT_STRATEGY: StrategyConfig = {
   flattenOnEmergency: false,
   multiMarketPaperIngest: false,
   tradingEnvironment: "MARKET_DATA_PAPER",
+  marketDataPaperFxIngest: false,
   universeLimit: 24,
   liveMaxAgeMs: 45000,
   delayedMaxAgeMs: 180000,

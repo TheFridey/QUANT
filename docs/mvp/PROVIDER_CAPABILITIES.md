@@ -44,12 +44,13 @@ Optional URL overrides: `ALPACA_PAPER_BASE_URL`, `ALPACA_DATA_BASE_URL`, `OANDA_
 pnpm exec vitest run packages/market-data/src/fx-feed.test.ts
 
 # Credentialed Alpaca paper smoke (BLOCKED without keys)
+pnpm build:packages
 ALPACA_API_KEY_ID=... ALPACA_API_SECRET_KEY=... \
-  pnpm exec tsx scripts/verify-external-providers.ts --provider alpaca_paper
+  node scripts/verify-external-providers.mjs --provider alpaca_paper
 
 # Credentialed OANDA practice smoke (BLOCKED without keys)
 OANDA_API_TOKEN=... OANDA_ACCOUNT_ID=... \
-  pnpm exec tsx scripts/verify-external-providers.ts --provider oanda_practice
+  node scripts/verify-external-providers.mjs --provider oanda_practice
 ```
 
 If credentials are absent, mark **BLOCKED_EXTERNAL_TEST** only for the external verification row — adapter code and offline contracts can still be VERIFIED_OFFLINE.

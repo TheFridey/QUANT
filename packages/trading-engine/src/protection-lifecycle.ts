@@ -1,5 +1,5 @@
 import { newId } from "@odin/shared";
-import type { PrismaClient } from "@odin/shared/db";
+import type { Prisma, PrismaClient } from "@odin/shared/db";
 import {
   advanceProtectionLeg,
   armOco,
@@ -11,6 +11,8 @@ import {
   type ProtectionOrigin,
 } from "./protection.js";
 
+type Db = PrismaClient | Prisma.TransactionClient;
+
 export type DurableProtectionClaim =
   | { ok: true; group: OcoGroup; claimedLegId: string }
   | { ok: false; reason: "RACE_LOST" | "NOT_ARMED" | "GROUP_MISSING" };
@@ -19,7 +21,7 @@ export type DurableProtectionClaim =
  * Persist OCO legs for a position. Idempotent on ocoGroupId.
  */
 export async function persistOcoGroup(
-  prisma: PrismaClient,
+  prisma: Db,
   input: {
     accountId: string;
     group: OcoGroup;
@@ -51,7 +53,7 @@ export async function persistOcoGroup(
 }
 
 export async function loadOcoGroup(
-  prisma: PrismaClient,
+  prisma: Db,
   ocoGroupId: string,
 ): Promise<OcoGroup | null> {
   const legs = await prisma.protectionOrder.findMany({ where: { ocoGroupId } });
@@ -84,34 +86,40 @@ export async function claimOcoTrigger(
   prisma: PrismaClient,
   input: { ocoGroupId: string; markUsd: string; workerId: string },
 ): Promise<DurableProtectionClaim> {
-  return prisma.$transaction(async (tx) => {
-    const legs = await tx.protectionOrder.findMany({
-      where: { ocoGroupId: input.ocoGroupId },
-    });
-    if (legs.length === 0) return { ok: false as const, reason: "GROUP_MISSING" as const };
-    const group = await loadOcoGroupFromRows(legs);
-    const evaled = evaluateOco(group, input.markUsd);
-    if (!evaled.triggered) {
-      return { ok: false as const, reason: "NOT_ARMED" as const };
-    }
-    const claimed = await tx.protectionOrder.updateMany({
-      where: { id: evaled.triggered.id, status: "ARMED" },
-      data: { status: "TRIGGERED", claimWorkerId: input.workerId },
-    });
-    if (claimed.count !== 1) {
-      return { ok: false as const, reason: "RACE_LOST" as const };
-    }
-    for (const cancelled of evaled.cancelled) {
-      await tx.protectionOrder.updateMany({
-        where: { id: cancelled.id, status: "ARMED" },
-        data: { status: "CANCELLED" },
-      });
-    }
-    const next = await loadOcoGroupFromRows(
-      await tx.protectionOrder.findMany({ where: { ocoGroupId: input.ocoGroupId } }),
-    );
-    return { ok: true as const, group: next, claimedLegId: evaled.triggered.id };
+  return prisma.$transaction(async (tx) => claimOcoTriggerInTx(tx, input));
+}
+
+/** Transactional claim usable inside an existing worker transaction. */
+export async function claimOcoTriggerInTx(
+  tx: Prisma.TransactionClient,
+  input: { ocoGroupId: string; markUsd: string; workerId: string },
+): Promise<DurableProtectionClaim> {
+  const legs = await tx.protectionOrder.findMany({
+    where: { ocoGroupId: input.ocoGroupId },
   });
+  if (legs.length === 0) return { ok: false as const, reason: "GROUP_MISSING" as const };
+  const group = await loadOcoGroupFromRows(legs);
+  const evaled = evaluateOco(group, input.markUsd);
+  if (!evaled.triggered) {
+    return { ok: false as const, reason: "NOT_ARMED" as const };
+  }
+  const claimed = await tx.protectionOrder.updateMany({
+    where: { id: evaled.triggered.id, status: "ARMED" },
+    data: { status: "TRIGGERED", claimWorkerId: input.workerId },
+  });
+  if (claimed.count !== 1) {
+    return { ok: false as const, reason: "RACE_LOST" as const };
+  }
+  for (const cancelled of evaled.cancelled) {
+    await tx.protectionOrder.updateMany({
+      where: { id: cancelled.id, status: "ARMED" },
+      data: { status: "CANCELLED" },
+    });
+  }
+  const next = await loadOcoGroupFromRows(
+    await tx.protectionOrder.findMany({ where: { ocoGroupId: input.ocoGroupId } }),
+  );
+  return { ok: true as const, group: next, claimedLegId: evaled.triggered.id };
 }
 
 /**

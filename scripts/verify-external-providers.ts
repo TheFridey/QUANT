@@ -1,9 +1,12 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env node
 /**
  * Credentialed external provider smoke.
- * Usage:
- *   pnpm exec tsx scripts/verify-external-providers.ts --provider alpaca_paper
- *   pnpm exec tsx scripts/verify-external-providers.ts --provider oanda_practice
+ * Usage (after pnpm build:packages):
+ *   node --import tsx scripts/verify-external-providers.ts --provider alpaca_paper
+ *   node scripts/verify-external-providers.mjs   # or run via vitest offline contracts
+ *
+ * Preferred offline proof without credentials:
+ *   pnpm exec vitest run packages/market-data/src/fx-feed.test.ts
  *
  * Without credentials exits 2 with BLOCKED_EXTERNAL_TEST (adapter code may still be complete).
  */
@@ -12,7 +15,7 @@ import {
   inventoryAlpacaCredentials,
   inventoryOandaCredentials,
   OandaPracticeProvider,
-} from "../packages/market-data/src/index.ts";
+} from "@odin/market-data";
 
 async function main() {
   const providerArg = process.argv.find((a) => a.startsWith("--provider="))?.split("=")[1]

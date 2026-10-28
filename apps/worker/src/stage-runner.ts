@@ -16,6 +16,7 @@ import {
   BirdeyeClient,
   buildFixturePairsAtStep,
   fetchSolanaUniverse,
+  FrankfurterFxProvider,
   type ProviderResult,
 } from "@odin/market-data";
 import type { NormalizedPair, ObservationPoint, SecurityAssessment } from "@odin/shared";
@@ -39,8 +40,11 @@ import {
 } from "@odin/shared";
 import { Prisma, PrismaClient, toJson } from "@odin/shared/db";
 import {
+  armLongShortOco,
+  claimOcoTriggerInTx,
   commitProposedOrder,
   lockAccount,
+  persistOcoGroup,
   reconcileOrders,
   settlePendingOrder,
 } from "@odin/trading-engine";
@@ -218,9 +222,19 @@ export class StageRunner {
           if (result.status === "FILLED") {
             filled += 1;
             filledIds.push(order.clientOrderId);
+            if (order.side === "BUY") {
+              await this.armProtectionForFill(tx, {
+                accountId: "primary",
+                pairAddress: order.pairAddress,
+                qty: order.qty,
+                config: loaded.config,
+                markUsd: loaded.marks?.[order.pairAddress]?.priceUsd ?? null,
+              });
+            }
           }
         }
       }
+      await this.evaluateProtections(tx, loaded, now);
       await this.persistFunnel(tx, cycleId, loaded, filledIds, now);
 
       if (loaded.flattenRequested) {
@@ -305,13 +319,17 @@ export class StageRunner {
     }
     const result = await this.feed.fetchUniverse(config.universeLimit);
     const tradingEnvironment: TradingEnvironment = config.tradingEnvironment ?? "MARKET_DATA_PAPER";
-    // Fixtures only when explicitly in FIXTURE environment (or legacy flag + FIXTURE).
+    // Fixtures only when explicitly in FIXTURE environment.
     // Never inject fixture pairs into MARKET_DATA_PAPER / EXTERNAL_DEMO / REPLAY accounts.
-    const paperExtras =
-      tradingEnvironment === "FIXTURE" ||
-      (config.multiMarketPaperIngest === true && tradingEnvironment === "FIXTURE")
+    let paperExtras: NormalizedPair[] =
+      tradingEnvironment === "FIXTURE"
         ? buildFixturePairsAtStep({ stepIndex: Math.floor(now.getTime() / 60_000) % 9, now })
         : [];
+    // MARKET_DATA_PAPER: optional delayed FX marks from Frankfurter (not fixtures).
+    if (tradingEnvironment === "MARKET_DATA_PAPER" && config.marketDataPaperFxIngest === true) {
+      const fxPairs = await this.fetchFrankfurterPaperPairs(now);
+      paperExtras = [...paperExtras, ...fxPairs];
+    }
     if (paperExtras.length > 0) {
       const isolation = assertEnvironmentIsolation("FIXTURE_SEQUENCE", tradingEnvironment);
       if (!isolation.ok) {
@@ -353,18 +371,27 @@ export class StageRunner {
       });
       liveCount += 1;
     }
+    let delayedCount = 0;
     for (const pair of paperExtras) {
-      // Explicit DEMO — never labelled LIVE.
+      const origin = (pair.raw as { dataOrigin?: string; providerId?: string } | null)?.dataOrigin;
+      const providerId = (pair.raw as { providerId?: string } | null)?.providerId;
+      const freshness: DataState =
+        tradingEnvironment === "FIXTURE"
+          ? "DEMO"
+          : origin === "DELAYED_FEED" || providerId === "frankfurter_fx"
+            ? "DELAYED"
+            : "DEMO";
       await this.prisma.marketObservation.upsert({
         where: { ingestJobId_pairAddress: { ingestJobId: cycleId, pairAddress: pair.pairAddress } },
-        create: observationData(cycleId, pair, "DEMO", now),
+        create: observationData(cycleId, pair, freshness, now),
         update: {},
       });
-      demoCount += 1;
+      if (freshness === "DELAYED") delayedCount += 1;
+      else demoCount += 1;
     }
-    const total = liveCount + demoCount;
+    const total = liveCount + demoCount + delayedCount;
     const state: DataState =
-      liveCount > 0 ? "LIVE" : demoCount > 0 ? "DEMO" : "STALE";
+      liveCount > 0 ? "LIVE" : delayedCount > 0 ? "DELAYED" : demoCount > 0 ? "DEMO" : "STALE";
     await this.prisma.cycleRun.update({
       where: { id: cycleId },
       data: {
@@ -482,6 +509,7 @@ export class StageRunner {
       valuation,
       highWaterMarkUsd,
       activeStrategy,
+      marks,
       plan: planCycle({
         cycleId,
         engineStatus: engine.status as PlanStatus,
@@ -933,6 +961,216 @@ export class StageRunner {
     const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     if (!engine) throw new Error("ENGINE_MISSING");
     return parseStrategyConfig(engine.config);
+  }
+
+  /** Delayed FX marks for MARKET_DATA_PAPER — never fixtures, never EXTERNAL_DEMO. */
+  private async fetchFrankfurterPaperPairs(now: Date): Promise<NormalizedPair[]> {
+    try {
+      const provider = new FrankfurterFxProvider({ now: () => now });
+      const ids = ["fx:EURUSD", "fx:GBPUSD"];
+      const quotes = await provider.getQuotes(ids);
+      if (!quotes.ok) return [];
+      return quotes.data
+        .filter((q) => q.level !== null)
+        .map((q) => ({
+          source: "fx_stub" as const,
+          chainId: "fx" as const,
+          pairAddress: q.instrumentId,
+          dexId: "frankfurter-fx",
+          url: null,
+          baseAddress: q.instrumentId.split(":")[1]?.slice(0, 3) ?? "EUR",
+          baseSymbol: q.symbol,
+          baseName: q.symbol,
+          quoteAddress: "USD",
+          quoteSymbol: "USD",
+          priceUsd: q.level,
+          liquidityUsd: null,
+          volume24hUsd: null,
+          volume5mUsd: null,
+          priceChangeM5Pct: null,
+          priceChangeH1Pct: null,
+          priceChangeH24Pct: null,
+          txnsM5Buys: null,
+          txnsM5Sells: null,
+          pairCreatedAt: null,
+          fdvUsd: null,
+          marketCapUsd: null,
+          raw: {
+            provenance: q.provenance,
+            dataState: q.dataState,
+            dataOrigin: "DELAYED_FEED",
+            tradingEnvironment: "MARKET_DATA_PAPER",
+            bid: q.bid ?? null,
+            ask: q.ask ?? null,
+            eventTime: q.eventTime ?? null,
+            receivedAt: q.receivedAt,
+            providerId: "frankfurter_fx",
+          },
+        }));
+    } catch {
+      return [];
+    }
+  }
+
+  private async armProtectionForFill(
+    tx: Prisma.TransactionClient,
+    input: {
+      accountId: string;
+      pairAddress: string;
+      qty: string;
+      config: StrategyConfig;
+      markUsd: string | null;
+    },
+  ): Promise<void> {
+    if (!input.markUsd) return;
+    const position = await tx.position.findUnique({
+      where: {
+        accountId_pairAddress: { accountId: input.accountId, pairAddress: input.pairAddress },
+      },
+    });
+    if (!position || d(position.baseQty.toString()).lte(0)) return;
+    const groupId = `oco_${input.accountId}_${input.pairAddress}`;
+    const existing = await tx.protectionOrder.count({ where: { ocoGroupId: groupId, status: "ARMED" } });
+    if (existing > 0) return;
+    const group = armLongShortOco({
+      groupId,
+      positionKey: `${input.accountId}:${input.pairAddress}`,
+      direction: "LONG",
+      qty: position.baseQty.toString(),
+      entryPriceUsd: position.avgCostUsd.toString(),
+      stopLossPct: input.config.stopLossPct,
+      takeProfitPct: input.config.takeProfitPct,
+      origin: "SYNTHETIC_ENGINE",
+    });
+    await persistOcoGroup(tx, { accountId: input.accountId, group });
+  }
+
+  private async evaluateProtections(
+    tx: Prisma.TransactionClient,
+    loaded: {
+      marks?: Record<string, { priceUsd: string | null } | undefined>;
+      config: StrategyConfig;
+    },
+    _now: Date,
+  ): Promise<void> {
+    const armed = await tx.protectionOrder.findMany({
+      where: { accountId: "primary", status: "ARMED" },
+      distinct: ["ocoGroupId"],
+    });
+    for (const row of armed) {
+      const pair = row.positionKey.includes(":")
+        ? row.positionKey.slice(row.positionKey.indexOf(":") + 1)
+        : row.positionKey;
+      const mark = loaded.marks?.[pair]?.priceUsd;
+      if (!mark) continue;
+      const claim = await claimOcoTriggerInTx(tx, {
+        ocoGroupId: row.ocoGroupId,
+        markUsd: mark,
+        workerId: "worker-primary",
+      });
+      if (!claim.ok) continue;
+      // Synthetic exit: propose reduce-only by committing via mark; on failure leave unresolved.
+      const position = await tx.position.findFirst({
+        where: { accountId: "primary", pairAddress: pair },
+      });
+      if (!position || d(position.baseQty.toString()).lte(0)) continue;
+      const observation = await tx.marketObservation.findFirst({
+        where: { pairAddress: pair, priceUsd: { not: null } },
+        orderBy: { receivedAt: "desc" },
+      });
+      if (!observation) {
+        await tx.protectionOrder.updateMany({
+          where: { id: claim.claimedLegId },
+          data: { status: "FAILED" },
+        });
+        await tx.protectionIntent.create({
+          data: {
+            id: newId("protint"),
+            accountId: "primary",
+            ocoGroupId: row.ocoGroupId,
+            legId: claim.claimedLegId,
+            status: "UNRESOLVED",
+            reason: "MISSING_PRICE",
+            retryAfter: new Date(_now.getTime() + 5_000),
+            attempts: 1,
+          },
+        });
+        continue;
+      }
+      try {
+        const result = await commitProposedOrder(tx, {
+          accountId: "primary",
+          cycleId: `prot_${row.ocoGroupId}`,
+          order: {
+            clientOrderId: `prot_exit_${claim.claimedLegId}_${_now.getTime()}`,
+            pairAddress: pair,
+            baseSymbol: position.baseSymbol,
+            side: "SELL",
+            intent: "EXIT",
+            qty: position.baseQty.toString(),
+            observationId: observation.id,
+            reasonCodes: claim.group.legs.find((l) => l.id === claim.claimedLegId)?.kind === "STOP"
+              ? ["STOP_LOSS"]
+              : ["TAKE_PROFIT"],
+            executionMode: "PAPER",
+            venue: "PAPER",
+            instrumentId: pair.includes(":") ? pair : null,
+          },
+          config: loaded.config,
+          mode: this.dataMode,
+          now: _now,
+        });
+        if (result.status === "FILLED") {
+          await tx.protectionOrder.updateMany({
+            where: { id: claim.claimedLegId },
+            data: { status: "FILLED" },
+          });
+        } else if (result.status === "REJECTED" || result.status === "EXPIRED") {
+          await tx.protectionOrder.updateMany({
+            where: { id: claim.claimedLegId },
+            data: { status: "FAILED" },
+          });
+          await tx.protectionIntent.create({
+            data: {
+              id: newId("protint"),
+              accountId: "primary",
+              ocoGroupId: row.ocoGroupId,
+              legId: claim.claimedLegId,
+              status: "UNRESOLVED",
+              reason: result.reason ?? "PROTECTION_UNRESOLVED",
+              retryAfter: new Date(_now.getTime() + 5_000),
+              attempts: 1,
+            },
+          });
+          await tx.durableAlert.create({
+            data: {
+              severity: "ERROR",
+              code: "PROTECTION_EXIT_FAILED",
+              message: `Protective exit failed: ${result.reason ?? "unknown"}`,
+              acked: false,
+              payload: { ocoGroupId: row.ocoGroupId, legId: claim.claimedLegId, unresolved: true },
+            },
+          });
+        }
+      } catch (error) {
+        await tx.protectionOrder.updateMany({
+          where: { id: claim.claimedLegId },
+          data: { status: "FAILED" },
+        });
+        await tx.protectionIntent.create({
+          data: {
+            id: newId("protint"),
+            accountId: "primary",
+            ocoGroupId: row.ocoGroupId,
+            legId: claim.claimedLegId,
+            status: "UNRESOLVED",
+            reason: error instanceof Error ? error.message : "PROTECTION_UNRESOLVED",
+            retryAfter: new Date(_now.getTime() + 5_000),
+            attempts: 1,
+          },
+        });
+      }
+    }
   }
 }
 

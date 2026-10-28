@@ -8,6 +8,7 @@ export * from "./llm.js";
 export * from "./research.js";
 export * from "./oracle.js";
 export * from "./strategy-library.js";
+export * from "./strategy-instances.js";
 export * from "./funnel.js";
 export * from "./active-strategy.js";
 export * from "./alerts.js";

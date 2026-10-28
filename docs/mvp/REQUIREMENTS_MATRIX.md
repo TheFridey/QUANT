@@ -1,80 +1,31 @@
 # QUANT MVP — Requirements Matrix
 
-Status: `DONE` | `PARTIAL` | `BLOCKED_EXTERNAL` | `NOT_STARTED`
+Statuses (honest): see `ACCEPTANCE_SCENARIOS.md` for the authoritative per-stage table with call sites and evidence columns.
 
-## Summary counts
+Mechanical roll-up from ACCEPTANCE_SCENARIOS (implementation ≠ verification):
 
-| Status | Count |
-| --- | --- |
-| DONE | 34 |
-| PARTIAL | 16 |
-| BLOCKED_EXTERNAL | 4 |
-| NOT_STARTED | 0 |
+| Status | Approx count | Notes |
+| --- | --- | --- |
+| VERIFIED_OFFLINE | ~18 | Gate A core + several helpers with runtime call sites |
+| PARTIAL | ~30 | Implemented depth incomplete or helper-only previously |
+| IMPLEMENTED_UNVERIFIED | ~4 | New durable paths pending richer harness |
+| BLOCKED_EXTERNAL_TEST | ~4 | Named providers / Birdeye / LLM without credentials |
+| NOT_STARTED | 0 | Greenfield rows closed or mapped |
 
-Counts treat D45–D48 and D51–D53 as grouped rows (same style as prior matrix). Remaining PARTIAL items are depth/polish, not greenfield.
+**Do not use legacy DONE 34** — that count mixed fixture DEMO ingest and pure helpers with production completeness.
 
-## Gate A (01–10) — DONE
+## Critical-path status (this branch)
 
-All A01–A10 landed previously (see prior commit). A03/A04 remain depth-PARTIAL.
-
-## Gate B (11–29)
-
-| ID | Requirement | Status | Location / validation |
-| --- | --- | --- | --- |
-| B11 | Broaden crypto discovery | PARTIAL | universe limits raised; DexScreener still primary |
-| B12 | FX data/instruments | PARTIAL | registry + DEMO stub ingest; live BLOCKED_EXTERNAL |
-| B13 | Executable index ETF proxies | DONE | `etf:SPY`/`QQQ` + paper ingest |
-| B14 | Equity/ETF/commodity | DONE | ETF + `commodity:XAUUSD`/`WTI` DEMO paper path |
-| B15 | Market-data gateway | PARTIAL | providers + paper-multimarket |
-| B16 | Durable order lifecycle | PARTIAL | PENDING/eligible + identity |
-| B17 | Paper latency/expiry | DONE | store pending path |
-| B18 | Realistic costs | PARTIAL | existing fee/spread/impact |
-| B19 | Atomic risk reservations | DONE | `risk-engine/reservations.ts` + tests |
-| B20 | Exposure / daily loss / session equity | PARTIAL | `session-equity.ts` midnight roll + HWM ratchet |
-| B21 | Protective stops | PARTIAL | stop/TP/trailing/time |
-| B22 | Native vs synthetic protection | PARTIAL | `ProtectionOrigin` on OCO legs |
-| B23 | TP/OCO | DONE | `trading-engine/protection.ts` race tests |
-| B24 | Trailing / breakeven / time | PARTIAL | trailing/time runtime; breakeven helper |
-| B25 | Operating controls | PARTIAL | `pauseNewEntries` + live gate |
-| B26 | Risk hierarchy / breakers | PARTIAL | existing + entry suspension via durable alerts |
-| B27 | Correlation budgeting | DONE | deterministic groups + tests |
-| B28 | Activity-friendly presets | DONE | |
-| B29 | Hard blocks vs advisories | PARTIAL | why-blocked on terminal snapshot |
-
-## Gate C (30–43)
-
-| ID | Requirement | Status | Notes |
-| --- | --- | --- | --- |
-| C30 | Common strategy interface | DONE | `strategy-library.ts` contract |
-| C31 | Strategy library | DONE | pulse/fx/etf/commodity/mean-revert modules |
-| C32 | Concurrent instances | PARTIAL | library supports multi-id |
-| C33 | Opportunity allocation | DONE | funnel stages persisted with reason codes |
-| C34 | Backtest/runtime unify | PARTIAL | trailing/time on both; full unify TBD |
-| C35 | Replay risk/pending | PARTIAL | |
-| C36 | Data integrity | PARTIAL | evolution integrity exists |
-| C37 | Net performance | PARTIAL | |
-| C38 | Generated-strategy promotion drives decisions | DONE | `loadPlan` → `activeStrategyId`; divergent strategy regression |
-| C39 | Bounded research | PARTIAL | |
-| C40 | External demo adapter | BLOCKED_EXTERNAL | boundary refuses fake success |
-| C41 | Reconciliation | DONE | `reconcile.ts` + durable suspend/resolve alerts |
-| C42 | Secure ops | PARTIAL | live gate |
-| C43 | Versioned config | DONE | exact strategy id@version+src+art stamp on orders |
-
-## Gate D (44–58)
-
-| ID | Requirement | Status | Notes |
-| --- | --- | --- | --- |
-| D44 | Opportunity funnel | DONE | worker persists `OpportunityFunnelEvent`; terminal summary |
-| D45–D48 | Command centre / controls / positions | PARTIAL | execution/funnel/protected UX deepened; not full redesign |
-| D49 | Risk settings/diagnostics | DONE | risk panel: mode, funnel, why-blocked, alerts |
-| D50 | Durable alerts | DONE | worker persist + resolve on clean reconcile; API ack |
-| D51–D53 | Scheduling / observability / infra | PARTIAL | migration applied; runbooks added |
-| D54 | Unit/contract tests | DONE | expanded suite |
-| D55 | Fault-injection | DONE | reconcile unknown/qty + OCO race tests |
-| D56 | Multi-market E2E | DONE | crypto+FX+ETF+commodity + ≥20 protected slots |
-| D57 | Load test | DONE | capacity report admits 50 protected slots in-process (not a prod SLO claim) |
-| D58 | Runbooks/handoff | DONE | `docs/mvp/RUNBOOKS.md` + HANDOFF |
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Fixture isolation | VERIFIED_OFFLINE | `paper-multimarket.test`, default `multiMarketPaperIngest=false`, FIXTURE banner |
+| Named providers | IMPLEMENTED_UNVERIFIED + BLOCKED_EXTERNAL_TEST | Alpaca/OANDA adapters + offline contracts; credentialed script exit 2 without keys |
+| PG reservations | VERIFIED_OFFLINE | `pg-reservations.test` race + over-release |
+| Long/short protection | PARTIAL→IMPLEMENTED_UNVERIFIED | helpers + worker arm/evaluate; richer multi-worker crash harness TBD |
+| Concurrent strategies | PARTIAL | durable `StrategyInstance` + evaluate/allocate tests |
+| Capacity 50 slots | PARTIAL | in-process only — explicitly not prod SLO |
+| External demo C40 | BLOCKED_EXTERNAL_TEST | adapter READY only with named practice credentials |
 
 ## External blockers
 
-Birdeye, OpenAI, EXTERNAL_DEMO_API_KEY, live broker — BLOCKED_EXTERNAL / refused.
+Alpaca paper keys, OANDA practice token/account, Birdeye, OpenAI — BLOCKED_EXTERNAL_TEST / UNKNOWN paths. Never fake LIVE success.

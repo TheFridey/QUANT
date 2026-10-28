@@ -1,88 +1,80 @@
 # QUANT MVP — Evidence Log
 
-Baseline HEAD at inspection: `0689e33013051816266d8947c1a3340b01828429` (matches review SHA).
-Branch: `cursor/quant-mvp-multimarket-5f64`
+## Baseline
+
+- Review baseline: `05143f1d8f1941a0377737490f3ad40285532e57`
+- Continuation commits: see `git log 05143f1..HEAD`
 
 ## Credential inventory (names only)
 
 | Variable | Present locally | Notes |
 | --- | --- | --- |
-| `DATABASE_URL` | yes (from `.env.example` copy) | local Postgres |
+| `DATABASE_URL` / `DATABASE_URL_TEST` | yes | local Postgres |
 | `REDIS_URL` | yes | local Redis |
-| `JWT_SECRET` / `ADMIN_*` | sample defaults | not production |
-| `BIRDEYE_API_KEY` | empty | security UNKNOWN path |
-| `OPENAI_API_KEY` / `HERMES_*` | empty | mock LLM |
-| External broker / FX sandbox keys | absent | `BLOCKED_EXTERNAL` |
+| `ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY` | empty | BLOCKED_EXTERNAL_TEST |
+| `OANDA_API_TOKEN` / `OANDA_ACCOUNT_ID` | empty | BLOCKED_EXTERNAL_TEST |
+| `EXTERNAL_DEMO_API_KEY` | empty | **insufficient alone** |
+| `BIRDEYE_API_KEY` | empty | security UNKNOWN |
+| `OPENAI_API_KEY` | empty | mock LLM |
 
-No secret values printed. Do not purchase, fund, or place real-money trades.
+## Defect verification vs baseline `05143f1`
 
-## Baseline commands
+| # | Finding | Verdict after continuation |
+| --- | --- | --- |
+| 1 | `external-demo` placeholder; key cannot unblock | **FIXED** — Alpaca+OANDA named adapters; generic key still insufficient (offline test) |
+| 2 | `paper-multimarket` fixed levels + synthetic momentum into paper | **FIXED** — default off; FIXTURE sequences isolated; no DEX txns for FX/ETF |
+| 3 | `protection.ts` long-only helper, not durable worker | **PARTIAL→IMPROVED** — long/short + worker arm/evaluate + ProtectionIntent on failure |
+| 4 | `reservations.ts` in-process only; releasePartial adversarial | **FIXED** — adversarial releasePartial + `PostgresReservationAuthority` race test |
+| 5 | Concurrent strategies partial | **IMPROVED** — durable StrategyInstance + evaluate/allocate |
+| 6 | 50 in-process slots ≠ prod capacity | **DOCUMENTED** — report labels `productionShaped: false` |
+| 7 | Matrix DONE inflation | **FIXED** — ACCEPTANCE_SCENARIOS per-stage statuses |
+
+## Commands / results (record after each push)
 
 ```text
-pnpm install          # ok
-pnpm build:packages   # ok
-pnpm test             # 111 passed / 3 failed / 13 skipped (pre-change)
+pnpm build:packages   # must be clean
+pnpm typecheck        # must be clean
+pnpm lint             # must be clean
+pnpm test             # see count below
+pnpm db:deploy        # includes 20261028240000_mvp_durable_authority_isolation
+pnpm build            # api/worker/web production builds
 ```
 
-Pre-change failures (environment, not trading-logic regressions):
-- `packages/evolution/src/sandbox-probe.test.ts` — `bwrap` missing (`ENOENT`)
-- `packages/evolution/src/oracle-cycle.test.ts` — requires bubblewrap isolation
-- `packages/evolution/src/acceptance.test.ts` — report null when sandbox unavailable
+### Latest local run
 
-## Defect verification (HEAD `0689e33`)
+```text
+pnpm test             # 192 passed / 1 skipped (sandbox-dependent skips reported accurately elsewhere)
+pnpm build:packages   # clean
+```
 
-| # | Claim | Verdict | Evidence |
+### Targeted verification suite mapping
+
+| # | Scenario | Command | Result |
 | --- | --- | --- | --- |
-| 1 | Paper-only Solana spot; indices RESEARCH_ONLY/NO_EXECUTION; FX absent | **CONFIRMED** | `docs/ARCHITECTURE.md` L1–7; `packages/shared/src/instruments.ts` SEED_INSTRUMENTS (only `PAPER_SPOT` is Solana universe; indices `RESEARCH_ONLY`/`NO_EXECUTION`); no FX asset class |
-| 2 | Defaults $100 / 4 pos / 12 pairs / 5% / $5 min; ceilings 10/30 | **CONFIRMED** | `packages/shared/src/strategy.ts` DEFAULT_STRATEGY + schema refine `maxPositions<=10`, `universeLimit<=30` |
-| 3 | $5 cap = $5 min deadlock; never round up through risk | **CONFIRMED** | `maxEntryNotional` caps at 5% equity; `plan.ts` `sizeOrder` rejects `BELOW_MIN_NOTIONAL` when `notional < minOrder`; no round-up path exists, but defaults leave zero headroom after fees |
-| 4 | Candidates from ingest only; held outside discovery get marks without exit eval; flatten cleared with holdings | **CONFIRMED** | `stage-runner.ts` `loadPlan` builds `pairs` only from `ingestJobId=cycleId`; held marks loaded separately but never added to `pairs`; `executor` clears `flattenRequested` unconditionally after commit loop |
-| 5 | `loadObservationHistory` asc take:40 keeps earliest | **CONFIRMED** | `stage-runner.ts` L361–365 `orderBy: { receivedAt: "asc" }, take: 40` |
-| 6 | plan computes future `eligibleAt`; store fills with `eligibleAt=input.now` | **CONFIRMED** | `plan.ts` L369–392; `store.ts` L103–118 creates `FILLED` with `eligibleAt: input.now`; `CommitOrder` type omits eligibility fields |
-| 7 | Planner adds buy exposure without subtracting completed sells | **CONFIRMED** | `plan.ts` L174–176 only increments on BUY |
-| 8 | Backtest trailing/time exits absent from PULSE path | **CONFIRMED** | `backtest/engine.ts` uses `trailingStopPct`/`maxHoldingMs`; `pulse.ts` held exits = stop/TP/m5 fade only |
-| 9 | Discovery = DexScreener boosted + SOL by liquidity | **CONFIRMED** | `market-data/dexscreener.ts` `fetchSolanaUniverse` boosts URL + WSOL mint |
-| 10 | PULSE long-only Solana momentum rules | **CONFIRMED** | `pulse.ts` L149–168; `isTradableQuote` Solana mints in `market.ts` |
-| 11 | Promoted strategies vs hard-coded PULSE | **PARTIAL** | Worker loads `engine.config` / `activeStrategy` into `parseStrategyConfig` (params can change thresholds); entry/exit **logic** remains hard-coded `runPulse` — promotion does not swap decision code |
-| 12 | Daily loss = today realised + lifetime unrealised vs session equity; starting balance denom | **CONFIRMED** | `stage-runner.ts` L297–316 sums day `REALIZED_PNL` + current unrealised; `evaluate.ts` denominates by `startingBalanceUsd` |
-| 13 | AEGIS REVIEW/BLOCK entry-blocking; UNKNOWN honest | **CONFIRMED** | `aegis.ts` `blocksEntry` for BUY+BLOCK/REVIEW; UNKNOWN ≠ PASS; does not hard-block paper entry |
-| 14 | Green CI ≠ trading scenarios work | **CONFIRMED** | CI can pass unit tests while multi-market E2E / fault scenarios absent; sandbox tests fail locally without bwrap |
+| 1 | Engine regressions | `vitest run packages/agent-core/src/gate-a.regression.test.ts` | pass |
+| 2 | Fixture isolation | `vitest run packages/market-data/src/paper-multimarket.test.ts packages/shared/src/environments.test.ts` | pass |
+| 3 | Named provider contracts | `vitest run packages/market-data/src/fx-feed.test.ts` | pass |
+| 4 | Credentialed providers | `node scripts/verify-external-providers.mjs` | exit 2 BLOCKED_EXTERNAL_TEST (no keys) |
+| 5 | PG concurrent admission | `vitest run packages/risk-engine/src/pg-reservations.test.ts` | pass (2-worker race admits exact 2) |
+| 6 | Reservation adversarial | `vitest run packages/risk-engine/src/reservations.test.ts` | pass |
+| 7–11 | Protection lifecycle | `vitest run packages/trading-engine/src/protection*.test.ts` | pass |
+| 12–13 | Pause/ACK | `vitest run packages/trading-engine/src/alerts-ack.test.ts` + reconcile tests | pass |
+| 14 | Concurrent instances | `vitest run packages/agent-core/src/strategy-instances.test.ts` | pass |
+| 15 | FX sessions | `vitest run packages/shared/src/sessions.test.ts` | pass |
+| 16 | Replay isolation | DATA_MODE=replay path (PARTIAL — REPLAY account isolation helpers present) | PARTIAL |
+| 17 | External manual position | policy: refuse fake LIVE; named adapters only | documented |
+| 18 | Normal paper ≠ fixtures | default config + isolation tests | pass |
 
-## Validation after Gate A/B/C continuation
+### Migrations
 
-```text
-pnpm build:packages   # ok
-pnpm typecheck        # ok
-pnpm lint             # ok
-pnpm test             # 163 passed / 1 skipped
-```
+- Applied: `20261028240000_mvp_durable_authority_isolation` on `odin` and `odin_test` without record loss (additive ALTER/CREATE).
 
-Added: reservations, protection/OCO, correlation, reconcile, session-equity, strategy-library, funnel, paper-multimarket ingest, multi-market.e2e.
+### Capacity / soak
 
-Migrations: `20261028220000_mvp_order_identity_session`, `20261028230000_mvp_reservations_funnel_alerts`.
+- In-process 50 protected slots: measured, **not** production-shaped.
+- Target 200 instruments / 50 protected / 20 simultaneous across 3 classes: harness partial — use FIXTURE capital explicitly when claiming fixture soak.
+- Longer owner soak: run worker against FIXTURE env with stepped sequences; label results as fixture soak.
 
-## Validation after activeStrategy / funnel / commodity / UX continuation
+### Security sandbox
 
-```text
-pnpm build:packages
-pnpm typecheck
-pnpm lint
-pnpm test
-```
-
-Proven:
-
-- `parseActiveStrategyIdentity` + `loadPlan` passes `activeStrategyId` into `planCycle`
-- Regression: `pulse-momentum-v1` BUY vs `mean-revert-fade-v1` HOLD on identical input
-- `strategyVersionStamp` writes exact id@version+src+art onto committed orders
-- Worker persists `OpportunityFunnelEvent` + `DurableAlert`; clean reconcile acks suspension alerts
-- Commodity `XAUUSD`/`WTI` DEMO paper path; terminal execution/funnel/protection/why-blocked
-- Fault-injection + load capacity report (50 protected slots in-process; not a prod SLO)
-
-See REQUIREMENTS_MATRIX.md for status counts (DONE 34 / PARTIAL 16 / BLOCKED_EXTERNAL 4 / NOT_STARTED 0).
-
-```text
-pnpm test       # 171 passed / 1 skipped
-pnpm typecheck  # clean
-pnpm lint       # clean
-```
+- Bubblewrap-dependent evolution tests may skip or fail without `bwrap` — report as environment skip, not trading regression.

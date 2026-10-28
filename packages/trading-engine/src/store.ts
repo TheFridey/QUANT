@@ -147,12 +147,21 @@ async function fillExistingPending(
   expiresAt: Date | null,
 ): Promise<{ status: "FILLED" | "REJECTED" | "EXPIRED"; reason: ReasonCode | null }> {
   const observation = await tx.marketObservation.findUnique({ where: { id: input.order.observationId } });
-  if (!observation || observation.priceUsd === null || observation.liquidityUsd === null) {
+  if (!observation || observation.priceUsd === null) {
     await tx.order.update({
       where: { id: orderId },
       data: { status: "REJECTED", rejectReason: "MISSING_PRICE" },
     });
     return { status: "REJECTED", reason: "MISSING_PRICE" };
+  }
+  const instrumentKey = input.order.instrumentId ?? input.order.pairAddress;
+  const needsDexLiquidity = !instrumentKey.startsWith("fx:") && !instrumentKey.startsWith("etf:") && !instrumentKey.startsWith("commodity:");
+  if (needsDexLiquidity && observation.liquidityUsd === null) {
+    await tx.order.update({
+      where: { id: orderId },
+      data: { status: "REJECTED", rejectReason: "MISSING_LIQUIDITY" },
+    });
+    return { status: "REJECTED", reason: "MISSING_LIQUIDITY" };
   }
   const freshness = resolveObservationFreshness(observation.freshness, {
     mode: input.mode,
@@ -163,7 +172,8 @@ async function fillExistingPending(
   });
   if (input.order.side === "BUY" && freshness !== "LIVE") {
     const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true;
-    if (!demoOk) {
+    const delayedOk = freshness === "DELAYED" && input.config.allowDemoPaperEntries === true;
+    if (!demoOk && !delayedOk) {
       const reason = freshnessReason(freshness);
       await tx.order.update({
         where: { id: orderId },
@@ -189,11 +199,12 @@ async function fillExistingPending(
     side: input.order.side,
     midPriceUsd: observation.priceUsd.toString(),
     quantity: input.order.qty,
-    liquidityUsd: observation.liquidityUsd.toString(),
+    liquidityUsd: observation.liquidityUsd?.toString() ?? "0",
     feeBps: input.config.feeBps,
     maxSlippageBps: input.config.maxSlippageBps,
     spreadBpsEstimate: input.config.spreadBpsEstimate,
     maxPriceImpactBps: input.config.maxPriceImpactBps,
+    instrumentId: input.order.instrumentId ?? input.order.pairAddress,
   });
   if (!quoted.ok) {
     await tx.order.update({
@@ -300,9 +311,18 @@ async function fillCommittedOrder(
   expiresAt: Date | null,
 ): Promise<{ status: "FILLED" | "REJECTED"; reason: ReasonCode | null }> {
   const observation = await tx.marketObservation.findUnique({ where: { id: input.order.observationId } });
-  if (!observation || observation.priceUsd === null || observation.liquidityUsd === null) {
+  if (!observation || observation.priceUsd === null) {
     await reject(tx, input, "MISSING_PRICE", expiresAt, eligibleAt);
     return { status: "REJECTED", reason: "MISSING_PRICE" };
+  }
+  const instrumentKey = input.order.instrumentId ?? input.order.pairAddress;
+  const needsDexLiquidity =
+    !instrumentKey.startsWith("fx:") &&
+    !instrumentKey.startsWith("etf:") &&
+    !instrumentKey.startsWith("commodity:");
+  if (needsDexLiquidity && observation.liquidityUsd === null) {
+    await reject(tx, input, "MISSING_LIQUIDITY", expiresAt, eligibleAt);
+    return { status: "REJECTED", reason: "MISSING_LIQUIDITY" };
   }
   const freshness = resolveObservationFreshness(observation.freshness, {
     mode: input.mode,
@@ -313,7 +333,8 @@ async function fillCommittedOrder(
   });
   if (input.order.side === "BUY" && freshness !== "LIVE") {
     const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true;
-    if (!demoOk) {
+    const delayedOk = freshness === "DELAYED" && input.config.allowDemoPaperEntries === true;
+    if (!demoOk && !delayedOk) {
       const reason = freshnessReason(freshness);
       await reject(tx, input, reason, expiresAt, eligibleAt);
       return { status: "REJECTED", reason };
@@ -333,11 +354,12 @@ async function fillCommittedOrder(
     side: input.order.side,
     midPriceUsd: observation.priceUsd.toString(),
     quantity: input.order.qty,
-    liquidityUsd: observation.liquidityUsd.toString(),
+    liquidityUsd: observation.liquidityUsd?.toString() ?? "0",
     feeBps: input.config.feeBps,
     maxSlippageBps: input.config.maxSlippageBps,
     spreadBpsEstimate: input.config.spreadBpsEstimate,
     maxPriceImpactBps: input.config.maxPriceImpactBps,
+    instrumentId: input.order.instrumentId ?? input.order.pairAddress,
   });
   if (!quoted.ok) {
     await reject(tx, input, quoted.reason, expiresAt, eligibleAt);
