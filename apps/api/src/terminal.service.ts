@@ -551,11 +551,29 @@ export class TerminalService {
   }
 
   async updateConfig(patch: unknown, actor: string) {
+    if (patch && typeof patch === "object" && !Array.isArray(patch)) {
+      const identityKey = ["sourceHash", "artifactHash", "strategyId", "strategyVersion", "activeStrategy"].find(
+        (key) => key in patch,
+      );
+      if (identityKey) {
+        throw new ConflictException("Promoted paper strategy identity changes only through operator promotion");
+      }
+    }
     const parsedPatch = strategyPatchSchema.parse(patch);
     const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     if (!engine) throw new NotFoundException("Engine is not initialised");
     if (engine.status === "RUNNING") throw new ConflictException("Pause the engine before changing risk limits");
     const current = parseStrategyConfig(engine.config);
+    if (promotedPaperStrategy(engine.activeStrategy)) {
+      const changed = Object.entries(parsedPatch).some(([key, value]) => {
+        if (value === undefined) return false;
+        const currentValue = (current as Record<string, unknown>)[key];
+        return String(currentValue) !== String(value);
+      });
+      if (changed) {
+        throw new ConflictException("The promoted paper strategy stays unchanged until a new operator promotion");
+      }
+    }
     const next = mergeStrategy(current, parsedPatch);
     if (!d(next.startingBalanceUsd).eq(d(current.startingBalanceUsd))) {
       await this.resetBalance(next);
@@ -941,6 +959,17 @@ export class TerminalService {
     }
     return result;
   }
+}
+
+function promotedPaperStrategy(value: unknown): boolean {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      "strategyId" in value &&
+      "sourceHash" in value &&
+      "artifactHash" in value,
+  );
 }
 
 function parseBodySafe<T>(schema: { parse: (value: unknown) => T }, body: unknown): T {

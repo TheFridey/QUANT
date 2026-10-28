@@ -13,6 +13,7 @@ describe.skipIf(!enabled)("paper cycle persistence", () => {
 
   beforeAll(async () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+    await prisma.$executeRaw`SELECT pg_advisory_lock(641099)`;
     await prisma.$executeRawUnsafe(
       `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "ResearchProposal", "CycleRun", "PaperAccount", "EngineControl", "User" RESTART IDENTITY CASCADE`,
     );
@@ -28,6 +29,7 @@ describe.skipIf(!enabled)("paper cycle persistence", () => {
   });
 
   afterAll(async () => {
+    await prisma.$executeRaw`SELECT pg_advisory_unlock(641099)`;
     await prisma.$disconnect();
   });
 
@@ -85,6 +87,12 @@ describe.skipIf(!enabled)("paper cycle persistence", () => {
     const summed = lines.filter((line) => line.affectsCash).reduce((total, line) => total.plus(d(line.amountUsd.toString())), d("0"));
     expect(summed.eq(d(account.cashUsd.toString()))).toBe(true);
     expect(d(account.cashUsd.toString()).lt(d(account.startingBalanceUsd.toString()))).toBe(true);
+    const memory = await prisma.tradeMemory.findMany({ where: { tradeId: fills[0]!.id } });
+    expect(memory.map((row) => row.phase).sort()).toEqual(["AFTER", "BEFORE", "DURING"]);
+    const entryContext = memory.filter((row) => row.phase !== "AFTER" && !row.postExit);
+    expect(JSON.stringify(entryContext)).not.toContain("realizedPnlUsd");
+    expect(memory.find((row) => row.phase === "AFTER")?.postExit).toBe(true);
+
     const agents = new Set((await prisma.agentDecision.findMany({ where: { cycleId: ingested.cycleId } })).map((row) => row.agent));
     for (const agent of ["SENTINEL", "PULSE", "AEGIS", "ATLAS", "EXECUTOR", "ARCHIVIST"]) {
       expect(agents.has(agent)).toBe(true);

@@ -177,6 +177,7 @@ export class StageRunner {
     if (loaded) {
       await this.persistEquitySnapshot(cycleId, loaded);
     }
+    await this.persistTradeReconstruction(cycleId);
     await this.prisma.cycleRun.update({
       where: { id: cycleId },
       data: { stage: "complete", status: "COMPLETE", finishedAt: this.now(), orderCount: orders },
@@ -453,6 +454,62 @@ export class StageRunner {
       });
     }
     return out;
+  }
+
+  private async persistTradeReconstruction(cycleId: string): Promise<void> {
+    const orders = await this.prisma.order.findMany({
+      where: { cycleId, status: "FILLED" },
+      include: { fills: true },
+    });
+    for (const order of orders) {
+      for (const fill of order.fills) {
+        const capturedAt = fill.createdAt;
+        const rows = [
+          {
+            phase: "BEFORE",
+            postExit: false,
+            context: {
+              side: order.side,
+              intent: order.intent,
+              reasonCodes: order.reasonCodes,
+              pairAddress: order.pairAddress,
+              baseSymbol: order.baseSymbol,
+            },
+          },
+          {
+            phase: "DURING",
+            postExit: false,
+            context: {
+              priceUsd: fill.priceUsd.toString(),
+              qty: fill.qty.toString(),
+              notionalUsd: fill.notionalUsd.toString(),
+              feeUsd: fill.feeUsd.toString(),
+              slippageBps: fill.slippageBps.toString(),
+            },
+          },
+          {
+            phase: "AFTER",
+            postExit: true,
+            context: {
+              feeUsd: fill.feeUsd.toString(),
+              outcome: order.intent === "ENTRY" ? "OPEN" : "CLOSED",
+            },
+          },
+        ];
+        for (const row of rows) {
+          await this.prisma.tradeMemory.create({
+            data: {
+              tradeId: fill.id,
+              pairAddress: fill.pairAddress,
+              phase: row.phase,
+              postExit: row.postExit,
+              context: toJson(row.context),
+              capturedAt,
+            },
+          });
+        }
+      }
+    }
   }
 
   private async persistEquitySnapshot(
