@@ -282,7 +282,7 @@ export function ModelOpsSection() {
 
 export function GenomeSection() {
   const [data, setData] = useState<{
-    strategies: Array<{ id: string; name: string; version: number; status: string }>;
+    strategies: Array<{ id: string; name: string; version: number; status: string; parentId: string | null }>;
     transitions: Array<{ strategyId: string; from: string; to: string; actor: string; evidenceHash: string; at: string }>;
   } | null>(null);
 
@@ -298,6 +298,9 @@ export function GenomeSection() {
             <li key={row.id} className="flex justify-between gap-2 px-3 py-2">
               <span>
                 {row.name} v{row.version}
+                <span className="mt-0.5 block text-xs text-muted">
+                  {row.parentId ? `child of ${row.parentId}` : "root strategy"}
+                </span>
               </span>
               <span className="mono text-xs text-muted">{row.status}</span>
             </li>

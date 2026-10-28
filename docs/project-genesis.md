@@ -137,15 +137,71 @@ Verification on 2026-10-28 19:56–19:57 Europe/London:
 - `pnpm typecheck` — PASS
 - `pnpm lint` — PASS
 
-The promotion tests supply the scientific gate inputs. They do not measure a market sample, and this phase does not claim a statistically validated strategy. No live model call was made. The service test observed the `EngineControl` primary update on a Prisma double: after a successful operator promotion `entryM5ChangePct` was `"3"`, and a later unreviewed revision left that value in place. A worker cycle was not started after that write.
+The promotion tests supply the scientific gate inputs. They do not measure a market sample, and this phase does not claim a statistically validated strategy. No live model call was made. The service test observed the `EngineControl` primary update on a Prisma double: after a successful operator promotion `entryM5ChangePct` was `"3"`, and a later unreviewed revision left that value in place. A worker cycle was not started after that write. Later phases read PostgreSQL and run one paper cycle.
+
+## Phase 10 — ORACLE runs one bounded research cycle
+
+Commit `e5bb0d08f4f1f666d4096d0f089250c935119475`. Completed 2026-10-28 20:43 Europe/London.
+
+`runBoundedResearchCycle` performs the thirteen capabilities in order and then stops. It does not call itself. The action count is 13, which the test bounds by the experiment limit. With a `FIXTURE` provider on the fast-observer, deep-research, engineering, and challenge endpoints, the cycle reviews persisted performance, keeps post-exit memory out of the entry view, counts repeated entry conditions, asks each tier through `ModelRouter.completeJson`, compiles the engineering source, and runs that source in bubblewrap. The executed hash is the SHA-256 of the source the engineering tier returned. A second call that changes only `onBar` returns different intents. The challenge tier uses `challenge-primary`, which stays distinct from the engineering endpoint. A null return or a small sample rejects the candidate. A later experiment is queued only when the existing admission limits accept it. Deterioration is read from the persisted performance input. The summary is the last step.
+
+`aiDiscovery` stays false on every step and on the queue. An unconfigured router returns `UNAVAILABLE` for the hypothesis, the engineering source, and the challenge. The sandbox is not asked to run a template, and nothing is stored as an AI discovery. A malformed engineering or challenge payload fails schema validation. Estimated spend is labelled `ESTIMATED`, provenance is `FIXTURE`, and a new `ModelRouter` reading the same budget file still shows the spend. The optional live provider test in `packages/evolution/src/router.test.ts` still skips unless `ODIN_LIVE_PROVIDER_TEST=1` and `OPENAI_API_KEY` are set. No live model call was made.
+
+The research-centre HTTP response still lists the deterministic proposals from `proposeOracleCycle`. The executing cycle is the library function the tests call. A dashboard refresh does not compile or run generated code.
+
+## Phase 11 — Promoted strategy stays immutable, and PostgreSQL is read back
+
+Commit `25962ee03f98fc06c76d24edaea94970e0f39bd5`. Completed 2026-10-28 20:43 Europe/London.
+
+`TerminalService.updateConfig` rejects a body that carries `sourceHash`, `artifactHash`, `strategyId`, `strategyVersion`, or `activeStrategy`. When `EngineControl.activeStrategy` already has a strategy id and both hashes, a paused-engine patch that would change a `StrategyConfig` field is rejected and the row is left as it was. Pause and resume still go through `act`. `promoteToPaperEngine` remains the promotion write. `ORACLE`, `FORGE`, and `MODEL` still cannot promote.
+
+`apps/api/src/promote-paper.integration.test.ts` uses PostgreSQL database `odin_test`. It promotes through `EvolutionService`, reads `EngineControl` id `primary` back, and checks strategy id `strat_reviewed`, version `1.0.0`, the source and artifact hashes, and `entryM5ChangePct` `"4"`. A later unreviewed revision does not replace that row. The same test then runs one `StageRunner` pulse with a fixture feed and no live broker. The pulse reason codes include `NO_EDGE` and that cycle writes no fill, which is the promoted threshold applied to the fixture's 3.5% move. The in-memory Prisma double in `promote-paper.test.ts` remains a separate test.
+
+The worker archivist writes one `TradeMemory` row for `BEFORE`, `DURING`, and `AFTER` on each paper fill. `apps/worker/src/stage-runner.integration.test.ts` reads those rows for the fill that cycle created. Entry rows omit `realizedPnlUsd`. The `AFTER` row is `postExit`.
+
+## Phase 12 — Runtime adversaries and a seccomp filter
+
+Commit `6447aa6f8fa6305ac8cde373d85728b77ec930e3`. Completed 2026-10-28 20:43 Europe/London.
+
+`packages/evolution/src/sandbox-adversary.test.ts` runs inside `executeCompiledStrategy`, which is the bubblewrap runner. The static source gate is a separate named layer and is not this proof.
+
+On this machine, with bubblewrap 0.9.0 and the seccomp preload compiled by gcc:
+
+- A dynamic `import("node:child_process")` of `/usr/bin/true` does not return `SPAWNED`. The reason code is `CHILD_EPERM`.
+- A dynamic `import("node:fs")` of `/workspace/package.json` does not surface the package name.
+- `ODIN_CANARY_SECRET` set on the host is absent from the sandbox output.
+- The host risk object and an in-process order counter stay unchanged. A connect to `127.0.0.1:9` returns `ORDER_EPERM` and does not report `ORDER_PLACED`.
+- `Math.random()` and `Date.now()` are not accepted as signal reason codes.
+
+The filter is x86_64 seccomp-bpf with default action `EPERM`. `prlimit` still starts a small helper, and that helper execs Node with `LD_PRELOAD` so the filter is installed inside Node. `execve`, `execveat`, `socket`, `connect`, and `io_uring_setup` are not on the allowlist. `getsockname` and `getsockopt` stay allowed because Node uses them to identify its stdio sockets. The root stays read-only, the network namespace stays unshared, uid 65534 is unchanged, secrets are not mounted, and the existing `prlimit` caps remain (`nproc` 16, because `nproc` 1 prevented Node from starting). This is not a virtual machine. If `gcc` is missing, or the process is not x86_64, the runner keeps bubblewrap and reports `seccomp: "unavailable"`. CI installs `gcc` next to `bubblewrap` so the preload can be built there.
+
+## Phase 13 — Statistics, walk-forward, integrity, and the family tree
+
+Completed 2026-10-28 20:44 Europe/London.
+
+`summariseStatistics` marks total return, net profit, win rate, average win, average loss, expectancy, profit factor, max drawdown, average exposure, Sharpe, Sortino, volatility, the confidence interval, sample size, observation period, cost sensitivity, and parameter stability as `MEASURED` when the supplied series is long enough and has downside equity steps. The same fields stay `UNAVAILABLE` when the inputs are empty. The measured series in the test is synthetic. It is not a market sample and it is not a statistically validated strategy.
+
+`walkForwardClaim` uses the existing 60/20/20 chronological split. The untouched window starts at the validation end. Fitting on the test window, or recording more than one trial on the dataset, does not become out-of-sample confirmation.
+
+The integrity test records missing liquidity, duplicates, stale rows, provider outage, mixed quote currency, inconsistent market id, look-ahead, incomplete session, and survivorship. A round trip through `simulateResearchPath` sorts persisted observations, charges a non-zero fee, and does not invent a fill from a missing price.
+
+The strategy family tree renders `child of <parentId>` or `root strategy` from the persisted `parentId`. Headless Chrome on the running Next.js server, after login, opened Research Operations, FORGE Monitor, AI Model Operations, the family tree, Data Integrity, and Research Confidence. At 390px the confidence view showed `PIPELINE_COMPLETED` with class `border-border text-muted`.
+
+## Verification on 2026-10-28 20:43–20:44 Europe/London
+
+- `pnpm test` — PASS, 37 files, 126 passed, 1 skipped (optional live provider in `packages/evolution/src/router.test.ts`)
+- `pnpm typecheck` — PASS
+- `pnpm lint` — PASS
+- Headless Chrome login and the six terminal modules — PASS, including the 390px confidence badge
 
 ## Remaining limitations
 
-- Bubblewrap is a user-namespace sandbox with the host `/usr`, `/lib`, and `/lib64` trees mounted read-only so Node and `prlimit` can start. It is not a virtual machine and it does not install a seccomp profile. If `bwrap` is absent, generated-code execution stays disabled and signals are not claimed.
-- No live model call has been made. Unconfigured providers stay `UNAVAILABLE`.
-- Promotion eligibility in these tests comes from supplied gate inputs. A null return stays unmeasurable and is refused. No market sample was statistically validated.
-- The observed paper-engine write is the primary slot in `promotion.test.ts` and the `EngineControl` update recorded by `promote-paper.test.ts`. That test uses an in-memory Prisma double. It does not read a PostgreSQL row back, and it does not run a worker cycle.
-- The existing terminal config editor can still patch `StrategyConfig` while the engine is paused. Research callers have no promotion path.
+- Bubblewrap remains a user-namespace sandbox with the host `/usr`, `/lib`, and `/lib64` trees mounted read-only. The seccomp profile is a default-deny errno filter for the observed Node harness, not a virtual machine. `getsockname` and `getsockopt` are allowed. If `gcc` or bubblewrap is absent, generated-code execution follows the probe: no bubblewrap means signals are not claimed; bubblewrap without a built preload still runs and reports seccomp unavailable.
+- No live model call has been made. Unconfigured providers stay `UNAVAILABLE`. Mock text stays `MOCK`. Template source stays `TEMPLATE`. Fixture output stays `FIXTURE`.
+- The sufficient-sample statistics are computed from a synthetic series supplied by the test. Promotion and research tests that pass a null return still refuse promotion. No market sample was statistically validated.
+- `promote-paper.test.ts` still uses an in-memory Prisma double. The PostgreSQL read-back and the worker pulse are `promote-paper.integration.test.ts`.
+- `runResearchPipeline` without a caller-supplied source can still compile the labelled template. `runBoundedResearchCycle` does not substitute that template when the engineering tier is unavailable.
+- The research-centre HTTP payload still returns deterministic ORACLE proposals. It does not itself compile or schedule the bounded cycle.
 - Equity index data is unchanged: the adapter does not invent live index prints.
-- Docker is not installed on this machine. Isolation uses bubblewrap.
-- GitHub-hosted Ubuntu images can block unprivileged user namespaces through AppArmor. CI clears `kernel.apparmor_restrict_unprivileged_userns` when that knob exists. The probe uses the runner's library mounts. If bubblewrap still cannot start, the workflow logs the probe failure and the pipeline test expects `signalsClaimed: false`.
+- Docker is not installed on this machine.
+- GitHub-hosted Ubuntu images can block unprivileged user namespaces through AppArmor. CI clears `kernel.apparmor_restrict_unprivileged_userns` when that knob exists and installs `bubblewrap` and `gcc`. If bubblewrap still cannot start, the workflow logs the probe failure and the pipeline test expects `signalsClaimed: false`.
