@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STRATEGY_CONTRACT_VERSION, type StrategyBar, type StrategySignal } from "./strategy-interface.js";
@@ -22,6 +22,8 @@ export type RunnerConfiguration = {
   outputLimitBytes: number;
   dependencies: readonly string[];
   nodePath: string;
+  seccomp: "default-deny-errno" | "unavailable";
+  seccompDetail: string;
 };
 
 export type IsolationProbe = RunnerConfiguration;
@@ -65,6 +67,9 @@ function normalize(raw, bar) {
   if (!Array.isArray(raw.reasonCodes) || raw.reasonCodes.some((code) => typeof code !== "string") || raw.reasonCodes.length > 32) {
     throw new Error("SIGNAL_REASONS");
   }
+  if (raw.reasonCodes.some((code) => code.includes(".") || /^\\d{12,}$/.test(code))) {
+    throw new Error("NONDETERMINISTIC");
+  }
   let confidence;
   if (raw.confidence !== undefined) {
     confidence = Number(raw.confidence);
@@ -96,20 +101,26 @@ if (typeof mod.onBar !== "function") {
 const history = [];
 const signals = [];
 let state = sanitizeState(request.initialState);
-for (const bar of request.bars) {
-  const past = history.slice(-request.historyLimit);
-  const raw = await mod.onBar({
-    contractVersion: request.contractVersion,
-    bar,
-    history: past,
-    state,
-    metadata: request.metadata,
-  });
-  const signal = normalize(raw, bar);
-  if (signal.state) state = signal.state;
-  const { state: _state, ...emitted } = signal;
-  signals.push(emitted);
-  history.push(bar);
+try {
+  for (const bar of request.bars) {
+    const past = history.slice(-request.historyLimit);
+    const raw = await mod.onBar({
+      contractVersion: request.contractVersion,
+      bar,
+      history: past,
+      state,
+      metadata: request.metadata,
+    });
+    const signal = normalize(raw, bar);
+    if (signal.state) state = signal.state;
+    const { state: _state, ...emitted } = signal;
+    signals.push(emitted);
+    history.push(bar);
+  }
+} catch (error) {
+  const code = error && error.message ? String(error.message) : "SANDBOX";
+  console.log(JSON.stringify({ ok: false, code, executedHash }));
+  process.exit(2);
 }
 const body = JSON.stringify({ ok: true, executedHash, signals });
 if (body.length > request.maxOutputBytes) {
@@ -138,6 +149,8 @@ export function probeIsolation(force = false): IsolationProbe {
     outputLimitBytes: OUTPUT_LIMIT,
     dependencies: [],
     nodePath: process.execPath,
+    seccomp: "unavailable",
+    seccompDetail: "bubblewrap is not available, so the seccomp preload was not installed",
   };
   const version = spawnSyncCapture("bwrap", ["--version"]);
   if (version.code !== 0) {
@@ -161,6 +174,7 @@ export function probeIsolation(force = false): IsolationProbe {
     reason: "bubblewrap user namespace with unshared network and a read-only root",
     bwrapVersion: version.stdout.trim() || null,
     uid,
+    ...seccompProbeFields(),
   };
   return cachedProbe;
 }
@@ -341,6 +355,12 @@ export function bubblewrapCiProbeArgs(): string[] {
 }
 
 function bwrapArgs(work: string): string[] {
+  const seccomp = seccompBinaries();
+  const mounts =
+    seccomp === null
+      ? []
+      : ["--ro-bind", seccomp.so, "/seccomp.so", "--ro-bind", seccomp.init, "/sandbox-init"];
+  const command = seccomp === null ? ["/node", `--max-old-space-size=${MEMORY_MB}`, "/work/harness.mjs"] : ["/sandbox-init"];
   return [
     "--unshare-user",
     "--unshare-net",
@@ -359,6 +379,7 @@ function bwrapArgs(work: string): string[] {
     "--ro-bind",
     work,
     "/work",
+    ...mounts,
     "--proc",
     "/proc",
     "--dev",
@@ -373,16 +394,91 @@ function bwrapArgs(work: string): string[] {
     "--setenv",
     "PATH",
     "/usr/bin",
+    "--setenv",
+    "ODIN_NODE_HEAP",
+    String(MEMORY_MB),
     "--",
     "/usr/bin/prlimit",
     `--nproc=${NPROC}`,
     "--nofile=32",
     `--cpu=${CPU_SECONDS}`,
     "--",
-    "/node",
-    `--max-old-space-size=${MEMORY_MB}`,
-    "/work/harness.mjs",
+    ...command,
   ];
+}
+
+type SeccompBinaries = { so: string; init: string };
+
+let seccompCache: SeccompBinaries | { error: string } | null = null;
+
+function seccompProbeFields(): { seccomp: IsolationProbe["seccomp"]; seccompDetail: string } {
+  const built = seccompBinaries();
+  if (built) {
+    return {
+      seccomp: "default-deny-errno",
+      seccompDetail:
+        "x86_64 seccomp-bpf default EPERM. Node starts under the preload after prlimit. execve, socket, and connect are not on the allowlist. This is not a virtual machine.",
+    };
+  }
+  const detail = seccompCache && "error" in seccompCache ? seccompCache.error : "seccomp preload was not built";
+  return { seccomp: "unavailable", seccompDetail: detail };
+}
+
+function sandboxSourceDir(): string {
+  const starts = [process.cwd(), join(process.cwd(), "packages/evolution")];
+  for (const start of starts) {
+    let dir = start;
+    for (let depth = 0; depth < 6; depth += 1) {
+      const nested = join(dir, "packages/evolution/sandbox");
+      if (existsSync(join(nested, "seccomp-preload.c"))) return nested;
+      const local = join(dir, "sandbox");
+      if (existsSync(join(local, "seccomp-preload.c"))) return local;
+      const parent = join(dir, "..");
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return join(process.cwd(), "packages/evolution/sandbox");
+}
+
+function seccompBinaries(): SeccompBinaries | null {
+  if (seccompCache && !("error" in seccompCache)) return seccompCache;
+  if (seccompCache && "error" in seccompCache) return null;
+  if (process.arch !== "x64") {
+    seccompCache = { error: "the committed seccomp profile is x86_64 only" };
+    return null;
+  }
+  const dir = sandboxSourceDir();
+  const preload = join(dir, "seccomp-preload.c");
+  const initSource = join(dir, "sandbox-init.c");
+  if (!existsSync(preload) || !existsSync(initSource)) {
+    seccompCache = { error: "seccomp sources are not present beside the evolution package" };
+    return null;
+  }
+  const gcc = spawnSync("gcc", ["--version"], { encoding: "utf8" });
+  if (gcc.status !== 0) {
+    seccompCache = { error: "gcc is not installed, so the seccomp preload was not built" };
+    return null;
+  }
+  const stamp = sha256(readFileSync(preload, "utf8") + "\n" + readFileSync(initSource, "utf8")).slice(0, 16);
+  const outDir = join(tmpdir(), `odin-seccomp-${stamp}`);
+  const so = join(outDir, "seccomp.so");
+  const init = join(outDir, "sandbox-init");
+  if (!existsSync(so) || !existsSync(init)) {
+    mkdirSync(outDir, { recursive: true });
+    const soBuild = spawnSync("gcc", ["-shared", "-fPIC", "-O2", "-o", so, preload], { encoding: "utf8" });
+    if (soBuild.status !== 0) {
+      seccompCache = { error: trimOutput(soBuild.stderr || "seccomp preload compile failed") };
+      return null;
+    }
+    const initBuild = spawnSync("gcc", ["-O2", "-o", init, initSource], { encoding: "utf8" });
+    if (initBuild.status !== 0) {
+      seccompCache = { error: trimOutput(initBuild.stderr || "sandbox init compile failed") };
+      return null;
+    }
+  }
+  seccompCache = { so, init };
+  return seccompCache;
 }
 
 function parseSandboxStdout(stdout: string):

@@ -50,7 +50,7 @@ jobs:
           cache: pnpm
       - name: Install bubblewrap
         run: |
-          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo apt-get update && sudo apt-get install -y bubblewrap gcc
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
           fi
