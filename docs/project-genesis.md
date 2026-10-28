@@ -47,3 +47,13 @@ The harness passes historical bars strictly before the decision bar and checks t
 Runtime containment tests ran here and passed: host environment canary absent, workspace file read blocked, outbound connect blocked, infinite loop terminated, allocation terminated. CI installs `bubblewrap` so the same tests can run there. If `bwrap` is missing, execution stays disabled and those tests skip.
 
 Local: `pnpm exec vitest run packages/evolution/src/forge.test.ts packages/evolution/src/pipeline.test.ts` — 11 passed. `pnpm typecheck` and `pnpm lint` passed after the change.
+
+## Phase 3 — Scientific validation
+
+Completed 2026-10-28 17:20.
+
+Outcomes are separate assessments: `PIPELINE_COMPLETED`, `EXPERIMENT_EXECUTED`, `RESULTS_MEASURABLE`, `STATISTICALLY_EVALUATED`, `OUT_OF_SAMPLE_VALIDATED`, `FORWARD_PAPER_VALIDATED`, `DEPLOYMENT_ELIGIBLE`. A finished pipeline with a null return stays unmeasurable and ineligible. Caller-supplied `testMetrics.returnPct` is ignored. The API no longer invents a sample size from an observation count.
+
+Data integrity blocks invalid timestamps and look-ahead stamps, and reports missing prices, missing liquidity, duplicates, stale rows, provider outage labels, mixed quote currencies, session gaps, and survivorship. The research simulator is chronological, charges fees and slippage through `quoteFill`, sizes through the trading engine, and submits every entry and exit to `evaluateRisk`. Missing prices produce rejections. Replay and demo freshness are rejected by the risk gateway. Statistics mark Sharpe, Sortino, confidence intervals, cost sensitivity, and parameter stability `UNAVAILABLE` when the sample is too small. Walk-forward uses the existing chronological split. Fitting parameters on the evaluation window cannot become out-of-sample validation. `DEPLOYMENT_ELIGIBLE` stays false without explicit promotion, and this flag does not write the live paper engine.
+
+`pnpm exec vitest run packages/evolution/src/validation-engine.test.ts packages/evolution/src/pipeline.test.ts` — 7 passed. `pnpm typecheck` and `pnpm lint` passed.

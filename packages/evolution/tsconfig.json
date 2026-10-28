@@ -11,6 +11,8 @@
     { "path": "../shared" },
     { "path": "../agent-core" },
     { "path": "../backtest" },
-    { "path": "../market-data" }
+    { "path": "../market-data" },
+    { "path": "../risk-engine" },
+    { "path": "../trading-engine" }
   ]
 }

@@ -245,16 +245,10 @@ export class EvolutionService {
         : DEFAULT_AUTONOMY,
     );
 
-    let observationCount = 0;
-    let startAt: string | null = null;
-    let endAt: string | null = null;
-    if (parsed.useLiveObservationCount !== false) {
-      observationCount = await this.prisma.marketObservation.count();
-      const first = await this.prisma.marketObservation.findFirst({ orderBy: { receivedAt: "asc" } });
-      const last = await this.prisma.marketObservation.findFirst({ orderBy: { receivedAt: "desc" } });
-      startAt = first?.receivedAt.toISOString() ?? null;
-      endAt = last?.receivedAt.toISOString() ?? null;
-    }
+    const observationRows =
+      parsed.useLiveObservationCount === false
+        ? []
+        : await this.prisma.marketObservation.findMany({ orderBy: { receivedAt: "asc" }, take: 400 });
 
     const router = new ModelRouter({ budgetCapUsd: Number(autonomy.maxResearchBudgetUsd) });
     const result = await runResearchPipeline({
@@ -275,16 +269,26 @@ export class EvolutionService {
       },
       autonomy,
       router,
-      testMetrics: {
-        sampleSize: observationCount > 0 ? Math.min(40, Math.max(5, Math.floor(observationCount / 50))) : 12,
-        returnPct: null,
-        maxDrawdownPct: null,
-        oosSampleSize: observationCount > 1000 ? 35 : null,
-        releaseGateLabel: "NOT_RELEASE_READY",
-        observationCount,
-        startAt,
-        endAt,
-      },
+      observations: observationRows.map((row) => ({
+        id: row.id,
+        pairAddress: row.pairAddress,
+        baseSymbol: row.baseSymbol,
+        quoteAddress: row.quoteAddress,
+        quoteSymbol: row.quoteSymbol,
+        priceUsd: row.priceUsd?.toString() ?? null,
+        liquidityUsd: row.liquidityUsd?.toString() ?? null,
+        volume24hUsd: row.volume24hUsd?.toString() ?? null,
+        volume5mUsd: row.volume5mUsd?.toString() ?? null,
+        priceChangeM5Pct: row.priceChangeM5?.toString() ?? null,
+        priceChangeH1Pct: row.priceChangeH1?.toString() ?? null,
+        txnsM5Buys: row.txnsM5Buys,
+        txnsM5Sells: row.txnsM5Sells,
+        receivedAt: row.receivedAt.toISOString(),
+        freshness: (["LIVE", "DELAYED", "STALE", "REPLAY", "DEMO"].includes(row.freshness)
+          ? row.freshness
+          : "STALE") as "LIVE" | "DELAYED" | "STALE" | "REPLAY" | "DEMO",
+        provenance: `MarketObservation:${row.id}`,
+      })),
     });
 
     for (const usage of router.usage) {

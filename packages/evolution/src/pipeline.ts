@@ -1,16 +1,19 @@
 import { createHash } from "node:crypto";
-import { newId, type Hypothesis, type AutonomyPolicy, DEFAULT_STRATEGY, parseStrategyConfig } from "@odin/shared";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { d, newId, type Hypothesis, type AutonomyPolicy, DEFAULT_STRATEGY, parseStrategyConfig } from "@odin/shared";
+import type { BacktestObservation } from "@odin/backtest";
+import { chronologicalSplits } from "@odin/backtest";
 import { forgeStrategyModule } from "./forge.js";
+import { classifyResearchOutcomes, type ResearchOutcomeMap } from "./outcomes.js";
+import { simulateResearchPath, scoreWindow } from "./research-backtest.js";
+import { executeCompiledStrategy } from "./sandbox-runner.js";
+import { summariseStatistics, type StatisticsReport } from "./statistics.js";
 import { runChallengeReview } from "./challenge.js";
 import { buildExperimentReport, type ExperimentReport } from "./validate.js";
 import { transitionLifecycle, type LifecycleTransition } from "./lifecycle.js";
 import { ModelRouter } from "./router.js";
-import {
-  appendTradeMemory,
-  capturePhaseContext,
-  createTradeMemoryStore,
-  type TradeMemoryStore,
-} from "./memory.js";
+import { createTradeMemoryStore, type TradeMemoryStore } from "./memory.js";
 import { enqueueResearch, createOracleSupervisor, type OracleSupervisorState } from "./oracle-supervisor.js";
 import type { StrategyLifecycle } from "@odin/shared";
 
@@ -34,6 +37,9 @@ export type PipelineRunResult = {
   nextExperimentProposed: boolean;
   oracle: OracleSupervisorState;
   acceptance: Record<string, "PASS" | "FAIL" | "SKIP">;
+  outcomes: ResearchOutcomeMap;
+  statistics: StatisticsReport | null;
+  returnPct: string | null;
 };
 
 /**
@@ -44,6 +50,8 @@ export async function runResearchPipeline(input: {
   hypothesis: Hypothesis;
   autonomy: AutonomyPolicy;
   /** Synthetic measurable test metrics from a real backtest caller — nulls stay null. */
+  observations?: BacktestObservation[];
+  /** Caller-supplied metrics are recorded as supplied context and do not create a measured return. */
   testMetrics?: {
     sampleSize: number;
     returnPct: string | null;
@@ -54,6 +62,8 @@ export async function runResearchPipeline(input: {
     startAt: string | null;
     endAt: string | null;
   };
+  minSampleSize?: number;
+  forwardPaperValidated?: boolean;
   router?: ModelRouter;
 }): Promise<PipelineRunResult> {
   const stages: string[] = ["OBSERVE"];
@@ -62,7 +72,7 @@ export async function runResearchPipeline(input: {
   let validatedForPaper = false;
   const router = input.router ?? new ModelRouter({ budgetCapUsd: Number(input.autonomy.maxResearchBudgetUsd) });
   const oracle = createOracleSupervisor();
-  let memory = createTradeMemoryStore();
+  const memory = createTradeMemoryStore();
 
   const acceptance: Record<string, "PASS" | "FAIL" | "SKIP"> = {
     hypothesis_discovered: "PASS",
@@ -126,40 +136,107 @@ export async function runResearchPipeline(input: {
       lifecycle = "TESTING";
     }
   } else {
-    acceptance.coding_model_creates_candidate = "FAIL";
-    acceptance.sandbox_run = "FAIL";
+    acceptance.coding_model_creates_candidate = forged.code === "ISOLATION_DISABLED" ? "SKIP" : "FAIL";
+    acceptance.sandbox_run = forged.code === "ISOLATION_DISABLED" ? "SKIP" : "FAIL";
   }
 
   stages.push("TEST");
-  const metrics = input.testMetrics ?? {
-    sampleSize: 12,
-    returnPct: null,
-    maxDrawdownPct: null,
-    oosSampleSize: null,
-    releaseGateLabel: "NOT_RELEASE_READY",
-    observationCount: 0,
-    startAt: null,
-    endAt: null,
-  };
-  const measurable = metrics.observationCount > 0 || metrics.sampleSize > 0;
-  acceptance.historical_measurable_results = measurable ? "PASS" : "FAIL";
-  // Prefer deterministic indicators — config parse proves strategy interface wiring.
-  parseStrategyConfig(DEFAULT_STRATEGY);
+  const config = parseStrategyConfig(DEFAULT_STRATEGY);
+  const observations = [...(input.observations ?? [])].sort(
+    (a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt),
+  );
+  let simulation: ReturnType<typeof simulateResearchPath> | null = null;
+  let statistics: StatisticsReport | null = null;
+  if (forged.ok && observations.length > 0) {
+    const javascript = readFileSync(join(forged.workspacePath, "strategy.js"), "utf8");
+    const execution = await executeCompiledStrategy({
+      javascript,
+      artifactHash: forged.artifactHash,
+      bars: observations.map((row) => ({
+        instrumentId: input.hypothesis.instrumentIds[0] ?? row.pairAddress,
+        pairAddress: row.pairAddress,
+        receivedAt: row.receivedAt,
+        priceUsd: row.priceUsd,
+        liquidityUsd: row.liquidityUsd,
+        volume24hUsd: row.volume24hUsd,
+        priceChangeM5Pct: row.priceChangeM5Pct,
+        priceChangeH1Pct: row.priceChangeH1Pct,
+        txnsM5Buys: row.txnsM5Buys,
+        txnsM5Sells: row.txnsM5Sells,
+        dataState: row.freshness,
+      })),
+      metadata: {
+        strategyId: forged.manifest.id,
+        version: forged.manifest.version,
+        hypothesisId: input.hypothesis.id ?? "hyp",
+      },
+    });
+    if (execution.signalsClaimed) {
+      simulation = simulateResearchPath({
+        observations,
+        signals: observations.map((row, index) => ({
+          observationId: row.id,
+          intent: execution.signals[index]?.intent ?? "HOLD",
+        })),
+        config,
+        initialCashUsd: config.startingBalanceUsd,
+        latencyMs: config.paperLatencyMs,
+      });
+      statistics = summariseStatistics({
+        startingEquityUsd: config.startingBalanceUsd,
+        endingEquityUsd: simulation.endingEquityUsd,
+        netProfitUsd:
+          simulation.closedPnls.length === 0
+            ? null
+            : simulation.closedPnls.reduce((total, pnl) => total.plus(d(pnl)), d("0")).toFixed(8),
+        closedPnls: simulation.closedPnls,
+        equitySeries: simulation.equitySeries,
+        exposureSeries: simulation.exposureSeries,
+        observationSpanMs: simulation.observationSpanMs,
+        feeBps: config.feeBps,
+        alternativeFeeReturns: null,
+        parameterReturns: null,
+      });
+    }
+  }
+  const startAt = observations[0]?.receivedAt ?? null;
+  const endAt = observations.at(-1)?.receivedAt ?? null;
+  const splits = startAt && endAt && startAt !== endAt ? chronologicalSplits(startAt, endAt) : null;
+  const untouched = simulation && splits
+    ? scoreWindow(simulation, Date.parse(splits.testStart), Date.parse(splits.testEnd))
+    : { returnPct: null, sampleSize: 0, closedPnls: [] };
+  const measuredReturn = simulation?.blocked ? null : (simulation?.returnPct ?? null);
+  const measuredSample = simulation?.blocked ? 0 : (simulation?.closedPnls.length ?? 0);
+  const minSampleSize = input.minSampleSize ?? config.minSampleTrades;
+  const outcomes = classifyResearchOutcomes({
+    pipelineFinished: true,
+    experimentExecuted: Boolean(forged.ok && forged.signalsClaimed),
+    returnPct: measuredReturn,
+    sampleSize: measuredSample,
+    minSampleSize,
+    statisticsRecorded: statistics !== null,
+    untouchedTestReturnPct: untouched.returnPct,
+    untouchedSampleSize: untouched.sampleSize,
+    tunedOnEvaluationSample: false,
+    forwardPaperValidated: input.forwardPaperValidated === true,
+    promotionAuthorised: false,
+  });
+  acceptance.historical_measurable_results = outcomes.RESULTS_MEASURABLE.met ? "PASS" : "FAIL";
 
   stages.push("CHALLENGE");
   const challenge = runChallengeReview({
-    sampleSize: metrics.sampleSize,
-    oosSampleSize: metrics.oosSampleSize,
-    inSampleReturnPct: metrics.returnPct,
-    oosReturnPct: metrics.returnPct,
-    maxDrawdownPct: metrics.maxDrawdownPct,
+    sampleSize: measuredSample,
+    oosSampleSize: untouched.sampleSize > 0 ? untouched.sampleSize : null,
+    inSampleReturnPct: measuredReturn,
+    oosReturnPct: untouched.returnPct,
+    maxDrawdownPct: statistics?.maxDrawdownPct.value ?? null,
     inactivePairCount: 0,
     disappearedPairCount: 0,
     parameterTrials: 1,
     usedFutureBars: false,
     usedPostExitMemoryInEntry: false,
     costModelPresent: true,
-    monteCarloRan: Boolean(input.testMetrics),
+    monteCarloRan: false,
     correlatedSiblingStrategies: 0,
   });
   acceptance.independent_challenge = "PASS";
@@ -191,24 +268,25 @@ export async function runResearchPipeline(input: {
         model: row.endpointId,
       })),
       datasetManifest: {
-        observationCount: metrics.observationCount,
-        startAt: metrics.startAt,
-        endAt: metrics.endAt,
-        sources: metrics.observationCount > 0 ? ["MarketObservation"] : ["fixture_or_empty"],
+        observationCount: observations.length,
+        startAt,
+        endAt,
+        sources: observations.length > 0 ? ["persisted_observations"] : ["empty"],
         contentHash: createHash("sha256")
-          .update(`${metrics.observationCount}:${metrics.startAt}:${metrics.endAt}`)
+          .update(observations.map((row) => `${row.id}:${row.receivedAt}:${row.priceUsd ?? ""}`).join("|") || "empty")
           .digest("hex"),
       },
-      periods: { train: metrics.startAt, validation: null, test: metrics.endAt },
+      periods: { train: splits?.trainStart ?? null, validation: splits?.validationStart ?? null, test: splits?.testStart ?? null },
       results: {
-        sampleSize: metrics.sampleSize,
-        returnPct: metrics.returnPct,
-        maxDrawdownPct: metrics.maxDrawdownPct,
-        releaseGateLabel: metrics.releaseGateLabel,
+        sampleSize: measuredSample,
+        returnPct: measuredReturn,
+        maxDrawdownPct: statistics?.maxDrawdownPct.value ?? null,
+        releaseGateLabel: outcomes.DEPLOYMENT_ELIGIBLE.met ? "PROMOTION_REVIEW" : "NOT_RELEASE_READY",
       },
       uncertainty: [
-        metrics.sampleSize < 30 ? "INSUFFICIENT_EVIDENCE" : "SAMPLE_OK",
-        "Paper ≠ live",
+        measuredReturn === null ? "RETURN_UNAVAILABLE" : "RETURN_MEASURED",
+        measuredSample < minSampleSize ? "INSUFFICIENT_EVIDENCE" : "SAMPLE_OK",
+        input.testMetrics ? "Caller-supplied metrics were ignored for classification" : "No caller-supplied metrics",
       ],
       weaknesses: challenge.findings.map((finding) => `${finding.code}: ${finding.detail}`),
       challenge,
@@ -217,14 +295,11 @@ export async function runResearchPipeline(input: {
         configHash: createHash("sha256").update(JSON.stringify(DEFAULT_STRATEGY)).digest("hex"),
         seed: null,
       },
+      outcomes,
     });
     acceptance.versioned_evidence_report = "PASS";
 
-    if (challenge.passed && metrics.releaseGateLabel !== "NOT_RELEASE_READY") {
-      // Still require explicit paper eval path — release ready is rare.
-    }
-
-    const approved = challenge.passed && metrics.sampleSize >= 5;
+    const approved = challenge.passed && outcomes.OUT_OF_SAMPLE_VALIDATED.met;
     const next = approved ? "VALIDATED" : "REJECTED";
     const t4 = transitionLifecycle({
       strategyId: forged.manifest.id,
@@ -242,7 +317,7 @@ export async function runResearchPipeline(input: {
   }
 
   stages.push("PAPER");
-  let paperTrades = 0;
+  const paperTrades = 0;
   let admitted = false;
   if (validatedForPaper) {
     if (forged.ok) {
@@ -259,55 +334,8 @@ export async function runResearchPipeline(input: {
       }
     }
     admitted = true;
-    // Isolated forward paper under research policy — record synthetic memory only when
-    // caller supplied measurable history; do not invent fill prices.
-    if (metrics.observationCount > 0 && forged.ok) {
-      const tradeId = newId("mem");
-      memory = appendTradeMemory(
-        memory,
-        capturePhaseContext({
-          tradeId,
-          pairAddress: "paper-research-isolated",
-          phase: "BEFORE",
-          context: { hypothesisId: input.hypothesis.id, stage: "PAPER" },
-        }),
-      );
-      memory = appendTradeMemory(
-        memory,
-        capturePhaseContext({
-          tradeId,
-          pairAddress: "paper-research-isolated",
-          phase: "DURING",
-          context: { status: "OPEN", note: "Isolated research paper — fills come from ledger when linked" },
-        }),
-      );
-      memory = appendTradeMemory(
-        memory,
-        capturePhaseContext({
-          tradeId,
-          pairAddress: "paper-research-isolated",
-          phase: "AFTER",
-          context: { status: "CLOSED", note: "Post-exit memory; excluded from entry reconstruction" },
-        }),
-      );
-      paperTrades = 1;
-      acceptance.forward_paper_trades_recorded = "PASS";
-      acceptance.post_trade_memory_update = "PASS";
-      const t6 = transitionLifecycle({
-        strategyId: forged.manifest.id,
-        from: "PAPER_CANDIDATE",
-        to: "PAPER_ACTIVE",
-        actor: "PAPER",
-        evidence: { tradesRecorded: paperTrades },
-      });
-      if (t6.ok) {
-        transitions.push(t6.transition);
-        lifecycle = "PAPER_ACTIVE";
-      }
-    } else {
-      acceptance.forward_paper_trades_recorded = "SKIP";
-      acceptance.post_trade_memory_update = "SKIP";
-    }
+    acceptance.forward_paper_trades_recorded = input.forwardPaperValidated === true ? "PASS" : "SKIP";
+    acceptance.post_trade_memory_update = "SKIP";
   } else {
     acceptance.forward_paper_trades_recorded = "SKIP";
     acceptance.post_trade_memory_update = "SKIP";
@@ -342,11 +370,11 @@ export async function runResearchPipeline(input: {
     transitions,
     forge: forgeResult,
     test: {
-      sampleSize: metrics.sampleSize,
-      returnPct: metrics.returnPct,
-      maxDrawdownPct: metrics.maxDrawdownPct,
-      releaseGateLabel: metrics.releaseGateLabel,
-      measurable,
+      sampleSize: measuredSample,
+      returnPct: measuredReturn,
+      maxDrawdownPct: statistics?.maxDrawdownPct.value ?? null,
+      releaseGateLabel: outcomes.DEPLOYMENT_ELIGIBLE.met ? "PROMOTION_REVIEW" : "NOT_RELEASE_READY",
+      measurable: outcomes.RESULTS_MEASURABLE.met,
     },
     challenge: { passed: challenge.passed, summary: challenge.summary },
     report,
@@ -355,5 +383,8 @@ export async function runResearchPipeline(input: {
     nextExperimentProposed,
     oracle,
     acceptance,
+    outcomes,
+    statistics,
+    returnPct: measuredReturn,
   };
 }
