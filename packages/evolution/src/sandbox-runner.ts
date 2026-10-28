@@ -310,6 +310,36 @@ export async function executeCompiledStrategy(input: {
   }
 }
 
+/** Library mounts shared by strategy execution and the CI availability probe. */
+export function sandboxLibraryMounts(): string[] {
+  return ["--ro-bind", "/usr", "/usr", "--ro-bind", "/lib", "/lib", "--ro-bind", "/lib64", "/lib64"];
+}
+
+/**
+ * Availability probe. It uses the runner's library mounts so `/usr/bin/true` can
+ * load the dynamic linker. It does not open a network namespace to the host,
+ * does not mount secrets, and does not make the root writable.
+ */
+export function bubblewrapCiProbeArgs(): string[] {
+  return [
+    "--unshare-user",
+    "--unshare-net",
+    "--die-with-parent",
+    "--uid",
+    "65534",
+    "--gid",
+    "65534",
+    ...sandboxLibraryMounts(),
+    "--proc",
+    "/proc",
+    "--dev",
+    "/dev",
+    "--clearenv",
+    "--",
+    "/usr/bin/true",
+  ];
+}
+
 function bwrapArgs(work: string): string[] {
   return [
     "--unshare-user",
@@ -322,15 +352,7 @@ function bwrapArgs(work: string): string[] {
     "65534",
     "--gid",
     "65534",
-    "--ro-bind",
-    "/usr",
-    "/usr",
-    "--ro-bind",
-    "/lib",
-    "/lib",
-    "--ro-bind",
-    "/lib64",
-    "/lib64",
+    ...sandboxLibraryMounts(),
     "--ro-bind",
     process.execPath,
     "/node",
@@ -416,15 +438,7 @@ function runBubblewrap(expression: string): { code: number | null; stdout: strin
     "65534",
     "--gid",
     "65534",
-    "--ro-bind",
-    "/usr",
-    "/usr",
-    "--ro-bind",
-    "/lib",
-    "/lib",
-    "--ro-bind",
-    "/lib64",
-    "/lib64",
+    ...sandboxLibraryMounts(),
     "--ro-bind",
     process.execPath,
     "/node",

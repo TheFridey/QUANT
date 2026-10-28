@@ -55,7 +55,7 @@ jobs:
             echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
           fi
           bwrap --version
-          bwrap --unshare-user --die-with-parent --ro-bind /usr /usr --tmpfs /tmp -- /usr/bin/true || echo "bwrap probe failed; generated-code tests will skip"
+          bwrap --unshare-user --unshare-net --die-with-parent --uid 65534 --gid 65534 --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /lib64 /lib64 --proc /proc --dev /dev --clearenv -- /usr/bin/true || echo "bwrap probe failed; generated-code tests will skip"
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:deploy
       - run: pnpm test

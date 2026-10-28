@@ -117,12 +117,35 @@ Missing prices produce no fills and a null return. Demo freshness does not becom
 
 `pnpm exec vitest run packages/evolution/src/acceptance.test.ts` — 2 passed. `pnpm test` — 29 files, 96 passed, 1 skipped (optional live provider). `pnpm typecheck` and `pnpm lint` passed.
 
+## Phase 9 — Operator promotion and the bubblewrap probe
+
+Completed 2026-10-28 19:57 Europe/London.
+
+Review and promotion are separate. `reviewPromotion` and `recordStrategyReview` still return `appliedToPaperEngine: false` and leave the paper slot untouched. `promoteToPaperEngine` is the write. It requires caller `OPERATOR`, a non-empty operator id, and `authorised: true`. Callers `ORACLE`, `FORGE`, and `MODEL` are refused. Missing review, a rejected review, a source hash that differs from the compiled artifact's source hash, a null return, and missing statistics are refused, and the slot stays as it was. When the existing scientific gates pass, the primary paper slot takes the reviewed strategy id, version, source hash, artifact hash, and `StrategyConfig`. The audit stores the operator id, timestamp, those hashes, and the previous paper strategy identity. `POST /evolution/promote` is an admin route. It takes the operator id from the authenticated user and sets the caller to `OPERATOR`. The request body cannot choose another caller. On success the service updates `EngineControl` id `primary`: `config` is the promoted paper strategy, and `activeStrategy` stores the version, hashes, and audit. `submitOrder` is unchanged and remains the paper-order path.
+
+The CI probe now uses the runner's library mounts (`/usr`, `/lib`, `/lib64`) together with a user namespace, a network namespace, uid 65534, gid 65534, `/proc`, `/dev`, and a cleared environment, then runs `/usr/bin/true`. The strategy runner still adds its work directory, tmpfs, `prlimit`, and the Node binary. Local command on bubblewrap 0.9.0:
+
+`bwrap --unshare-user --unshare-net --die-with-parent --uid 65534 --gid 65534 --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /lib64 /lib64 --proc /proc --dev /dev --clearenv -- /usr/bin/true`
+
+Exit 0. Stdout empty. Stderr empty.
+
+Verification on 2026-10-28 19:56–19:57 Europe/London:
+
+- `pnpm exec vitest run packages/evolution/src/promotion.test.ts packages/evolution/src/sandbox-probe.test.ts apps/api/src/promote-paper.test.ts` — PASS, 13 passed
+- `pnpm db:deploy` — PASS, `20261028190000_paper_strategy_promotion` applied to `odin` and `odin_test`
+- `pnpm test` — PASS, 32 files, 109 passed, 1 skipped (optional live provider in `packages/evolution/src/router.test.ts`)
+- `pnpm typecheck` — PASS
+- `pnpm lint` — PASS
+
+The promotion tests supply the scientific gate inputs. They do not measure a market sample, and this phase does not claim a statistically validated strategy. No live model call was made. The service test observed the `EngineControl` primary update on a Prisma double: after a successful operator promotion `entryM5ChangePct` was `"3"`, and a later unreviewed revision left that value in place. A worker cycle was not started after that write.
+
 ## Remaining limitations
 
-- Bubblewrap is a user-namespace sandbox with the host `/usr` tree mounted read-only so Node and `prlimit` can start. It is not a virtual machine and it does not install a seccomp profile. If `bwrap` is absent, generated-code execution stays disabled and signals are not claimed.
+- Bubblewrap is a user-namespace sandbox with the host `/usr`, `/lib`, and `/lib64` trees mounted read-only so Node and `prlimit` can start. It is not a virtual machine and it does not install a seccomp profile. If `bwrap` is absent, generated-code execution stays disabled and signals are not claimed.
 - No live model call has been made. Unconfigured providers stay `UNAVAILABLE`.
-- No strategy in these tests reached statistical, out-of-sample, forward-paper, or deployment eligibility. A null return stays unmeasurable.
-- Approved promotion still does not copy a strategy into the paper engine. That write remains an explicit future operator action.
+- Promotion eligibility in these tests comes from supplied gate inputs. A null return stays unmeasurable and is refused. No market sample was statistically validated.
+- The observed paper-engine write is the primary slot in `promotion.test.ts` and the `EngineControl` update recorded by `promote-paper.test.ts`. That test uses an in-memory Prisma double. It does not read a PostgreSQL row back, and it does not run a worker cycle.
+- The existing terminal config editor can still patch `StrategyConfig` while the engine is paused. Research callers have no promotion path.
 - Equity index data is unchanged: the adapter does not invent live index prints.
 - Docker is not installed on this machine. Isolation uses bubblewrap.
-- GitHub-hosted Ubuntu images can block unprivileged user namespaces through AppArmor. CI now clears `kernel.apparmor_restrict_unprivileged_userns` when that knob exists. If the probe still fails, forge execution stays disabled and the pipeline test expects `signalsClaimed: false` rather than a successful sandbox.
+- GitHub-hosted Ubuntu images can block unprivileged user namespaces through AppArmor. CI clears `kernel.apparmor_restrict_unprivileged_userns` when that knob exists. The probe uses the runner's library mounts. If bubblewrap still cannot start, the workflow logs the probe failure and the pipeline test expects `signalsClaimed: false`.

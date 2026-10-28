@@ -134,4 +134,10 @@ export class EvolutionController {
   report(@Param("id") id: string) {
     return this.evolution.getReport(id);
   }
+
+  @UseGuards(AdminGuard)
+  @Post("promote")
+  promote(@Body() body: unknown, @Req() request: RequestWithUser) {
+    return this.evolution.promotePaperStrategy(body, request.user?.email ?? "");
+  }
 }

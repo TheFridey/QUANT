@@ -20,6 +20,7 @@ model EngineControl {
   status           String
   flattenRequested Boolean  @default(false)
   config           Json
+  activeStrategy   Json?
   updatedAt        DateTime @updatedAt
   updatedBy        String?
 }

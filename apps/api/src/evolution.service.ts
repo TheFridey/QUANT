@@ -29,6 +29,10 @@ import {
   searchTradeMemory,
   transitionLifecycle,
   verifyExperimentReport,
+  engineControlDataFromSlot,
+  promoteToPaperEngine,
+  promotionBodySchema,
+  slotFromEngineControl,
   type ExperimentReport,
 } from "@odin/evolution";
 import {
@@ -918,6 +922,33 @@ export class EvolutionService {
       .strict()
       .parse(body);
     return runChallengeReview(parsed);
+  }
+
+  async promotePaperStrategy(body: unknown, operatorId: string) {
+    const operator = operatorId.trim();
+    if (!operator) throw new BadRequestException("Promotion requires an explicit operator identity");
+    const parsed = promotionBodySchema.parse(body);
+    const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
+    if (!engine) throw new NotFoundException("Engine is not initialised");
+    const slot = slotFromEngineControl({ config: engine.config, activeStrategy: engine.activeStrategy });
+    const result = promoteToPaperEngine(slot, {
+      operatorId: operator,
+      authorised: true,
+      caller: "OPERATOR",
+      evidence: parsed.evidence,
+      config: parsed.config,
+    });
+    if (!result.appliedToPaperEngine) return result;
+    const write = engineControlDataFromSlot(slot);
+    await this.prisma.engineControl.update({
+      where: { id: "primary" },
+      data: {
+        config: toJson(write.config),
+        activeStrategy: toJson(write.activeStrategy),
+        updatedBy: operator,
+      },
+    });
+    return result;
   }
 
   async getReport(id: string) {
