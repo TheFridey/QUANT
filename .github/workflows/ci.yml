@@ -48,7 +48,14 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          fi
+          bwrap --version
+          bwrap --unshare-user --die-with-parent --ro-bind /usr /usr --tmpfs /tmp -- /usr/bin/true || echo "bwrap probe failed; generated-code tests will skip"
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:deploy
       - run: pnpm test

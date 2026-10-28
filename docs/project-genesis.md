@@ -125,3 +125,4 @@ Missing prices produce no fills and a null return. Demo freshness does not becom
 - Approved promotion still does not copy a strategy into the paper engine. That write remains an explicit future operator action.
 - Equity index data is unchanged: the adapter does not invent live index prints.
 - Docker is not installed on this machine. Isolation uses bubblewrap.
+- GitHub-hosted Ubuntu images can block unprivileged user namespaces through AppArmor. CI now clears `kernel.apparmor_restrict_unprivileged_userns` when that knob exists. If the probe still fails, forge execution stays disabled and the pipeline test expects `signalsClaimed: false` rather than a successful sandbox.

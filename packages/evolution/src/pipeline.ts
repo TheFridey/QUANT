@@ -22,7 +22,14 @@ export type PipelineRunResult = {
   hypothesis: Hypothesis;
   lifecycle: StrategyLifecycle;
   transitions: LifecycleTransition[];
-  forge: { ok: boolean; sourceHash?: string; workspacePath?: string; error?: string };
+  forge: {
+    ok: boolean;
+    sourceHash?: string;
+    workspacePath?: string;
+    error?: string;
+    code?: string;
+    signalsClaimed: boolean;
+  };
   test: {
     sampleSize: number;
     returnPct: string | null;
@@ -107,8 +114,13 @@ export async function runResearchPipeline(input: {
   stages.push("FORGE");
   const forged = await forgeStrategyModule({ hypothesis: input.hypothesis });
   const forgeResult = forged.ok
-    ? { ok: true as const, sourceHash: forged.sourceHash, workspacePath: forged.workspacePath }
-    : { ok: false as const, error: forged.error };
+    ? {
+        ok: true as const,
+        sourceHash: forged.sourceHash,
+        workspacePath: forged.workspacePath,
+        signalsClaimed: true as const,
+      }
+    : { ok: false as const, error: forged.error, code: forged.code, signalsClaimed: false as const };
 
   if (forged.ok) {
     acceptance.coding_model_creates_candidate = "PASS";
