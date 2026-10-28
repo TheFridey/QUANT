@@ -12,7 +12,11 @@ import {
   createOracleSupervisor,
   dailyBriefing,
   detectDeterioration,
+  DEFAULT_ORACLE_LIMITS,
+  ORACLE_CAPABILITIES,
+  admitOracleItem,
   enqueueResearch,
+  proposeOracleCycle,
   forgeStrategyModule,
   parseAutonomyPolicy,
   runChallengeReview,
@@ -30,6 +34,7 @@ import {
 import {
   DEFAULT_AUTONOMY,
   SEED_INSTRUMENTS,
+  d,
   hypothesisSchema,
   newId,
 } from "@odin/shared";
@@ -559,8 +564,34 @@ export class EvolutionService {
         hypothesisId: item.hypothesisId,
         strategyId: item.strategyId,
         budgetUsd: item.budgetUsd.toString(),
+        capability: item.capability,
+        provenance: item.provenance,
+        aiDiscovery: item.aiDiscovery,
+        retries: item.retries,
+        failureStreak: item.failureStreak,
         createdAt: item.createdAt.toISOString(),
       })),
+      oracle: {
+        capabilities: [...ORACLE_CAPABILITIES],
+        limits: DEFAULT_ORACLE_LIMITS,
+        proposals: proposeOracleCycle({
+          performance: {
+            returnPct: null,
+            sampleSize: 0,
+            maxDrawdownPct: null,
+          },
+          memory: [],
+          challengePassed: null,
+          challengeFindings: [],
+          baselines: comparison.ranking.map((row) => ({
+            id: row.id,
+            returnPct: null,
+            sampleSize: 0,
+          })),
+          hypothesisId: hypotheses[0]?.id ?? null,
+          openConditions: hypotheses.slice(0, 3).map((row) => row.title),
+        }),
+      },
       reports: reports.map((row) => ({
         id: row.id,
         hypothesisId: row.hypothesisId,
@@ -583,19 +614,22 @@ export class EvolutionService {
     const parsed = z
       .object({
         kind: z.enum(["EXPERIMENT", "CHALLENGE", "PAPER_REVIEW", "RETIREMENT", "BRIEFING"]),
+        capability: z.enum(ORACLE_CAPABILITIES).optional(),
         priority: z.number().int().min(0).max(100),
         hypothesisId: z.string().nullable().optional(),
         strategyId: z.string().nullable().optional(),
         reason: z.string().min(1).max(1000),
         budgetUsd: z.string().regex(/^\d+(\.\d{1,4})?$/).default("0.10"),
+        retries: z.number().int().min(0).max(10).optional(),
       })
       .strict()
       .parse(body);
     const autonomy = parseAutonomyPolicy(await this.getAutonomy());
+    const rows = await this.prisma.researchQueueItem.findMany();
     const state = createOracleSupervisor();
-    const existing = await this.prisma.researchQueueItem.count();
-    state.iterations = existing;
-    const result = enqueueResearch(
+    state.iterations = rows.filter((row) => row.status !== "CANCELLED").length;
+    state.spentBudgetUsd = rows.reduce((sum, row) => sum + Number(row.budgetUsd.toString()), 0);
+    const gate = enqueueResearch(
       state,
       {
         id: newId("rq"),
@@ -609,21 +643,75 @@ export class EvolutionService {
       },
       autonomy,
     );
-    if (!result.accepted) throw new BadRequestException(result.reason);
-    const item = result.state.queue[0]!;
+    if (!gate.accepted) throw new BadRequestException(gate.reason);
+    const spent = rows.reduce((sum, row) => sum.plus(d(row.budgetUsd.toString())), d("0"));
+    const admitted = admitOracleItem(
+      {
+        items: rows.map((row) => ({
+          id: row.id,
+          capability: (ORACLE_CAPABILITIES as readonly string[]).includes(row.capability)
+            ? (row.capability as (typeof ORACLE_CAPABILITIES)[number])
+            : "RECOMMEND_EXPERIMENT",
+          priority: row.priority,
+          hypothesisId: row.hypothesisId,
+          strategyId: row.strategyId,
+          status: row.status as "QUEUED" | "RUNNING" | "DONE" | "CANCELLED" | "BLOCKED",
+          reason: row.reason,
+          createdAt: row.createdAt.toISOString(),
+          budgetUsd: row.budgetUsd.toString(),
+          fingerprint: row.fingerprint,
+          retries: row.retries,
+          failureStreak: row.failureStreak,
+          provenance: row.provenance === "MODEL" ? "MODEL" : "DETERMINISTIC_SUPERVISOR",
+          aiDiscovery: row.aiDiscovery,
+          modelIdentifier: null,
+        })),
+        spentUsd: spent.toFixed(4),
+        failureStreak: rows.reduce((max, row) => Math.max(max, row.failureStreak), 0),
+        terminated: false,
+        terminationReason: null,
+      },
+      {
+        id: gate.state.queue[0]?.id ?? newId("rq"),
+        capability: parsed.capability ?? "RECOMMEND_EXPERIMENT",
+        priority: parsed.priority,
+        hypothesisId: parsed.hypothesisId ?? null,
+        strategyId: parsed.strategyId ?? null,
+        reason: parsed.reason,
+        createdAt: new Date().toISOString(),
+        budgetUsd: parsed.budgetUsd,
+        retries: parsed.retries ?? 0,
+        provenance: "DETERMINISTIC_SUPERVISOR",
+        modelIdentifier: null,
+        aiDiscovery: false,
+      },
+      {
+        ...DEFAULT_ORACLE_LIMITS,
+        maxExperimentsPerCycle: autonomy.maxResearchIterations,
+        maxSpendUsdPerDay: autonomy.maxResearchBudgetUsd,
+      },
+    );
+    if (!admitted.accepted || !admitted.record) throw new BadRequestException(admitted.reason);
+    const record = admitted.record;
     await this.prisma.researchQueueItem.create({
       data: {
-        id: item.id,
-        kind: item.kind,
-        priority: item.priority,
-        hypothesisId: item.hypothesisId,
-        strategyId: item.strategyId,
-        status: item.status,
-        reason: item.reason,
-        budgetUsd: item.budgetUsd,
+        id: record.id,
+        kind: parsed.kind,
+        priority: record.priority,
+        hypothesisId: record.hypothesisId,
+        strategyId: record.strategyId,
+        status: record.status,
+        reason: record.reason,
+        budgetUsd: record.budgetUsd,
+        fingerprint: record.fingerprint,
+        retries: record.retries,
+        capability: record.capability,
+        provenance: record.provenance,
+        aiDiscovery: false,
+        failureStreak: record.failureStreak,
       },
     });
-    return item;
+    return { ...record, kind: parsed.kind, aiDiscovery: false };
   }
 
   async forgeOnly(body: unknown) {

@@ -69,3 +69,13 @@ Spend is a decimal string in `MemoryBudgetStore` or `FileBudgetStore`. The budge
 No live provider call was made. The optional live test skips unless `ODIN_LIVE_PROVIDER_TEST=1` and `OPENAI_API_KEY` are both set. This environment skipped it.
 
 `pnpm exec vitest run packages/evolution/src/router.test.ts packages/agent-core/src/llm.test.ts packages/agent-core/src/oracle.test.ts` — 9 passed, 1 skipped. `pnpm typecheck` and `pnpm lint` passed.
+
+## Phase 5 — ORACLE bounded research
+
+Completed 2026-10-28 17:34.
+
+ORACLE keeps a persistent queue with thirteen capabilities: performance review, entry-safe trade memory, recurring conditions, weaknesses, falsifiable hypotheses, code-generation requests, sandboxed-test scheduling, baseline comparison, challenge review, weak-candidate rejection, experiment recommendation, deterioration, and a periodic summary. The cycle that produces these items is deterministic supervision. `aiDiscovery` stays false. `MOCK`, `TEMPLATE`, `FIXTURE`, and `UNAVAILABLE` model identifiers cannot be stored as AI discoveries. The cycle does not write strategy source and does not execute generated code.
+
+Limits reject duplicate fingerprints, extra concurrent work, retries above the cap, and daily spend above the decimal cap. Repeated failures terminate the queue. A file snapshot reloads spend and items in a new process. The API enqueue path applies the same limits to `ResearchQueueItem` rows and hardcodes `aiDiscovery` false. Research centre responses include the capability list and the deterministic proposals. Null returns stay null.
+
+`pnpm exec vitest run packages/evolution/src/oracle-research.test.ts` — 2 passed. `pnpm typecheck` and `pnpm lint` passed.

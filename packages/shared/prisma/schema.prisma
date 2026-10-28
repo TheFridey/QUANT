@@ -515,6 +515,12 @@ model ResearchQueueItem {
   status       String
   reason       String
   budgetUsd    Decimal  @db.Decimal(16, 8)
+  fingerprint  String   @default("")
+  retries      Int      @default(0)
+  capability   String   @default("RECOMMEND_EXPERIMENT")
+  provenance   String   @default("DETERMINISTIC_SUPERVISOR")
+  aiDiscovery  Boolean  @default(false)
+  failureStreak Int     @default(0)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
