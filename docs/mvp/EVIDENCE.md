@@ -61,4 +61,28 @@ Added: reservations, protection/OCO, correlation, reconcile, session-equity, str
 
 Migrations: `20261028220000_mvp_order_identity_session`, `20261028230000_mvp_reservations_funnel_alerts`.
 
-See REQUIREMENTS_MATRIX.md for status counts.
+## Validation after activeStrategy / funnel / commodity / UX continuation
+
+```text
+pnpm build:packages
+pnpm typecheck
+pnpm lint
+pnpm test
+```
+
+Proven:
+
+- `parseActiveStrategyIdentity` + `loadPlan` passes `activeStrategyId` into `planCycle`
+- Regression: `pulse-momentum-v1` BUY vs `mean-revert-fade-v1` HOLD on identical input
+- `strategyVersionStamp` writes exact id@version+src+art onto committed orders
+- Worker persists `OpportunityFunnelEvent` + `DurableAlert`; clean reconcile acks suspension alerts
+- Commodity `XAUUSD`/`WTI` DEMO paper path; terminal execution/funnel/protection/why-blocked
+- Fault-injection + load capacity report (50 protected slots in-process; not a prod SLO)
+
+See REQUIREMENTS_MATRIX.md for status counts (DONE 34 / PARTIAL 16 / BLOCKED_EXTERNAL 4 / NOT_STARTED 0).
+
+```text
+pnpm test       # 171 passed / 1 skipped
+pnpm typecheck  # clean
+pnpm lint       # clean
+```

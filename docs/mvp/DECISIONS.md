@@ -57,3 +57,14 @@
 
 **Decision:** Prefer session-start equity for daily loss % when available; fall back to starting balance only when session equity is unavailable. Document that mixing lifetime unrealised with “today” realised is a known defect to replace with mark-to-market change since session start (Gate B20).
 **Date:** 2026-10-28
+
+## D011 — Promoted strategy drives runtime via activeStrategyId
+
+**Decision:** Worker `loadPlan` parses `EngineControl.activeStrategy` and passes `activeStrategyId` into `planCycle`/`runPulse`. Approved library modules can diverge decisions on identical market input. Order `strategyVersion` stamps exact `id@version+src:hash+art:hash` (not only pulse threshold). Missing/invalid activeStrategy keeps hard-coded PULSE.
+**Why:** C38/C43 — promotion must change runtime decisions and fill provenance, not only config JSON.
+**Date:** 2026-10-28
+
+## D012 — Durable funnel + alerts from worker
+
+**Decision:** Persist opportunity funnel events from each executor plan with stage reason codes. Persist durable alerts for live-gate refuse and reconcile suspend; resolve (`acked`) suspension alerts on clean paper reconcile. Terminal snapshot exposes execution mode, funnel, protected flags, why-blocked, alerts.
+**Date:** 2026-10-28

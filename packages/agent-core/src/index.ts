@@ -9,6 +9,8 @@ export * from "./research.js";
 export * from "./oracle.js";
 export * from "./strategy-library.js";
 export * from "./funnel.js";
+export * from "./active-strategy.js";
+export * from "./alerts.js";
 export type { AgentBusEvent } from "./bus.js";
 export { STAGE_AFTER } from "./bus.js";
 export type { DecisionDraft, PlanInput, PositionView, ProposedOrder } from "./types.js";

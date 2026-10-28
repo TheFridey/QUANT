@@ -7,11 +7,13 @@ export const PAPER_FIXTURE_LEVELS: Record<string, string> = {
   "fx:GBPUSD": "1.26500000",
   "etf:SPY": "520.25000000",
   "etf:QQQ": "445.75000000",
+  "commodity:XAUUSD": "2650.50000000",
+  "commodity:WTI": "78.25000000",
 };
 
 /**
- * Build NormalizedPair rows for enabled paper FX/ETF instruments.
- * Provenance is always DEMO via source fx_stub/etf_stub.
+ * Build NormalizedPair rows for enabled paper FX/ETF/commodity instruments.
+ * Provenance is always DEMO via stub sources — never labelled LIVE.
  */
 export function buildPaperMultiMarketPairs(input: {
   instruments?: Instrument[];
@@ -23,17 +25,24 @@ export function buildPaperMultiMarketPairs(input: {
   const instruments = (input.instruments ?? SEED_INSTRUMENTS).filter(
     (item) =>
       canPaperExecute(item) &&
-      (item.assetClass === "FX_SPOT" || item.assetClass === "EQUITY_ETF_PROXY") &&
+      (item.assetClass === "FX_SPOT" ||
+        item.assetClass === "EQUITY_ETF_PROXY" ||
+        item.assetClass === "COMMODITY_PROXY") &&
       item.enabledByDefault,
   );
   return instruments.map((instrument) => {
     const level = levels[instrument.id] ?? null;
     const isFx = instrument.assetClass === "FX_SPOT";
+    const isCommodity = instrument.assetClass === "COMMODITY_PROXY";
     return {
-      source: isFx ? ("fx_stub" as const) : ("etf_stub" as const),
-      chainId: isFx ? ("fx" as const) : ("equity" as const),
+      source: isFx
+        ? ("fx_stub" as const)
+        : isCommodity
+          ? ("commodity_stub" as const)
+          : ("etf_stub" as const),
+      chainId: isFx ? ("fx" as const) : isCommodity ? ("commodity" as const) : ("equity" as const),
       pairAddress: instrument.id,
-      dexId: isFx ? "fx-paper" : "etf-paper",
+      dexId: isFx ? "fx-paper" : isCommodity ? "commodity-paper" : "etf-paper",
       url: null,
       baseAddress: instrument.base,
       baseSymbol: instrument.symbol,

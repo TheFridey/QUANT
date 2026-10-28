@@ -78,6 +78,10 @@ export function OverviewSection() {
                 <dd>{snapshot.engine.status}</dd>
               </div>
               <div>
+                <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Execution</dt>
+                <dd className="uppercase mono">{snapshot.execution?.mode ?? "PAPER"}</dd>
+              </div>
+              <div>
                 <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Market mode</dt>
                 <dd className="uppercase">{snapshot.market.mode}</dd>
               </div>
@@ -88,6 +92,18 @@ export function OverviewSection() {
               <div>
                 <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Observations</dt>
                 <dd className="mono">{snapshot.cycle?.observationCount ?? 0}</dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Open alerts</dt>
+                <dd className="mono">{snapshot.alerts?.length ?? 0}</dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Active strategy</dt>
+                <dd className="mono truncate">
+                  {snapshot.activeStrategy
+                    ? `${snapshot.activeStrategy.strategyId}@${snapshot.activeStrategy.strategyVersion}`
+                    : "default PULSE"}
+                </dd>
               </div>
               <div className="col-span-2">
                 <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Server time</dt>

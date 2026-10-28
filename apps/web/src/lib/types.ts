@@ -64,6 +64,9 @@ export type PositionRow = {
   stopLossPct?: string | null;
   takeProfitPct?: string | null;
   exposurePct?: string | null;
+  protected?: boolean;
+  protectionOrigin?: string | null;
+  protectionKinds?: string[];
 };
 
 export type WatchlistRow = {
@@ -152,6 +155,49 @@ export type EquityHistory = {
 export type Snapshot = {
   serverTime: string;
   venue: "PAPER";
+  execution?: {
+    mode: "PAPER" | "SANDBOX" | "REFUSED" | string;
+    liveAllowed: boolean;
+    refuseReason: string | null;
+    pauseNewEntries: boolean;
+    allowDemoPaperEntries: boolean;
+    multiMarketPaperIngest: boolean;
+    entriesSuspended: boolean;
+  };
+  activeStrategy?: {
+    strategyId: string;
+    strategyVersion: string;
+    sourceHash: string;
+    artifactHash: string;
+  } | null;
+  funnel?: {
+    summary: Record<string, number>;
+    recent: Array<{
+      id: string;
+      cycleId: string;
+      pairAddress: string;
+      instrumentId: string | null;
+      stage: string;
+      reasonCodes: string[];
+      createdAt: string;
+    }>;
+  };
+  alerts?: Array<{
+    id: string;
+    severity: string;
+    code: string;
+    message: string;
+    acked: boolean;
+    createdAt: string;
+  }>;
+  whyBlocked?: Array<{
+    agent: string;
+    pairAddress: string;
+    decision: string;
+    reasonCodes: string[];
+    reasonText: string[];
+    createdAt: string;
+  }>;
   engine: {
     status: "STOPPED" | "RUNNING" | "PAUSED" | "EMERGENCY_STOP";
     flattenRequested: boolean;
@@ -226,6 +272,8 @@ export type Snapshot = {
     status: string;
     qty: string;
     rejectReason: string | null;
+    executionMode?: string;
+    strategyVersion?: string | null;
     createdAt: string;
     fills: Array<{
       id?: string;

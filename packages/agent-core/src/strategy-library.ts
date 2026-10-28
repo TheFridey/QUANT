@@ -110,6 +110,10 @@ export const STRATEGY_LIBRARY: StrategyModule[] = [
     id: "etf-breakout-v1",
     instrumentIds: ["etf:SPY", "etf:QQQ"],
   }),
+  createBreakoutHoldStrategy({
+    id: "commodity-breakout-v1",
+    instrumentIds: ["commodity:XAUUSD", "commodity:WTI"],
+  }),
   createMeanRevertFadeStrategy({ instrumentIds: ["solana:spot:universe"] }),
 ];
 
@@ -137,9 +141,11 @@ export function evaluatePromotedStrategy(input: {
   const allowsExact = module.instrumentIds.includes(instrumentId);
   const allowsClass =
     isPaperMultiMarketPair(input.pair) &&
-    module.instrumentIds.some((id) =>
-      input.pair.chainId === "fx" ? id.startsWith("fx:") : id.startsWith("etf:"),
-    );
+    module.instrumentIds.some((id) => {
+      if (input.pair.chainId === "fx") return id.startsWith("fx:");
+      if (input.pair.chainId === "commodity") return id.startsWith("commodity:");
+      return id.startsWith("etf:");
+    });
   if (!allowsUniverse && !allowsExact && !allowsClass) return null;
 
   const context: StrategyContext = {

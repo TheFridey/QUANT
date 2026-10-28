@@ -71,8 +71,25 @@ describe("multi-market paper E2E", () => {
         liquidityUsd: "50000000",
       }),
     );
+    const commodity: CyclePair[] = ["commodity:XAUUSD", "commodity:WTI"].map((id, i) =>
+      pair(id, {
+        chainId: "commodity",
+        source: "commodity_stub",
+        freshness: "DEMO",
+        baseSymbol: id.split(":")[1] ?? id,
+        quoteAddress: "USD",
+        quoteSymbol: "USD",
+        priceUsd: i === 0 ? "2650" : "78",
+        priceChangeM5Pct: "2.5",
+        priceChangeH1Pct: "1",
+        txnsM5Buys: null,
+        txnsM5Sells: null,
+        observationId: `obs_${id}`,
+        liquidityUsd: "50000000",
+      }),
+    );
 
-    const pairs = [...crypto, ...fx, ...etf];
+    const pairs = [...crypto, ...fx, ...etf, ...commodity];
     const marks = Object.fromEntries(
       pairs.map((row) => [row.pairAddress, { priceUsd: row.priceUsd, freshness: row.freshness }]),
     );
@@ -94,11 +111,12 @@ describe("multi-market paper E2E", () => {
       buys.map((order) => {
         if (order.pairAddress.startsWith("fx:")) return "FX";
         if (order.pairAddress.startsWith("etf:")) return "ETF";
+        if (order.pairAddress.startsWith("commodity:")) return "COMMODITY";
         return "CRYPTO";
       }),
     );
     expect(classes.has("CRYPTO")).toBe(true);
-    expect(classes.has("FX") || classes.has("ETF")).toBe(true);
+    expect(classes.has("FX") || classes.has("ETF") || classes.has("COMMODITY")).toBe(true);
 
     // Arm synthetic OCO protection for each buy — capacity check ≥20 slots separately.
     const ledger = new ReservationLedger({

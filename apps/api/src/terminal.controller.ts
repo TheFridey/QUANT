@@ -54,6 +54,17 @@ export class TerminalController {
     return this.terminal.systemLogs(Number(limit) || 100);
   }
 
+  @Get("terminal/alerts")
+  alerts(@Query("includeAcked") includeAcked = "false") {
+    return this.terminal.listAlerts(includeAcked === "true");
+  }
+
+  @UseGuards(AdminGuard)
+  @Post("terminal/alerts/:id/ack")
+  ackAlert(@Param("id") id: string, @Req() request: RequestWithUser) {
+    return this.terminal.ackAlert(id, request.user?.email ?? "unknown");
+  }
+
   @Get("market/observations")
   observations(@Query("pairAddress") pairAddress = "") {
     return this.terminal.observations(pairAddress);

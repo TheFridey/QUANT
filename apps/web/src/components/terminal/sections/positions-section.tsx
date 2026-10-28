@@ -27,6 +27,7 @@ export function PositionsSection() {
                 <th className="px-3 py-2">uPnL</th>
                 <th className="px-3 py-2">Stop</th>
                 <th className="px-3 py-2">Target</th>
+                <th className="px-3 py-2">Protection</th>
                 <th className="px-3 py-2">Exposure</th>
                 <th className="px-3 py-2">Hold</th>
               </tr>
@@ -47,6 +48,18 @@ export function PositionsSection() {
                   </td>
                   <td className="mono px-3 py-2">{formatPx(position.stopUsd)}</td>
                   <td className="mono px-3 py-2">{formatPx(position.targetUsd)}</td>
+                  <td className="px-3 py-2 text-[11px]">
+                    {position.protected ? (
+                      <span className="text-foreground">
+                        Protected
+                        <span className="block text-[10px] text-muted">
+                          {(position.protectionKinds ?? []).join("/") || "OCO"} · {position.protectionOrigin ?? "—"}
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="text-muted">Unprotected</span>
+                    )}
+                  </td>
                   <td className="mono px-3 py-2">{formatPct(position.exposurePct)}</td>
                   <td className="mono px-3 py-2">{formatDuration(position.openedAt)}</td>
                 </tr>

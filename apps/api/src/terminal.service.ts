@@ -1,10 +1,12 @@
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
+import { parseActiveStrategyIdentity, summarizeFunnel, type FunnelStage } from "@odin/agent-core";
 import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
 import { BirdeyeClient } from "@odin/market-data";
 import {
   QUEUES,
   REASON_TEXT,
+  assertPaperOrSandboxOnly,
   classifyFreshness,
   d,
   emergencyStopSchema,
@@ -168,9 +170,79 @@ export class TerminalService {
             .mul(100)
             .toFixed(4);
     const states = pairs.map((pair) => pair.freshness);
+    const activeStrategy = parseActiveStrategyIdentity(engineRow.activeStrategy);
+    const liveGate = assertPaperOrSandboxOnly(process.env);
+    const executionMode = !liveGate.ok ? "REFUSED" : liveGate.mode === "SANDBOX" ? "SANDBOX" : "PAPER";
+    const funnelRows = await this.prisma.opportunityFunnelEvent.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+    const funnelSummary = summarizeFunnel(
+      funnelRows.map((row) => ({
+        cycleId: row.cycleId,
+        pairAddress: row.pairAddress,
+        instrumentId: row.instrumentId,
+        stage: row.stage as FunnelStage,
+        reasonCodes: row.reasonCodes,
+        at: row.createdAt.toISOString(),
+      })),
+    );
+    const alerts = await this.prisma.durableAlert.findMany({
+      where: { acked: false },
+      orderBy: { createdAt: "desc" },
+      take: 40,
+    });
+    const protections = await this.prisma.protectionOrder.findMany({
+      where: { status: "OPEN" },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    const protectedKeys = new Set(protections.map((row) => row.positionKey));
+    const whyBlocked = decisions
+      .filter((decision) => decision.decision === "REJECT" || decision.reasonCodes.some((code) => /BLOCK|REJECT|PAUSE|SUSPEND|BREAKER|STALE|DEMO/.test(code)))
+      .slice(0, 24)
+      .map((decision) => ({
+        agent: decision.agent,
+        pairAddress: decision.pairAddress,
+        decision: decision.decision,
+        reasonCodes: decision.reasonCodes,
+        reasonText: decision.reasonCodes.map((code) => (isReasonCode(code) ? REASON_TEXT[code] : code)),
+        createdAt: decision.createdAt.toISOString(),
+      }));
     return {
       serverTime: now.toISOString(),
       venue: "PAPER",
+      execution: {
+        mode: executionMode,
+        liveAllowed: liveGate.ok,
+        refuseReason: liveGate.ok ? null : liveGate.reason,
+        pauseNewEntries: config?.pauseNewEntries === true,
+        allowDemoPaperEntries: config?.allowDemoPaperEntries === true,
+        multiMarketPaperIngest: config?.multiMarketPaperIngest === true,
+        entriesSuspended: alerts.some((alert) => alert.code === "ENTRIES_SUSPENDED"),
+      },
+      activeStrategy,
+      funnel: {
+        summary: funnelSummary,
+        recent: funnelRows.slice(0, 40).map((row) => ({
+          id: row.id,
+          cycleId: row.cycleId,
+          pairAddress: row.pairAddress,
+          instrumentId: row.instrumentId,
+          stage: row.stage,
+          reasonCodes: row.reasonCodes,
+          createdAt: row.createdAt.toISOString(),
+        })),
+      },
+      alerts: alerts.map((alert) => ({
+        id: alert.id,
+        severity: alert.severity,
+        code: alert.code,
+        message: alert.message,
+        acked: alert.acked,
+        createdAt: alert.createdAt.toISOString(),
+      })),
+      whyBlocked,
       engine: {
         status: engineRow.status,
         flattenRequested: engineRow.flattenRequested,
@@ -229,6 +301,10 @@ export class TerminalService {
             report.valuation.equityUsd === null || position.marketValueUsd === null
               ? null
               : d(position.marketValueUsd).div(d(report.valuation.equityUsd)).mul(100).toFixed(4);
+          const positionKey = `primary:${position.pairAddress}`;
+          const protectedLegs = protections.filter(
+            (row) => row.positionKey === positionKey || row.positionKey.endsWith(`:${position.pairAddress}`),
+          );
           return {
             ...position,
             openedAt,
@@ -237,6 +313,9 @@ export class TerminalService {
             stopLossPct,
             takeProfitPct,
             exposurePct,
+            protected: protectedKeys.has(positionKey) || protectedLegs.length > 0,
+            protectionOrigin: protectedLegs[0]?.origin ?? null,
+            protectionKinds: protectedLegs.map((row) => row.kind),
           };
         }),
       },
@@ -274,6 +353,8 @@ export class TerminalService {
         status: order.status,
         qty: order.qty.toString(),
         rejectReason: order.rejectReason,
+        executionMode: order.executionMode,
+        strategyVersion: order.strategyVersion,
         createdAt: order.createdAt.toISOString(),
         fills: order.fills.map((fill) => ({
           id: fill.id,
@@ -286,6 +367,28 @@ export class TerminalService {
         })),
       })),
     };
+  }
+
+  async ackAlert(id: string, actor: string) {
+    const row = await this.prisma.durableAlert.findUnique({ where: { id } });
+    if (!row) throw new NotFoundException("Alert not found");
+    if (row.acked) return row;
+    const prior =
+      row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
+        ? (row.payload as Record<string, unknown>)
+        : {};
+    return this.prisma.durableAlert.update({
+      where: { id },
+      data: { acked: true, ackedAt: new Date(), payload: toJson({ ...prior, ackedBy: actor }) },
+    });
+  }
+
+  async listAlerts(includeAcked = false) {
+    return this.prisma.durableAlert.findMany({
+      where: includeAcked ? undefined : { acked: false },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
   }
 
   async equityHistory(rangeRaw: string) {

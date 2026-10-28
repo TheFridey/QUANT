@@ -65,8 +65,10 @@ export function isPaperMultiMarketPair(pair: { chainId: string; source: string }
   return (
     pair.chainId === "fx" ||
     pair.chainId === "equity" ||
+    pair.chainId === "commodity" ||
     pair.source === "fx_stub" ||
-    pair.source === "etf_stub"
+    pair.source === "etf_stub" ||
+    pair.source === "commodity_stub"
   );
 }
 
@@ -77,10 +79,11 @@ export const MARKET_SOURCES = [
   "fx_stub",
   "etf_stub",
   "index_stub",
+  "commodity_stub",
 ] as const;
 export type MarketSource = (typeof MARKET_SOURCES)[number];
 
-export const MARKET_CHAIN_IDS = ["solana", "fx", "equity"] as const;
+export const MARKET_CHAIN_IDS = ["solana", "fx", "equity", "commodity"] as const;
 export type MarketChainId = (typeof MARKET_CHAIN_IDS)[number];
 
 export const normalizedPairSchema = z.object({

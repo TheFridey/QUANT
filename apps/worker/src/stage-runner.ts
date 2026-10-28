@@ -1,4 +1,16 @@
-import { assessSecurity, planCycle, unknownAssessment, type DecisionDraft } from "@odin/agent-core";
+import {
+  ALERT_CODES,
+  assessSecurity,
+  entriesSuspendedAlert,
+  funnelEventsFromPlan,
+  liveGateAlert,
+  parseActiveStrategyIdentity,
+  planCycle,
+  reconcileIssueAlert,
+  strategyVersionStamp,
+  unknownAssessment,
+  type DecisionDraft,
+} from "@odin/agent-core";
 import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
 import {
   BirdeyeClient,
@@ -24,7 +36,12 @@ import {
   type StrategyConfig,
 } from "@odin/shared";
 import { Prisma, PrismaClient, toJson } from "@odin/shared/db";
-import { commitProposedOrder, lockAccount, settlePendingOrder } from "@odin/trading-engine";
+import {
+  commitProposedOrder,
+  lockAccount,
+  reconcileOrders,
+  settlePendingOrder,
+} from "@odin/trading-engine";
 
 export type MarketFeed = {
   fetchUniverse(limit: number): Promise<ProviderResult<NormalizedPair[]>>;
@@ -160,8 +177,12 @@ export class StageRunner {
         if (settled.status === "FILLED") filled += 1;
       }
 
+      await this.reconcileAndAlert(tx);
+
       const liveGate = assertPaperOrSandboxOnly(process.env);
+      const filledIds: string[] = [];
       if (!liveGate.ok) {
+        await this.persistAlert(tx, liveGateAlert(liveGate.reason, liveGate.mode));
         await upsertDecision(tx, cycleId, {
           agent: "EXECUTOR",
           modelVersion: "executor-paper-1.2.0",
@@ -185,16 +206,20 @@ export class StageRunner {
               expiresAt: order.expiresAt,
               executionMode: liveGate.mode === "SANDBOX" ? "SANDBOX" : "PAPER",
               venue: "PAPER",
-              instrumentId: null,
-              strategyVersion: loaded.config.entryM5ChangePct ? `pulse:${loaded.config.entryM5ChangePct}` : "pulse:default",
+              instrumentId: order.pairAddress.includes(":") ? order.pairAddress : null,
+              strategyVersion: strategyVersionStamp(loaded.activeStrategy, loaded.config.entryM5ChangePct),
             },
             config: loaded.config,
             mode: this.dataMode,
             now,
           });
-          if (result.status === "FILLED") filled += 1;
+          if (result.status === "FILLED") {
+            filled += 1;
+            filledIds.push(order.clientOrderId);
+          }
         }
       }
+      await this.persistFunnel(tx, cycleId, loaded, filledIds, now);
 
       if (loaded.flattenRequested) {
         const open = await tx.position.findMany({ where: { accountId: "primary" } });
@@ -425,11 +450,17 @@ export class StageRunner {
       (valuation.equityUsd !== null
         ? usd(DecimalMax(d(account.startingBalanceUsd.toString()), d(valuation.equityUsd)))
         : account.startingBalanceUsd.toString());
+    const activeStrategy = parseActiveStrategyIdentity(engine.activeStrategy);
+    const suspension = await db.durableAlert.findFirst({
+      where: { acked: false, code: ALERT_CODES.ENTRIES_SUSPENDED },
+      orderBy: { createdAt: "desc" },
+    });
     return {
       config,
       flattenRequested: engine.flattenRequested,
       valuation,
       highWaterMarkUsd,
+      activeStrategy,
       plan: planCycle({
         cycleId,
         engineStatus: engine.status as PlanStatus,
@@ -446,9 +477,122 @@ export class StageRunner {
         securityByMint,
         highWaterMarkUsd,
         aggregateExposureUsd,
+        entriesSuspended: suspension !== null,
+        activeStrategyId: activeStrategy?.strategyId ?? null,
         now,
       }),
     };
+  }
+
+  private async persistFunnel(
+    db: PrismaClient | Prisma.TransactionClient,
+    cycleId: string,
+    loaded: NonNullable<Awaited<ReturnType<StageRunner["loadPlan"]>>>,
+    filledClientOrderIds: string[],
+    now: Date,
+  ): Promise<void> {
+    const events = funnelEventsFromPlan({
+      cycleId,
+      decisions: loaded.plan.decisions,
+      orders: loaded.plan.orders,
+      filledClientOrderIds,
+      at: now.toISOString(),
+    });
+    if (events.length === 0) return;
+    await db.opportunityFunnelEvent.createMany({
+      data: events.map((event) => ({
+        cycleId: event.cycleId,
+        pairAddress: event.pairAddress,
+        instrumentId: event.instrumentId ?? null,
+        stage: event.stage,
+        reasonCodes: event.reasonCodes.map(String),
+        detail: event.detail ? toJson(event.detail) : undefined,
+        createdAt: new Date(event.at),
+      })),
+    });
+  }
+
+  private async persistAlert(
+    db: PrismaClient | Prisma.TransactionClient,
+    alert: { severity: string; code: string; message: string; payload?: Record<string, unknown> },
+  ): Promise<void> {
+    const existing = await db.durableAlert.findFirst({
+      where: { acked: false, code: alert.code },
+      orderBy: { createdAt: "desc" },
+    });
+    if (existing) return;
+    await db.durableAlert.create({
+      data: {
+        severity: alert.severity,
+        code: alert.code,
+        message: alert.message,
+        payload: alert.payload ? toJson(alert.payload) : undefined,
+      },
+    });
+  }
+
+  private async resolveAlerts(
+    db: PrismaClient | Prisma.TransactionClient,
+    codes: string[],
+    now: Date,
+  ): Promise<void> {
+    await db.durableAlert.updateMany({
+      where: { acked: false, code: { in: codes } },
+      data: { acked: true, ackedAt: now },
+    });
+  }
+
+  /**
+   * Paper venue is self-truthful: broker rows mirror durable ledger.
+   * Fault-injection / external brokers pass mismatched truth via env ODIN_RECONCILE_FAULT=1
+   * to prove suspension alerts; clean reconcile resolves ENTRIES_SUSPENDED.
+   */
+  private async reconcileAndAlert(db: PrismaClient | Prisma.TransactionClient): Promise<void> {
+    const orders = await db.order.findMany({
+      where: { accountId: "primary" },
+      orderBy: { createdAt: "desc" },
+      take: 500,
+    });
+    const ledger = orders.map((row) => ({
+      clientOrderId: row.clientOrderId,
+      status: row.status,
+      filledQty: row.filledQty.toString(),
+      venue: row.venue,
+    }));
+    const broker = ledger.map((row) => ({
+      clientOrderId: row.clientOrderId,
+      status: (row.status === "PENDING"
+        ? "ACKED"
+        : row.status === "FILLED"
+          ? "FILLED"
+          : row.status === "CANCELLED"
+            ? "CANCELLED"
+            : row.status === "REJECTED"
+              ? "REJECTED"
+              : "UNKNOWN") as "ACKED" | "FILLED" | "CANCELLED" | "REJECTED" | "UNKNOWN",
+      filledQty: row.filledQty,
+      venue: row.venue,
+    }));
+    if (process.env.ODIN_RECONCILE_FAULT === "1") {
+      broker.push({
+        clientOrderId: "fault_unknown_exposure",
+        status: "FILLED",
+        filledQty: "1",
+        venue: "EXTERNAL",
+      });
+    }
+    const report = reconcileOrders({ broker, ledger });
+    if (report.suspendEntries) {
+      await this.persistAlert(
+        db,
+        entriesSuspendedAlert({ issues: report.issues, at: this.now().toISOString() }),
+      );
+      await this.persistAlert(db, reconcileIssueAlert({ issues: report.issues }));
+    } else if (report.ok) {
+      await this.resolveAlerts(db, [ALERT_CODES.ENTRIES_SUSPENDED, ALERT_CODES.RECONCILE_ISSUE], this.now());
+    } else {
+      await this.persistAlert(db, reconcileIssueAlert({ issues: report.issues }));
+    }
   }
 
   private async loadObservationHistory(
@@ -860,12 +1004,29 @@ function toCyclePair(
     row.source === "replay" ||
     row.source === "fx_stub" ||
     row.source === "etf_stub" ||
-    row.source === "index_stub"
+    row.source === "index_stub" ||
+    row.source === "commodity_stub"
       ? row.source
       : "dexscreener";
   const chainId =
-    row.chainId === "fx" || row.chainId === "equity" || row.chainId === "solana" ? row.chainId : source === "fx_stub" ? "fx" : source === "etf_stub" || source === "index_stub" ? "equity" : "solana";
-  const stubDemo = source === "fx_stub" || source === "etf_stub" || source === "index_stub" || row.freshness === "DEMO";
+    row.chainId === "fx" ||
+    row.chainId === "equity" ||
+    row.chainId === "commodity" ||
+    row.chainId === "solana"
+      ? row.chainId
+      : source === "fx_stub"
+        ? "fx"
+        : source === "commodity_stub"
+          ? "commodity"
+          : source === "etf_stub" || source === "index_stub"
+            ? "equity"
+            : "solana";
+  const stubDemo =
+    source === "fx_stub" ||
+    source === "etf_stub" ||
+    source === "index_stub" ||
+    source === "commodity_stub" ||
+    row.freshness === "DEMO";
   return {
     source,
     chainId,

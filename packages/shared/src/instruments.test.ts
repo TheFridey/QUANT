@@ -8,13 +8,15 @@ import {
 } from "./instruments.js";
 
 describe("instrument registry", () => {
-  it("seeds Solana, FX pairs, ETF proxies, and research-only indices", () => {
+  it("seeds Solana, FX pairs, ETF proxies, commodity proxies, and research-only indices", () => {
     const ids = SEED_INSTRUMENTS.map((item) => item.id);
     expect(ids).toContain("solana:spot:universe");
     expect(ids).toContain("fx:EURUSD");
     expect(ids).toContain("fx:GBPUSD");
     expect(ids).toContain("etf:SPY");
     expect(ids).toContain("etf:QQQ");
+    expect(ids).toContain("commodity:XAUUSD");
+    expect(ids).toContain("commodity:WTI");
     expect(ids).toContain("index:SPX");
     expect(ids).toContain("index:NDX");
     expect(ids).toContain("index:FTSE");
@@ -38,6 +40,12 @@ describe("instrument registry", () => {
     const etf = SEED_INSTRUMENTS.find((item) => item.id === "etf:SPY")!;
     expect(canPaperExecute(etf)).toBe(true);
     expect(isResearchOnly(etf)).toBe(false);
+    const commodities = SEED_INSTRUMENTS.filter((item) => item.assetClass === "COMMODITY_PROXY");
+    expect(commodities.length).toBeGreaterThanOrEqual(2);
+    for (const commodity of commodities) {
+      expect(canPaperExecute(commodity)).toBe(true);
+      expect(commodity.providerId).toBe("commodity_stub");
+    }
   });
 
   it("blocks mixing Solana spot with equity indices", () => {

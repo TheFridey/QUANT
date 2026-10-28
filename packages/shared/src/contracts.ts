@@ -36,7 +36,7 @@ export const discoveryCandidateSchema = z
     quoteAddress: z.string().min(1),
     quoteSymbol: z.string().min(1),
     dexId: z.string().min(1),
-    source: z.enum(["dexscreener", "birdeye", "replay", "fx_stub", "etf_stub", "index_stub"]),
+    source: z.enum(["dexscreener", "birdeye", "replay", "fx_stub", "etf_stub", "index_stub", "commodity_stub"]),
     priceUsd: decimalString.nullable(),
     liquidityUsd: decimalString.nullable(),
     volume24hUsd: decimalString.nullable(),
