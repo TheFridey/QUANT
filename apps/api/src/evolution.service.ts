@@ -5,8 +5,8 @@ import {
 } from "@nestjs/common";
 import {
   DEFAULT_ASSIGNMENTS,
-  DEFAULT_ENDPOINTS,
   ModelRouter,
+  assertKnownTier,
   capturePhaseContext,
   compareStrategies,
   createOracleSupervisor,
@@ -159,19 +159,18 @@ export class EvolutionService {
   }
 
   async modelOps() {
+    const router = new ModelRouter({ env: process.env, mode: "live" });
     const usage = await this.prisma.modelUsageLog.findMany({
       orderBy: { createdAt: "desc" },
       take: 100,
     });
     return {
-      tiers: ["FAST_OBSERVERS", "DEEP_RESEARCHERS", "ENGINEERING_AGENTS"],
-      endpoints: DEFAULT_ENDPOINTS.map((endpoint) => ({
-        id: endpoint.id,
-        kind: endpoint.kind,
-        tier: endpoint.tier,
-        model: endpoint.model,
-      })),
+      tiers: [...assertKnownTier()],
+      endpoints: router.health(),
       assignments: DEFAULT_ASSIGNMENTS,
+      separatedReviewer: router.assertSeparatedReviewer(),
+      budget: router.budget(),
+      liveCallsEnabled: router.health().some((row) => row.availability === "CONFIGURED"),
       usage: usage.map((row) => ({
         id: row.id,
         agentOrTask: row.agentOrTask,
@@ -182,6 +181,8 @@ export class EvolutionService {
         ok: row.ok,
         latencyMs: row.latencyMs,
         costUsdEst: row.costUsdEst.toString(),
+        costKind: row.costKind,
+        provenance: row.provenance,
         createdAt: row.createdAt.toISOString(),
       })),
     };
@@ -305,6 +306,8 @@ export class EvolutionService {
           promptTokensEst: usage.promptTokensEst,
           completionTokensEst: usage.completionTokensEst,
           costUsdEst: usage.costUsdEst,
+          costKind: usage.costKind,
+          provenance: usage.provenance,
           error: usage.error ?? null,
         },
       });

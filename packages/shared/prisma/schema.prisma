@@ -497,6 +497,8 @@ model ModelUsageLog {
   promptTokensEst     Int
   completionTokensEst Int
   costUsdEst          Decimal  @db.Decimal(16, 8)
+  costKind            String   @default("ESTIMATED")
+  provenance          String   @default("UNAVAILABLE")
   error               String?
   createdAt           DateTime @default(now())
 

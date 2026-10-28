@@ -2,12 +2,14 @@ import { z } from "zod";
 import {
   MockModelProvider,
   OpenAiCompatibleProvider,
+  UnavailableModelProvider,
   createHermesProvider,
   type LlmRequest,
   type LlmResult,
   type ModelProvider,
 } from "@odin/agent-core";
-import { MODEL_TIERS, type ModelTier } from "@odin/shared";
+import { d, MODEL_TIERS, type ModelTier } from "@odin/shared";
+import { FileBudgetStore, MemoryBudgetStore, type BudgetStore } from "./budget-store.js";
 
 export type ProviderKind = "openai-compatible" | "anthropic-compatible" | "hermes-compatible" | "mock";
 
@@ -43,6 +45,8 @@ export type UsageRecord = {
   promptTokensEst: number;
   completionTokensEst: number;
   costUsdEst: string;
+  costKind: "ESTIMATED" | "ACTUAL";
+  provenance: "LIVE" | "MOCK" | "FIXTURE" | "UNAVAILABLE";
   error?: string;
 };
 
@@ -51,6 +55,16 @@ export type BudgetState = {
   spentUsd: string;
   remainingUsd: string;
 };
+
+export type EndpointHealth = {
+  id: string;
+  tier: ModelTier;
+  kind: ProviderKind;
+  model: string;
+  availability: "CONFIGURED" | "UNAVAILABLE" | "MOCK";
+};
+
+export type RouterMode = "live" | "mock";
 
 const anthropicMessageSchema = z.object({
   content: z.array(z.object({ type: z.string(), text: z.string().optional() })).optional(),
@@ -196,6 +210,17 @@ export const DEFAULT_ENDPOINTS: ModelEndpoint[] = [
     costPer1kInputUsd: "0.001",
     costPer1kOutputUsd: "0.002",
   },
+  {
+    id: "challenge-primary",
+    kind: "openai-compatible",
+    tier: "INDEPENDENT_CHALLENGE",
+    model: process.env.ODIN_CHALLENGE_MODEL ?? "challenge-reviewer",
+    apiKeyEnv: "ODIN_CHALLENGE_API_KEY",
+    baseUrl: process.env.ODIN_CHALLENGE_BASE_URL,
+    maxTokensDefault: 800,
+    costPer1kInputUsd: "0.002",
+    costPer1kOutputUsd: "0.008",
+  },
 ];
 
 export const DEFAULT_ASSIGNMENTS: ModelAssignment[] = [
@@ -203,47 +228,61 @@ export const DEFAULT_ASSIGNMENTS: ModelAssignment[] = [
     agentOrTask: "SENTINEL",
     tier: "FAST_OBSERVERS",
     primaryEndpointId: "hermes-primary",
-    fallbackEndpointIds: ["fast-mock"],
+    fallbackEndpointIds: ["openai-primary"],
   },
   {
     agentOrTask: "PULSE",
     tier: "FAST_OBSERVERS",
-    primaryEndpointId: "fast-mock",
+    primaryEndpointId: "hermes-primary",
     fallbackEndpointIds: [],
   },
   {
     agentOrTask: "ORACLE",
     tier: "DEEP_RESEARCHERS",
     primaryEndpointId: "openai-primary",
-    fallbackEndpointIds: ["deep-mock"],
+    fallbackEndpointIds: [],
   },
   {
     agentOrTask: "FORGE",
     tier: "ENGINEERING_AGENTS",
     primaryEndpointId: "anthropic-primary",
-    fallbackEndpointIds: ["eng-mock"],
+    fallbackEndpointIds: [],
   },
   {
     agentOrTask: "CHALLENGE",
-    tier: "DEEP_RESEARCHERS",
-    primaryEndpointId: "openai-primary",
-    fallbackEndpointIds: ["deep-mock"],
+    tier: "INDEPENDENT_CHALLENGE",
+    primaryEndpointId: "challenge-primary",
+    fallbackEndpointIds: [],
   },
 ];
 
+/**
+ * Live mode is the default. Missing credentials return UNAVAILABLE.
+ * Mock output is produced only when mode is explicitly "mock", and it is labelled MOCK.
+ * Injected providers (including FIXTURE) are used as given and never relabelled as a frontier model.
+ */
 export class ModelRouter {
-  private spentUsd = 0;
   readonly usage: UsageRecord[] = [];
+  private readonly budgetStore: BudgetStore;
+  private readonly mode: RouterMode;
 
   constructor(
     private readonly options: {
       endpoints?: ModelEndpoint[];
       assignments?: ModelAssignment[];
-      budgetCapUsd?: number;
+      budgetCapUsd?: number | string;
       env?: NodeJS.ProcessEnv;
       providers?: Map<string, ModelProvider>;
+      mode?: RouterMode;
+      budgetStore?: BudgetStore;
+      budgetPath?: string;
     } = {},
-  ) {}
+  ) {
+    this.mode = options.mode ?? "live";
+    this.budgetStore =
+      options.budgetStore ??
+      (options.budgetPath ? new FileBudgetStore(options.budgetPath) : new MemoryBudgetStore());
+  }
 
   get endpoints(): ModelEndpoint[] {
     return this.options.endpoints ?? DEFAULT_ENDPOINTS;
@@ -254,12 +293,13 @@ export class ModelRouter {
   }
 
   budget(): BudgetState {
-    const cap = this.options.budgetCapUsd ?? 5;
-    const remaining = Math.max(0, cap - this.spentUsd);
+    const cap = d(String(this.options.budgetCapUsd ?? "5"));
+    const spent = d(this.budgetStore.read().spentUsd);
+    const remaining = spent.gte(cap) ? d("0") : cap.minus(spent);
     return {
       capUsd: cap.toFixed(4),
-      spentUsd: this.spentUsd.toFixed(4),
-      remainingUsd: remaining.toFixed(4),
+      spentUsd: spent.toFixed(8),
+      remainingUsd: remaining.toFixed(8),
     };
   }
 
@@ -268,10 +308,59 @@ export class ModelRouter {
       this.assignments.find((row) => row.agentOrTask === agentOrTask) ?? {
         agentOrTask,
         tier: "FAST_OBSERVERS",
-        primaryEndpointId: "fast-mock",
+        primaryEndpointId: "hermes-primary",
         fallbackEndpointIds: [],
       }
     );
+  }
+
+  /** FORGE and CHALLENGE must not share a primary endpoint. */
+  assertSeparatedReviewer(): { separated: boolean; forgeEndpointId: string; challengeEndpointId: string } {
+    const forgeEndpointId = this.assignmentFor("FORGE").primaryEndpointId;
+    const challengeEndpointId = this.assignmentFor("CHALLENGE").primaryEndpointId;
+    return {
+      separated: forgeEndpointId !== challengeEndpointId,
+      forgeEndpointId,
+      challengeEndpointId,
+    };
+  }
+
+  /** Availability only. API keys are never copied into this view. */
+  health(): EndpointHealth[] {
+    const env = this.options.env ?? process.env;
+    return this.endpoints.map((endpoint) => {
+      const injected = this.options.providers?.get(endpoint.id);
+      if (injected) {
+        return {
+          id: endpoint.id,
+          tier: endpoint.tier,
+          kind: endpoint.kind,
+          model: injected.id === "fixture" ? "FIXTURE" : endpoint.model,
+          availability: injected.id === "mock" ? "MOCK" : "CONFIGURED",
+        };
+      }
+      if (endpoint.kind === "mock") {
+        return {
+          id: endpoint.id,
+          tier: endpoint.tier,
+          kind: endpoint.kind,
+          model: endpoint.model,
+          availability: this.mode === "mock" ? "MOCK" : "UNAVAILABLE",
+        };
+      }
+      const keyName = endpoint.apiKeyEnv;
+      const keyPresent = Boolean(keyName && env[keyName]);
+      const needsBase = endpoint.kind === "hermes-compatible";
+      const basePresent = Boolean(endpoint.baseUrl || env.HERMES_BASE_URL);
+      const configured = needsBase ? basePresent : keyPresent;
+      return {
+        id: endpoint.id,
+        tier: endpoint.tier,
+        kind: endpoint.kind,
+        model: endpoint.model,
+        availability: configured ? "CONFIGURED" : "UNAVAILABLE",
+      };
+    });
   }
 
   async completeJson<T>(
@@ -281,8 +370,7 @@ export class ModelRouter {
   ): Promise<LlmResult<T> & { usage?: UsageRecord }> {
     const assignment = this.assignmentFor(agentOrTask);
     const chain = [assignment.primaryEndpointId, ...assignment.fallbackEndpointIds];
-    const budget = this.budget();
-    if (Number(budget.remainingUsd) <= 0) {
+    if (d(this.budget().remainingUsd).lte(0)) {
       return {
         ok: false,
         code: "UNAVAILABLE",
@@ -299,40 +387,48 @@ export class ModelRouter {
     };
 
     for (const endpointId of chain) {
+      if (d(this.budget().remainingUsd).lte(0)) break;
       const endpoint = this.endpoints.find((row) => row.id === endpointId);
       if (!endpoint) continue;
       const provider = this.resolveProvider(endpoint);
-      const started = Date.now();
-      const result = await provider.completeJson(
-        {
-          ...request,
-          model: request.model ?? endpoint.model,
-          maxTokens: request.maxTokens || endpoint.maxTokensDefault,
-        },
-        schema,
-      );
-      const promptTokensEst = estimateTokens(request.messages.map((m) => m.content).join(" "));
-      const completionTokensEst = result.ok ? estimateTokens(JSON.stringify(result.data)) : 0;
-      const cost =
-        (promptTokensEst / 1000) * Number(endpoint.costPer1kInputUsd) +
-        (completionTokensEst / 1000) * Number(endpoint.costPer1kOutputUsd);
-      this.spentUsd += cost;
-      const usage: UsageRecord = {
-        at: new Date().toISOString(),
-        agentOrTask,
-        endpointId: endpoint.id,
-        provider: provider.id,
-        model: request.model ?? endpoint.model,
-        tier: endpoint.tier,
-        ok: result.ok,
-        latencyMs: result.ok ? result.latencyMs : Date.now() - started,
-        promptTokensEst,
-        completionTokensEst,
-        costUsdEst: cost.toFixed(6),
-        error: result.ok ? undefined : result.error,
-      };
-      this.usage.push(usage);
-      if (result.ok) return { ...result, usage };
+      const model = request.model ?? endpoint.model;
+      let attempt = 0;
+      let result: LlmResult<T>;
+      do {
+        const started = Date.now();
+        result = await this.callWithTimeout(
+          provider,
+          {
+            ...request,
+            model,
+            maxTokens: request.maxTokens || endpoint.maxTokensDefault,
+          },
+          schema,
+        );
+        const promptTokensEst = estimateTokens(request.messages.map((message) => message.content).join(" "));
+        const completionTokensEst = result.ok ? estimateTokens(JSON.stringify(result.data)) : 0;
+        const costUsdEst = estimateCost(endpoint, promptTokensEst, completionTokensEst);
+        this.budgetStore.add(costUsdEst);
+        const usage: UsageRecord = {
+          at: new Date().toISOString(),
+          agentOrTask,
+          endpointId: endpoint.id,
+          provider: provider.id,
+          model: provider.id === "fixture" ? "FIXTURE" : model,
+          tier: endpoint.tier,
+          ok: result.ok,
+          latencyMs: result.ok ? result.latencyMs : Date.now() - started,
+          promptTokensEst,
+          completionTokensEst,
+          costUsdEst,
+          costKind: "ESTIMATED",
+          provenance: provenanceFor(endpoint, provider, this.mode, result),
+          error: result.ok ? undefined : result.error,
+        };
+        this.usage.push(usage);
+        if (result.ok) return { ...result, usage };
+        attempt += 1;
+      } while (attempt < 2 && !result.ok && (result.code === "TIMEOUT" || result.code === "UPSTREAM"));
       last = result;
     }
     return last;
@@ -344,6 +440,8 @@ export class ModelRouter {
     ok: boolean;
     latencyMs: number;
     costUsdEst: string;
+    provenance: UsageRecord["provenance"];
+    costKind: UsageRecord["costKind"];
   }> {
     return this.usage.map((row) => ({
       agentOrTask: row.agentOrTask,
@@ -351,16 +449,45 @@ export class ModelRouter {
       ok: row.ok,
       latencyMs: row.latencyMs,
       costUsdEst: row.costUsdEst,
+      provenance: row.provenance,
+      costKind: row.costKind,
     }));
   }
 
+  private async callWithTimeout<T>(
+    provider: ModelProvider,
+    request: LlmRequest,
+    schema: z.ZodType<T>,
+  ): Promise<LlmResult<T>> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<LlmResult<T>>((resolve) => {
+      timer = setTimeout(() => {
+        resolve({
+          ok: false,
+          code: "TIMEOUT",
+          error: "Router timeout",
+          provider: provider.id,
+        });
+      }, request.timeoutMs);
+    });
+    try {
+      return await Promise.race([provider.completeJson(request, schema), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   private resolveProvider(endpoint: ModelEndpoint): ModelProvider {
-    const cached = this.options.providers?.get(endpoint.id);
-    if (cached) return cached;
+    const injected = this.options.providers?.get(endpoint.id);
+    if (injected) return injected;
+    if (this.mode === "mock") return new MockModelProvider();
+    if (endpoint.kind === "mock") return new UnavailableModelProvider();
     const env = this.options.env ?? process.env;
-    if (endpoint.kind === "mock") return new MockModelProvider();
     if (endpoint.kind === "hermes-compatible") {
-      return createHermesProvider(env[endpoint.apiKeyEnv ?? "HERMES_API_KEY"], endpoint.baseUrl ?? env.HERMES_BASE_URL ?? "");
+      return createHermesProvider(
+        env[endpoint.apiKeyEnv ?? "HERMES_API_KEY"],
+        endpoint.baseUrl ?? env.HERMES_BASE_URL ?? "",
+      );
     }
     if (endpoint.kind === "anthropic-compatible") {
       return new AnthropicCompatibleProvider({
@@ -383,4 +510,24 @@ export function assertKnownTier(): readonly ModelTier[] {
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function estimateCost(endpoint: ModelEndpoint, promptTokens: number, completionTokens: number): string {
+  const input = d(String(promptTokens)).div(1000).mul(d(endpoint.costPer1kInputUsd));
+  const output = d(String(completionTokens)).div(1000).mul(d(endpoint.costPer1kOutputUsd));
+  return input.plus(output).toFixed(8);
+}
+
+function provenanceFor(
+  endpoint: ModelEndpoint,
+  provider: ModelProvider,
+  mode: RouterMode,
+  result: { ok: boolean },
+): UsageRecord["provenance"] {
+  if (provider.id === "fixture") return result.ok ? "FIXTURE" : "UNAVAILABLE";
+  if (mode === "mock" || endpoint.kind === "mock" || provider.id === "mock") {
+    return result.ok ? "MOCK" : "UNAVAILABLE";
+  }
+  if (!result.ok) return "UNAVAILABLE";
+  return "LIVE";
 }

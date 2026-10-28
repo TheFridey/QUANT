@@ -7,4 +7,6 @@ export * from "./memory.js";
 export * from "./lifecycle.js";
 export * from "./autonomy.js";
 export * from "./oracle-supervisor.js";
+export * from "./budget-store.js";
+export * from "./fixture-provider.js";
 export * from "./pipeline.js";

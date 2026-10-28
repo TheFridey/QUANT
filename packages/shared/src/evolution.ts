@@ -57,7 +57,12 @@ export const hypothesisSchema = z
 
 export type Hypothesis = z.infer<typeof hypothesisSchema>;
 
-export const MODEL_TIERS = ["FAST_OBSERVERS", "DEEP_RESEARCHERS", "ENGINEERING_AGENTS"] as const;
+export const MODEL_TIERS = [
+  "FAST_OBSERVERS",
+  "DEEP_RESEARCHERS",
+  "ENGINEERING_AGENTS",
+  "INDEPENDENT_CHALLENGE",
+] as const;
 export type ModelTier = (typeof MODEL_TIERS)[number];
 
 export const AUTONOMY_LEVELS = [0, 1, 2, 3, 4] as const;
