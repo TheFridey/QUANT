@@ -22,6 +22,55 @@ function instance(partial: Partial<DurableStrategyInstance> & Pick<DurableStrate
 }
 
 describe("concurrent strategy instances", () => {
+  it("allocateOpportunities prefers exits and caps new entries fairly", () => {
+    const signals = [
+      {
+        intent: "EXIT_LONG" as const,
+        reasonCodes: ["EXIT_MOMENTUM"],
+        instrumentId: "fx:EURUSD",
+        pairAddress: "fx:EURUSD",
+        strategyInstanceId: "i2",
+        strategyVersion: "pulse@1",
+        artifactHash: null,
+        sourceHash: null,
+      },
+      {
+        intent: "ENTER_LONG" as const,
+        reasonCodes: ["ENTRY_MOMENTUM"],
+        instrumentId: "fx:EURUSD",
+        pairAddress: "fx:EURUSD",
+        strategyInstanceId: "i2",
+        strategyVersion: "pulse@1",
+        artifactHash: null,
+        sourceHash: null,
+      },
+      {
+        intent: "ENTER_LONG" as const,
+        reasonCodes: ["ENTRY_MOMENTUM"],
+        instrumentId: "etf:SPY",
+        pairAddress: "etf:SPY",
+        strategyInstanceId: "i3",
+        strategyVersion: "mean@1",
+        artifactHash: null,
+        sourceHash: null,
+      },
+      {
+        intent: "ENTER_LONG" as const,
+        reasonCodes: ["ENTRY_MOMENTUM"],
+        instrumentId: "crypto",
+        pairAddress: "crypto",
+        strategyInstanceId: "i1",
+        strategyVersion: "pulse@1",
+        artifactHash: null,
+        sourceHash: null,
+      },
+    ];
+    const allocated = allocateOpportunities({ signals, maxNewEntries: 2 });
+    expect(allocated.accepted.some((s) => s.intent === "EXIT_LONG")).toBe(true);
+    expect(allocated.accepted.filter((s) => s.intent === "ENTER_LONG")).toHaveLength(2);
+    expect(allocated.deferred.filter((s) => s.intent === "ENTER_LONG")).toHaveLength(1);
+  });
+
   it("runs ≥3 instances across crypto/FX/ETF and attributes signals", () => {
     const instances = [
       instance({ id: "i1", name: "pulse-momentum-v1", instrumentIds: ["solana:spot:universe"] }),

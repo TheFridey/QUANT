@@ -25,12 +25,15 @@ export type DurableStrategyInstance = {
   sourceHash: string | null;
 };
 
+/** Prisma client or interactive transaction — both expose strategyInstance. */
+export type StrategyInstanceStore = Pick<PrismaClient, "strategyInstance">;
+
 /**
  * Persist concurrent strategy instances — allocations are not venue net.
  * Runtime scheduler loads ACTIVE rows and evaluates each through the library module.
  */
 export async function upsertStrategyInstance(
-  prisma: PrismaClient,
+  prisma: StrategyInstanceStore,
   input: {
     name: string;
     version: string;
@@ -75,7 +78,7 @@ export async function upsertStrategyInstance(
 }
 
 export async function listActiveStrategyInstances(
-  prisma: PrismaClient,
+  prisma: StrategyInstanceStore,
   accountId: string,
 ): Promise<DurableStrategyInstance[]> {
   const rows = await prisma.strategyInstance.findMany({
@@ -83,6 +86,46 @@ export async function listActiveStrategyInstances(
     orderBy: { createdAt: "asc" },
   });
   return rows.map(mapRow);
+}
+
+/** Seed ≥3 concurrent instances (crypto / FX / ETF) when account has none. */
+export async function ensureDefaultStrategyInstances(
+  prisma: StrategyInstanceStore,
+  accountId: string,
+): Promise<DurableStrategyInstance[]> {
+  const existing = await listActiveStrategyInstances(prisma, accountId);
+  if (existing.length >= 3) return existing;
+  const seeds = [
+    {
+      id: `stratinst_${accountId}_crypto`,
+      name: "pulse-momentum-v1",
+      version: "1.0.0",
+      accountId,
+      instrumentIds: ["solana:spot:universe"],
+      budgetUsd: "10000.00000000",
+    },
+    {
+      id: `stratinst_${accountId}_fx`,
+      name: "pulse-momentum-v1-fx",
+      version: "1.0.0",
+      accountId,
+      instrumentIds: ["fx:EURUSD", "fx:GBPUSD", "fx:USDJPY"],
+      budgetUsd: "10000.00000000",
+    },
+    {
+      id: `stratinst_${accountId}_etf`,
+      name: "mean-revert-fade-v1",
+      version: "1.0.0",
+      accountId,
+      instrumentIds: ["etf:SPY", "etf:QQQ"],
+      budgetUsd: "10000.00000000",
+    },
+  ];
+  for (const seed of seeds) {
+    if (existing.some((row) => row.id === seed.id)) continue;
+    await upsertStrategyInstance(prisma, seed);
+  }
+  return listActiveStrategyInstances(prisma, accountId);
 }
 
 export function moduleForInstance(instance: DurableStrategyInstance): StrategyModule {

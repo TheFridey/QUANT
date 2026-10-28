@@ -13,15 +13,25 @@
 - Gate A engine fixes preserved
 - **Fixture isolation:** defaults no longer inject FX/ETF/commodity fixtures into paper; FIXTURE env + banner + sequenced ticks
 - **Named providers:** Alpaca paper + OANDA practice + Frankfurter FX marks; readiness enum; offline contracts
-- **Durable PG reservations:** transactional authority, mutation events, 2-worker race, adversarial releasePartial
-- **Protection:** long/short OCO; worker arms on BUY fill; evaluates marks; failed exit → ProtectionIntent UNRESOLVED + alert
+- **Durable PG reservations:** transactional authority, mutation events, 2-worker race, adversarial releasePartial, **`reserveInTx` on worker ENTRY admission**
+- **Protection:** long/short OCO; worker arms on BUY fill; evaluates marks; failed exit → ProtectionIntent UNRESOLVED + alert + retry hook
 - **Market cost models:** FX/ETF/commodity without DEX impact
-- **Strategy instances:** durable records + concurrent evaluate/allocate with exit priority
+- **Strategy instances:** durable records seeded (≥3 crypto/FX/ETF), concurrent evaluate/allocate gating entries in `loadPlan`
 - LIVE remains gated/refused
 
 ## Gate progress (honest)
 
-See `ACCEPTANCE_SCENARIOS.md` + `REQUIREMENTS_MATRIX.md`. Do not trust legacy DONE 34.
+See `ACCEPTANCE_SCENARIOS.md` + `REQUIREMENTS_MATRIX.md`.
+
+| Status | Count |
+| --- | --- |
+| VERIFIED_OFFLINE | 19 |
+| PARTIAL | 32 |
+| IMPLEMENTED_UNVERIFIED | 6 |
+| BLOCKED_EXTERNAL_TEST | 1 |
+| VERIFIED_EXTERNAL | 0 |
+
+Do not trust legacy DONE 34.
 
 ## Commands
 

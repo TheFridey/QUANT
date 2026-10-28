@@ -166,6 +166,29 @@ export function planCycle(input: PlanInput): {
       continue;
     }
 
+    // Concurrent StrategyInstance allocation gates new entries only.
+    if (
+      side === "BUY" &&
+      intent === "ENTRY" &&
+      input.concurrentEntryAllowlist &&
+      !input.concurrentEntryAllowlist.has(pair.pairAddress)
+    ) {
+      decisions.push(
+        row(
+          "ATLAS",
+          pair.pairAddress,
+          "HOLD",
+          ["NO_INTENT"],
+          "1.000000",
+          { blockedBy: "STRATEGY_INSTANCE_ALLOCATION" },
+          { allowlistSize: input.concurrentEntryAllowlist.size },
+          "strategy-instances:allocate",
+        ),
+      );
+      decisions.push(row("EXECUTOR", pair.pairAddress, "HOLD", ["NO_ORDER"], "1.000000", { blockedBy: "STRATEGY_INSTANCE_ALLOCATION" }));
+      continue;
+    }
+
     const sized = sizeOrder(pair, book, input, side, intent, valued.equityUsd, aggregateExposure);
     decisions.push({
       ...sized.decision,

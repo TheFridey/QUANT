@@ -81,7 +81,7 @@
 
 ## D015 — Postgres is reservation authority; in-memory is test reference
 
-**Decision:** All production admission uses `PostgresReservationAuthority` with account `FOR UPDATE`, remaining amounts, immutable events, idempotent account+mode+clientOrderId. In-memory `ReservationLedger` is adversarial test reference only. releasePartial rejects double/over/negative.
+**Decision:** All production admission uses `PostgresReservationAuthority` with account `FOR UPDATE`, remaining amounts, immutable events, idempotent account+mode+clientOrderId. Worker executor calls `reserveInTx` / `releaseInTx` inside the existing account transaction (no nested `$transaction`). In-memory `ReservationLedger` is adversarial test reference only. releasePartial rejects double/over/negative. ENTRY BUY reserves; terminal FILLED/REJECTED/EXPIRED releases; PENDING keeps HELD until settle.
 **Date:** 2026-10-28
 
 ## D016 — Trigger ≠ execution; failed protection stays unresolved

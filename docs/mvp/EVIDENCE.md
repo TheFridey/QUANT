@@ -23,11 +23,11 @@
 | --- | --- | --- |
 | 1 | `external-demo` placeholder; key cannot unblock | **FIXED** — Alpaca+OANDA named adapters; generic key still insufficient (offline test) |
 | 2 | `paper-multimarket` fixed levels + synthetic momentum into paper | **FIXED** — default off; FIXTURE sequences isolated; no DEX txns for FX/ETF |
-| 3 | `protection.ts` long-only helper, not durable worker | **PARTIAL→IMPROVED** — long/short + worker arm/evaluate + ProtectionIntent on failure |
-| 4 | `reservations.ts` in-process only; releasePartial adversarial | **FIXED** — adversarial releasePartial + `PostgresReservationAuthority` race test |
-| 5 | Concurrent strategies partial | **IMPROVED** — durable StrategyInstance + evaluate/allocate |
+| 3 | `protection.ts` long-only helper, not durable worker | **IMPROVED** — long/short + worker arm/evaluate/retry + ProtectionIntent on failure |
+| 4 | `reservations.ts` in-process only; releasePartial adversarial | **FIXED** — adversarial releasePartial + `PostgresReservationAuthority` race test + **worker `reserveInTx` admission** |
+| 5 | Concurrent strategies partial | **IMPROVED** — durable StrategyInstance seeded in worker + evaluate/allocate gating |
 | 6 | 50 in-process slots ≠ prod capacity | **DOCUMENTED** — report labels `productionShaped: false` |
-| 7 | Matrix DONE inflation | **FIXED** — ACCEPTANCE_SCENARIOS per-stage statuses |
+| 7 | Matrix DONE inflation | **FIXED** — ACCEPTANCE_SCENARIOS per-stage statuses + recomputed counts |
 
 ## Commands / results (record after each push)
 
@@ -43,8 +43,12 @@ pnpm build            # api/worker/web production builds
 ### Latest local run
 
 ```text
-pnpm test             # 192 passed / 1 skipped (sandbox-dependent skips reported accurately elsewhere)
-pnpm build:packages   # clean
+pnpm test             # 195 passed / 1 skipped
+pnpm typecheck        # clean
+pnpm lint             # clean
+pnpm build            # api/worker/web production builds clean
+pnpm db:deploy        # 20261028240000 applied on odin + odin_test
+node scripts/verify-external-providers.mjs  # exit 2 BLOCKED_EXTERNAL_TEST (no keys)
 ```
 
 ### Targeted verification suite mapping
@@ -57,11 +61,11 @@ pnpm build:packages   # clean
 | 4 | Credentialed providers | `node scripts/verify-external-providers.mjs` | exit 2 BLOCKED_EXTERNAL_TEST (no keys) |
 | 5 | PG concurrent admission | `vitest run packages/risk-engine/src/pg-reservations.test.ts` | pass (2-worker race admits exact 2) |
 | 6 | Reservation adversarial | `vitest run packages/risk-engine/src/reservations.test.ts` | pass |
-| 7–11 | Protection lifecycle | `vitest run packages/trading-engine/src/protection*.test.ts` | pass |
+| 7–11 | Protection lifecycle | `vitest run packages/trading-engine/src/protection*.test.ts` | pass (OCO multi-worker crash depth PARTIAL) |
 | 12–13 | Pause/ACK | `vitest run packages/trading-engine/src/alerts-ack.test.ts` + reconcile tests | pass |
-| 14 | Concurrent instances | `vitest run packages/agent-core/src/strategy-instances.test.ts` | pass |
-| 15 | FX sessions | `vitest run packages/shared/src/sessions.test.ts` | pass |
-| 16 | Replay isolation | DATA_MODE=replay path (PARTIAL — REPLAY account isolation helpers present) | PARTIAL |
+| 14 | Concurrent instances | `vitest run packages/agent-core/src/strategy-instances.test.ts` | pass; worker seeds+gates in loadPlan |
+| 15 | FX sessions | `vitest run packages/shared/src/sessions.test.ts` | pass (DST PARTIAL) |
+| 16 | Replay isolation | DATA_MODE=replay path | PARTIAL — REPLAY account isolation helpers present |
 | 17 | External manual position | policy: refuse fake LIVE; named adapters only | documented |
 | 18 | Normal paper ≠ fixtures | default config + isolation tests | pass |
 

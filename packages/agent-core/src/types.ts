@@ -75,6 +75,14 @@ export type PlanInput = {
   entriesSuspended?: boolean;
   /** Active strategy module id when promotion drives decisions. */
   activeStrategyId?: string | null;
+  /**
+   * When concurrent StrategyInstances are active, ENTRY is allowed only for
+   * pairs present in this set (from allocateOpportunities). Exits always pass.
+   * Undefined = no instance gating (legacy single-pulse path).
+   */
+  concurrentEntryAllowlist?: ReadonlySet<string> | null;
+  /** Attribution map pairAddress → strategyInstanceId for stamps/funnel. */
+  concurrentInstanceByPair?: ReadonlyMap<string, string> | null;
   now?: Date;
 };
 

@@ -1,7 +1,10 @@
 import {
   ALERT_CODES,
+  allocateOpportunities,
   assessSecurity,
+  ensureDefaultStrategyInstances,
   entriesSuspendedAlert,
+  evaluateConcurrentInstances,
   funnelEventsFromPlan,
   liveGateAlert,
   parseActiveStrategyIdentity,
@@ -19,6 +22,8 @@ import {
   FrankfurterFxProvider,
   type ProviderResult,
 } from "@odin/market-data";
+import type { ReservationBudget } from "@odin/risk-engine";
+import { releaseInTx, reserveInTx } from "@odin/risk-engine";
 import type { NormalizedPair, ObservationPoint, SecurityAssessment } from "@odin/shared";
 import {
   AGENT_BUS_CHANNEL,
@@ -46,6 +51,7 @@ import {
   lockAccount,
   persistOcoGroup,
   reconcileOrders,
+  retryUnresolvedProtectionIntents,
   settlePendingOrder,
 } from "@odin/trading-engine";
 
@@ -172,6 +178,7 @@ export class StageRunner {
         orderBy: { submittedAt: "asc" },
       });
       let filled = 0;
+      const reservationBudget = await this.buildReservationBudget(tx, loaded);
       for (const row of pending) {
         const settled = await settlePendingOrder(tx, {
           accountId: "primary",
@@ -181,6 +188,15 @@ export class StageRunner {
           now,
         });
         if (settled.status === "FILLED") filled += 1;
+        // Terminal pending outcomes free durable admission capacity.
+        if (settled.status === "FILLED" || settled.status === "REJECTED" || settled.status === "EXPIRED") {
+          await releaseInTx(
+            tx,
+            { accountId: "primary", mode: "PAPER", clientOrderId: row.clientOrderId },
+            reservationBudget,
+            now,
+          );
+        }
       }
 
       await this.reconcileAndAlert(tx);
@@ -203,6 +219,42 @@ export class StageRunner {
         });
       } else {
         for (const order of loaded.plan.orders) {
+          const needsReservation = order.side === "BUY" && order.intent === "ENTRY";
+          if (needsReservation) {
+            const mark = loaded.marks?.[order.pairAddress]?.priceUsd;
+            const exposureUsd =
+              mark && d(mark).gt(0) ? usd(d(order.qty).mul(d(mark))) : order.qty;
+            const admitted = await reserveInTx(
+              tx,
+              {
+                id: newId("rsv"),
+                accountId: "primary",
+                mode: "PAPER",
+                clientOrderId: order.clientOrderId,
+                cashUsd: exposureUsd,
+                exposureUsd,
+                slots: 1,
+                riskUsd: usd(d(exposureUsd).mul(d(loaded.config.stopLossPct)).div(100)),
+              },
+              reservationBudget,
+              now,
+            );
+            if (!admitted.ok) {
+              await upsertDecision(tx, cycleId, {
+                agent: "EXECUTOR",
+                modelVersion: "executor-paper-1.2.0",
+                pairAddress: order.pairAddress,
+                decision: "REJECT",
+                confidence: "1.000000",
+                reasonCodes: ["REJECTED"],
+                input: { clientOrderId: order.clientOrderId },
+                output: { reservationDenied: admitted.reason },
+                inputSource: "pg-reservations",
+                durationMs: 0,
+              });
+              continue;
+            }
+          }
           const result = await commitProposedOrder(tx, {
             accountId: "primary",
             cycleId,
@@ -219,6 +271,17 @@ export class StageRunner {
             mode: this.dataMode,
             now,
           });
+          if (needsReservation) {
+            if (result.status === "FILLED" || result.status === "REJECTED" || result.status === "EXPIRED") {
+              await releaseInTx(
+                tx,
+                { accountId: "primary", mode: "PAPER", clientOrderId: order.clientOrderId },
+                reservationBudget,
+                now,
+              );
+            }
+            // PENDING keeps HELD reservation until settle.
+          }
           if (result.status === "FILLED") {
             filled += 1;
             filledIds.push(order.clientOrderId);
@@ -258,6 +321,59 @@ export class StageRunner {
         }
       }
       await tx.cycleRun.update({ where: { id: cycleId }, data: { orderCount: filled } });
+    });
+    // Retry unresolved protection exits outside the admission transaction.
+    await retryUnresolvedProtectionIntents(this.prisma, {
+      now,
+      attemptExit: async (intent) => {
+        try {
+          const leg = await this.prisma.protectionOrder.findUnique({ where: { id: intent.legId } });
+          if (!leg) return { ok: false, error: "LEG_MISSING" };
+          const pair = leg.positionKey.includes(":")
+            ? leg.positionKey.slice(leg.positionKey.indexOf(":") + 1)
+            : leg.positionKey;
+          const observation = await this.prisma.marketObservation.findFirst({
+            where: { pairAddress: pair, priceUsd: { not: null } },
+            orderBy: { receivedAt: "desc" },
+          });
+          if (!observation) return { ok: false, error: "MISSING_PRICE" };
+          const position = await this.prisma.position.findFirst({
+            where: { accountId: intent.accountId, pairAddress: pair },
+          });
+          if (!position || d(position.baseQty.toString()).lte(0)) {
+            return { ok: true };
+          }
+          const config = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
+          const parsed = parseStrategyConfig(config?.config ?? {});
+          const result = await this.prisma.$transaction(async (tx) =>
+            commitProposedOrder(tx, {
+              accountId: intent.accountId,
+              cycleId: `prot_retry_${intent.id}`,
+              order: {
+                clientOrderId: `prot_retry_${intent.legId}_${now.getTime()}`,
+                pairAddress: pair,
+                baseSymbol: position.baseSymbol,
+                side: "SELL",
+                intent: "EXIT",
+                qty: position.baseQty.toString(),
+                observationId: observation.id,
+                reasonCodes: ["STOP_LOSS"],
+                executionMode: "PAPER",
+                venue: "PAPER",
+                instrumentId: pair.includes(":") ? pair : null,
+              },
+              config: parsed,
+              mode: this.dataMode,
+              now,
+            }),
+          );
+          return result.status === "FILLED"
+            ? { ok: true }
+            : { ok: false, error: result.reason ?? result.status };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : "RETRY_FAILED" };
+        }
+      },
     });
     await this.advance(cycleId, "executor");
   }
@@ -503,6 +619,51 @@ export class StageRunner {
       where: { acked: false, code: ALERT_CODES.ENTRIES_SUSPENDED },
       orderBy: { createdAt: "desc" },
     });
+    // Durable concurrent StrategyInstances — seed defaults, evaluate, allocate entries.
+    const instances = await ensureDefaultStrategyInstances(db, "primary");
+    const bars = pairs.map((pair) => ({
+      instrumentId: pair.pairAddress.includes(":") ? pair.pairAddress : `solana:spot:universe`,
+      pairAddress: pair.pairAddress,
+      receivedAt: pair.receivedAt,
+      priceUsd: pair.priceUsd,
+      liquidityUsd: pair.liquidityUsd,
+      volume24hUsd: pair.volume24hUsd,
+      priceChangeM5Pct: pair.priceChangeM5Pct,
+      priceChangeH1Pct: pair.priceChangeH1Pct,
+      txnsM5Buys: pair.txnsM5Buys,
+      txnsM5Sells: pair.txnsM5Sells,
+      dataState: pair.freshness,
+    }));
+    const concurrentSignals = evaluateConcurrentInstances({
+      instances,
+      bars,
+      context: {
+        config,
+        openPositions: positionViews.map((p) => ({
+          instrumentId: p.pairAddress,
+          pairAddress: p.pairAddress,
+          qty: p.baseQty,
+        })),
+        history: [],
+      },
+    });
+    const allocated = allocateOpportunities({
+      signals: concurrentSignals,
+      maxNewEntries: Math.max(1, config.maxPositions - positionViews.filter((p) => d(p.baseQty).gt(0)).length),
+    });
+    const concurrentEntryAllowlist = new Set(
+      allocated.accepted
+        .filter((s) => s.intent === "ENTER_LONG")
+        .map((s) => s.pairAddress || s.instrumentId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    // Always allow pulse path when no ENTER signals produced (cold start / insufficient bars).
+    const gateEntries = concurrentEntryAllowlist.size > 0 ? concurrentEntryAllowlist : null;
+    const concurrentInstanceByPair = new Map<string, string>();
+    for (const signal of allocated.accepted) {
+      const key = signal.pairAddress || signal.instrumentId;
+      if (key) concurrentInstanceByPair.set(key, signal.strategyInstanceId);
+    }
     return {
       config,
       flattenRequested: engine.flattenRequested,
@@ -528,8 +689,35 @@ export class StageRunner {
         aggregateExposureUsd,
         entriesSuspended: suspension !== null,
         activeStrategyId: activeStrategy?.strategyId ?? null,
+        concurrentEntryAllowlist: gateEntries,
+        concurrentInstanceByPair,
         now,
       }),
+    };
+  }
+
+  private async buildReservationBudget(
+    tx: Prisma.TransactionClient,
+    loaded: {
+      config: StrategyConfig;
+      valuation: { equityUsd: string | null };
+    },
+  ): Promise<ReservationBudget> {
+    const account = await tx.paperAccount.findUniqueOrThrow({ where: { id: "primary" } });
+    const openSlots = await tx.position.count({
+      where: { accountId: "primary", baseQty: { gt: 0 } },
+    });
+    const equity = loaded.valuation.equityUsd ?? account.cashUsd.toString();
+    const exposureCap = usd(d(equity).mul(d(loaded.config.maxAggregateExposurePct)).div(100));
+    const riskBudget = usd(d(equity).mul(d(loaded.config.maxRiskPerTradePct)).mul(loaded.config.maxPositions).div(100));
+    return {
+      cashAvailableUsd: account.cashUsd.toString(),
+      exposureCapUsd: exposureCap,
+      exposureUsedUsd: "0",
+      slotsAvailable: Math.max(0, loaded.config.maxPositions - openSlots),
+      slotsUsed: 0,
+      riskBudgetUsd: riskBudget,
+      riskUsedUsd: "0",
     };
   }
 
