@@ -1,7 +1,14 @@
 import { valuePortfolio } from "@odin/analytics";
 import { evaluateCircuitBreaker, evaluateRisk } from "@odin/risk-engine";
 import { d, type CyclePair, type OrderIntent, type OrderSide, type ReasonCode, type SecurityAssessment } from "@odin/shared";
-import { applyFill, maxEntryNotional, qtyForNotional, quoteFill, type BookState } from "@odin/trading-engine";
+import {
+  admitNotionalAgainstMinOrder,
+  applyFill,
+  maxEntryNotional,
+  qtyForNotional,
+  quoteFill,
+  type BookState,
+} from "@odin/trading-engine";
 import { runAegis } from "./aegis.js";
 import { computeResearchMetrics } from "./archivist.js";
 import { runPulse } from "./pulse.js";
@@ -168,13 +175,21 @@ export function planCycle(input: PlanInput): {
     }
     const executed = executeOrder(input.cycleId, pair, side, intent, sized.qty, book, input.config, now);
     decisions.push(executed.decision);
-    if (executed.order && executed.book) {
+    if (executed.order) {
       orders.push(executed.order);
-      book = executed.book;
-      if (side === "BUY" && pair.priceUsd) {
-        aggregateExposure = d(aggregateExposure).plus(d(sized.qty).mul(d(pair.priceUsd))).toFixed(8);
+      if (executed.book) {
+        book = executed.book;
+        if (side === "BUY" && pair.priceUsd && sized.qty) {
+          aggregateExposure = d(aggregateExposure).plus(d(sized.qty).mul(d(pair.priceUsd))).toFixed(8);
+        }
+        if (side === "SELL" && pair.priceUsd && sized.qty) {
+          // Release in-cycle capacity when a sell completes in the simulated book.
+          aggregateExposure = DecimalMax0(d(aggregateExposure).minus(d(sized.qty).mul(d(pair.priceUsd)))).toFixed(8);
+        }
+        if (dailyPnl !== null && executed.realizedPnlUsd) {
+          dailyPnl = d(dailyPnl).plus(d(executed.realizedPnlUsd)).toFixed(8);
+        }
       }
-      if (dailyPnl !== null && executed.realizedPnlUsd) dailyPnl = d(dailyPnl).plus(d(executed.realizedPnlUsd)).toFixed(8);
     }
   }
 
@@ -290,22 +305,27 @@ function sizeOrder(
     }
     notional = input.operator.notionalUsd;
   }
-  if (d(notional).lt(input.config.minOrderNotionalUsd)) {
+  const admitted = admitNotionalAgainstMinOrder({
+    riskSizedNotionalUsd: notional,
+    minOrderNotionalUsd: input.config.minOrderNotionalUsd,
+  });
+  if (!admitted.ok) {
     return {
       qty: null,
       decision: row(
         "ATLAS",
         pair,
         "REJECT",
-        ["BELOW_MIN_NOTIONAL"],
+        [admitted.reason],
         "1.000000",
-        { notionalUsd: notional },
+        { notionalUsd: notional, minOrderNotionalUsd: input.config.minOrderNotionalUsd, maxNotionalUsd: cap },
         {},
         "portfolio:sizing",
         Date.now() - started,
       ),
     };
   }
+  notional = admitted.notionalUsd;
   const quantity = qtyForNotional(notional, pair.priceUsd);
   if (d(quantity).lte(0)) {
     return {
@@ -368,17 +388,29 @@ function executeOrder(
 
   const eligibleAt = new Date(now.getTime() + config.paperLatencyMs);
   const expiresAt = new Date(eligibleAt.getTime() + config.orderExpiryMs);
-  const applied = applyFill(book, { pairAddress: pair.pairAddress, baseSymbol: pair.baseSymbol, side, fill: quoted.fill });
-  if (!applied.ok) {
-    return {
-      decision: row("EXECUTOR", pair, "REJECT", [applied.reason], "1.000000", {}, {}, "quote", Date.now() - started),
-    };
+  const deferFill = config.paperLatencyMs > 0;
+  let nextBook = book;
+  let realizedPnlUsd: string | undefined;
+  if (!deferFill) {
+    const applied = applyFill(book, {
+      pairAddress: pair.pairAddress,
+      baseSymbol: pair.baseSymbol,
+      side,
+      fill: quoted.fill,
+    });
+    if (!applied.ok) {
+      return {
+        decision: row("EXECUTOR", pair, "REJECT", [applied.reason], "1.000000", {}, {}, "quote", Date.now() - started),
+      };
+    }
+    nextBook = applied.state;
+    realizedPnlUsd = applied.realizedPnlUsd;
   }
   const reasonCodes: ReasonCode[] = ["ORDER_PROPOSED", "COST_ESTIMATED", "SPREAD_APPLIED"];
-  if (config.paperLatencyMs > 0) reasonCodes.push("ORDER_PENDING");
+  if (deferFill) reasonCodes.push("ORDER_PENDING");
   return {
-    book: applied.state,
-    realizedPnlUsd: applied.realizedPnlUsd,
+    book: nextBook,
+    realizedPnlUsd,
     order: {
       clientOrderId: `${cycleId}:${pair.pairAddress}:${side}:${intent}`,
       pairAddress: pair.pairAddress,
@@ -410,12 +442,17 @@ function executeOrder(
         paperLatencyMs: config.paperLatencyMs,
         eligibleAt: eligibleAt.toISOString(),
         expiresAt: expiresAt.toISOString(),
+        deferred: deferFill,
       },
       {},
       "quote",
       Date.now() - started,
     ),
   };
+}
+
+function DecimalMax0(value: ReturnType<typeof d>) {
+  return value.gt(0) ? value : d("0");
 }
 
 function row(

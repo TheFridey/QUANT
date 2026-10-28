@@ -41,15 +41,15 @@ function input(overrides: Partial<PlanInput> = {}): PlanInput {
     cycleId: "cyc_test",
     engineStatus: "RUNNING",
     config: DEFAULT_STRATEGY,
-    cashUsd: "100.00000000",
-    startingBalanceUsd: "100.00000000",
+    cashUsd: DEFAULT_STRATEGY.startingBalanceUsd,
+    startingBalanceUsd: DEFAULT_STRATEGY.startingBalanceUsd,
     positions: [],
     pairs: [quote],
     marks: { [pairAddress]: { priceUsd: quote.priceUsd, freshness: "LIVE" } },
     dailyPnlUsd: "0.00000000",
     flatten: false,
     operator: null,
-    highWaterMarkUsd: "100.00000000",
+    highWaterMarkUsd: DEFAULT_STRATEGY.startingBalanceUsd,
     aggregateExposureUsd: "0.00000000",
     ...overrides,
   };
@@ -60,7 +60,8 @@ describe("agent plan", () => {
     const plan = planCycle(input());
     expect(plan.orders).toHaveLength(1);
     expect(plan.orders[0]?.side).toBe("BUY");
-    expect(plan.orders[0]?.qty).toBe("0.05000000");
+    // 5% of $10k = $500 notional at $100 mid → 5.0 qty (stop-distance also allows this)
+    expect(plan.orders[0]?.qty).toBe("5.00000000");
     expect(plan.decisions.some((decision) => decision.agent === "ARCHIVIST" && decision.reasonCodes.includes("AUDIT_RECORDED"))).toBe(true);
     expect(plan.decisions.find((decision) => decision.agent === "EXECUTOR")?.output.venue).toBe("PAPER");
     expect(plan.watchlist.length).toBeGreaterThan(0);
@@ -77,7 +78,7 @@ describe("agent plan", () => {
   it("closes a position on the stop without inventing a second entry", () => {
     const plan = planCycle(
       input({
-        cashUsd: "75.00000000",
+        cashUsd: "9750.00000000",
         positions: [
           {
             pairAddress,
@@ -108,7 +109,7 @@ describe("agent plan", () => {
     expect(exotic.decisions.some((decision) => decision.reasonCodes.includes("QUOTE_NOT_ALLOWED"))).toBe(true);
     const held = planCycle(
       input({
-        cashUsd: "75.00000000",
+        cashUsd: "9750.00000000",
         positions: [
           {
             pairAddress,
@@ -129,14 +130,14 @@ describe("agent plan", () => {
     const allowed = planCycle(
       input({
         pairs: [pair({ priceChangeM5Pct: "0", txnsM5Buys: 1, txnsM5Sells: 9 })],
-        operator: { side: "BUY", pairAddress, notionalUsd: "5" },
+        operator: { side: "BUY", pairAddress, notionalUsd: "25" },
       }),
     );
     expect(allowed.orders).toHaveLength(1);
     expect(allowed.decisions.some((decision) => decision.reasonCodes.includes("OPERATOR_OVERRIDE"))).toBe(true);
     const blocked = planCycle(
       input({
-        operator: { side: "BUY", pairAddress, notionalUsd: "90" },
+        operator: { side: "BUY", pairAddress, notionalUsd: "9000" },
       }),
     );
     expect(blocked.orders).toHaveLength(0);
@@ -146,9 +147,9 @@ describe("agent plan", () => {
   it("trips the portfolio circuit breaker on high-water-mark drawdown", () => {
     const plan = planCycle(
       input({
-        cashUsd: "85.00000000",
-        highWaterMarkUsd: "100.00000000",
-        dailyPnlUsd: "-1.00000000",
+        cashUsd: "8500.00000000",
+        highWaterMarkUsd: "10000.00000000",
+        dailyPnlUsd: "-100.00000000",
         marks: { [pairAddress]: { priceUsd: "100", freshness: "LIVE" } },
       }),
     );

@@ -18,6 +18,10 @@ export type PositionView = {
   baseQty: string;
   avgCostUsd: string;
   realizedPnlUsd: string;
+  /** ISO time of opening fill when known — used for max-hold exits. */
+  openedAt?: string | null;
+  /** Peak mark since entry when known — used for trailing stops. */
+  peakMarkUsd?: string | null;
 };
 
 export type DecisionDraft = {

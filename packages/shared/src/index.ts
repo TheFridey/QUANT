@@ -6,4 +6,6 @@ export * from "./market.js";
 export * from "./strategy.js";
 export * from "./contracts.js";
 export * from "./instruments.js";
+export * from "./sessions.js";
+export * from "./execution-gate.js";
 export * from "./evolution.js";

@@ -136,6 +136,37 @@ export function runPulse(
     if (pnlPct.gte(input.config.takeProfitPct)) {
       return draft(pair, "ACT", ["TAKE_PROFIT"], "1.000000", { side: "SELL", intent: "EXIT", pnlPct: pnlPct.toFixed(4), signal }, signal, started, baseMeta.inputSource);
     }
+    const peak = position.peakMarkUsd && d(position.peakMarkUsd).gt(0) ? d(position.peakMarkUsd) : d(pair.priceUsd);
+    if (input.config.trailingStopPct !== null && peak.gt(0)) {
+      const drop = peak.minus(d(pair.priceUsd)).div(peak).mul(100);
+      if (drop.gte(input.config.trailingStopPct)) {
+        return draft(
+          pair,
+          "ACT",
+          ["TRAILING_STOP"],
+          "1.000000",
+          { side: "SELL", intent: "EXIT", peakMarkUsd: peak.toFixed(8), signal },
+          signal,
+          started,
+          baseMeta.inputSource,
+        );
+      }
+    }
+    if (input.config.maxHoldingMs !== null && position.openedAt) {
+      const heldMs = Date.parse(pair.receivedAt) - Date.parse(position.openedAt);
+      if (Number.isFinite(heldMs) && heldMs >= input.config.maxHoldingMs) {
+        return draft(
+          pair,
+          "ACT",
+          ["TIME_EXIT", "MAX_HOLDING"],
+          "1.000000",
+          { side: "SELL", intent: "EXIT", heldMs, signal },
+          signal,
+          started,
+          baseMeta.inputSource,
+        );
+      }
+    }
     if (pair.priceChangeM5Pct !== null && d(pair.priceChangeM5Pct).lte(input.config.exitM5ChangePct)) {
       return draft(pair, "ACT", ["EXIT_MOMENTUM"], "1.000000", { side: "SELL", intent: "EXIT", signal }, signal, started, baseMeta.inputSource);
     }

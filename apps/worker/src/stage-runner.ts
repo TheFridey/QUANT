@@ -5,6 +5,7 @@ import type { NormalizedPair, ObservationPoint, SecurityAssessment } from "@odin
 import {
   AGENT_BUS_CHANNEL,
   TERMINAL_CHANNEL,
+  assertPaperOrSandboxOnly,
   classifyFreshness,
   d,
   newId,
@@ -18,7 +19,7 @@ import {
   type StrategyConfig,
 } from "@odin/shared";
 import { Prisma, PrismaClient, toJson } from "@odin/shared/db";
-import { commitProposedOrder, lockAccount } from "@odin/trading-engine";
+import { commitProposedOrder, lockAccount, settlePendingOrder } from "@odin/trading-engine";
 
 export type MarketFeed = {
   fetchUniverse(limit: number): Promise<ProviderResult<NormalizedPair[]>>;
@@ -136,20 +137,79 @@ export class StageRunner {
       for (const decision of loaded.plan.decisions.filter((item) => item.agent === "AEGIS" || item.agent === "ATLAS" || item.agent === "EXECUTOR")) {
         await upsertDecision(tx, cycleId, decision);
       }
+
+      // Settle eligible PENDING orders before accepting new proposals (restart-safe).
+      const pending = await tx.order.findMany({
+        where: { accountId: "primary", status: "PENDING" },
+        orderBy: { submittedAt: "asc" },
+      });
       let filled = 0;
-      for (const order of loaded.plan.orders) {
-        const result = await commitProposedOrder(tx, {
+      for (const row of pending) {
+        const settled = await settlePendingOrder(tx, {
           accountId: "primary",
-          cycleId,
-          order,
+          orderId: row.id,
           config: loaded.config,
           mode: this.dataMode,
           now,
         });
-        if (result.status === "FILLED") filled += 1;
+        if (settled.status === "FILLED") filled += 1;
       }
+
+      const liveGate = assertPaperOrSandboxOnly(process.env);
+      if (!liveGate.ok) {
+        await upsertDecision(tx, cycleId, {
+          agent: "EXECUTOR",
+          modelVersion: "executor-paper-1.2.0",
+          pairAddress: "",
+          decision: "REJECT",
+          confidence: "1.000000",
+          reasonCodes: ["REJECTED"],
+          input: {},
+          output: { error: liveGate.reason, mode: liveGate.mode },
+          inputSource: "execution-gate",
+          durationMs: 0,
+        });
+      } else {
+        for (const order of loaded.plan.orders) {
+          const result = await commitProposedOrder(tx, {
+            accountId: "primary",
+            cycleId,
+            order: {
+              ...order,
+              eligibleAt: order.eligibleAt,
+              expiresAt: order.expiresAt,
+              executionMode: liveGate.mode === "SANDBOX" ? "SANDBOX" : "PAPER",
+              venue: "PAPER",
+              instrumentId: null,
+              strategyVersion: loaded.config.entryM5ChangePct ? `pulse:${loaded.config.entryM5ChangePct}` : "pulse:default",
+            },
+            config: loaded.config,
+            mode: this.dataMode,
+            now,
+          });
+          if (result.status === "FILLED") filled += 1;
+        }
+      }
+
       if (loaded.flattenRequested) {
-        await tx.engineControl.update({ where: { id: "primary" }, data: { flattenRequested: false } });
+        const open = await tx.position.findMany({ where: { accountId: "primary" } });
+        const remaining = open.some((position) => d(position.baseQty.toString()).gt(0));
+        if (!remaining) {
+          await tx.engineControl.update({ where: { id: "primary" }, data: { flattenRequested: false } });
+        } else {
+          await upsertDecision(tx, cycleId, {
+            agent: "EXECUTOR",
+            modelVersion: "executor-paper-1.2.0",
+            pairAddress: "",
+            decision: "HOLD",
+            confidence: "1.000000",
+            reasonCodes: ["FLATTEN_INCOMPLETE"],
+            input: {},
+            output: { remainingOpen: open.filter((p) => d(p.baseQty.toString()).gt(0)).length },
+            inputSource: "ledger",
+            durationMs: 0,
+          });
+        }
       }
       await tx.cycleRun.update({ where: { id: cycleId }, data: { orderCount: filled } });
     });
@@ -269,53 +329,63 @@ export class StageRunner {
       return null;
     }
     const rows = await db.marketObservation.findMany({ where: { ingestJobId: cycleId } });
-    const pairs = rows.map((row) => toCyclePair(row, now, config, this.dataMode));
+    const pairsByAddress = new Map<string, CyclePair>();
+    for (const row of rows) {
+      pairsByAddress.set(row.pairAddress, toCyclePair(row, now, config, this.dataMode));
+    }
     const positions = await db.position.findMany({ where: { accountId: "primary" } });
     const marks: Record<string, Mark | undefined> = {};
-    for (const pair of pairs) {
+    for (const pair of pairsByAddress.values()) {
       if (pair.priceUsd) marks[pair.pairAddress] = { priceUsd: pair.priceUsd, freshness: pair.freshness };
     }
+    // Held positions are monitored even when they left the discovery/ingest snapshot.
     for (const position of positions) {
-      if (marks[position.pairAddress] || !d(position.baseQty.toString()).gt(0)) continue;
+      if (!d(position.baseQty.toString()).gt(0)) continue;
+      if (pairsByAddress.has(position.pairAddress)) continue;
       const latest = await db.marketObservation.findFirst({
         where: { pairAddress: position.pairAddress },
         orderBy: { receivedAt: "desc" },
       });
       if (!latest) continue;
-      const freshness = classifyFreshness({
-        mode: this.dataMode,
-        receivedAt: latest.receivedAt,
-        now,
-        liveMaxAgeMs: config.liveMaxAgeMs,
-        delayedMaxAgeMs: config.delayedMaxAgeMs,
-      });
+      const heldPair = toCyclePair(latest, now, config, this.dataMode);
+      pairsByAddress.set(position.pairAddress, heldPair);
       marks[position.pairAddress] = {
-        priceUsd: latest.priceUsd ? latest.priceUsd.toString() : null,
-        freshness,
+        priceUsd: heldPair.priceUsd,
+        freshness: heldPair.freshness,
       };
     }
-    const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const realized = await db.ledgerEntry.aggregate({
-      where: { accountId: "primary", type: "REALIZED_PNL", createdAt: { gte: dayStart } },
-      _sum: { amountUsd: true },
-    });
-    const dayRealized = realized._sum.amountUsd?.toString() ?? "0";
-    const positionViews = positions.map((position) => ({
-      pairAddress: position.pairAddress,
-      baseSymbol: position.baseSymbol,
-      baseQty: position.baseQty.toString(),
-      avgCostUsd: position.avgCostUsd.toString(),
-      realizedPnlUsd: position.realizedPnlUsd.toString(),
-    }));
+    const pairs = [...pairsByAddress.values()];
+    const positionViews = await Promise.all(
+      positions.map(async (position) => {
+        const openMeta = await this.positionOpenMeta(db, position.pairAddress, marks[position.pairAddress]?.priceUsd ?? null);
+        return {
+          pairAddress: position.pairAddress,
+          baseSymbol: position.baseSymbol,
+          baseQty: position.baseQty.toString(),
+          avgCostUsd: position.avgCostUsd.toString(),
+          realizedPnlUsd: position.realizedPnlUsd.toString(),
+          openedAt: openMeta.openedAt,
+          peakMarkUsd: openMeta.peakMarkUsd,
+        };
+      }),
+    );
     const valuation = valuePortfolio({ cashUsd: account.cashUsd.toString(), positions: positionViews, marks });
+    const sessionStart =
+      account.sessionStartEquityUsd?.toString() ?? account.startingBalanceUsd.toString();
     const dailyPnlUsd =
       valuation.valuation !== "CASH_ONLY" && valuation.valuation !== "LIVE"
         ? null
-        : valuation.unrealizedPnlUsd === null
+        : valuation.equityUsd === null
           ? null
-          : d(dayRealized).plus(d(valuation.unrealizedPnlUsd)).toFixed(8);
+          : usd(d(valuation.equityUsd).minus(d(sessionStart)));
     const operator = parseOperator(cycle.operator);
-    const observationHistory = await this.loadObservationHistory(db, pairs.map((pair) => pair.pairAddress));
+    const historyAddresses = [
+      ...new Set([
+        ...pairs.map((pair) => pair.pairAddress),
+        ...positions.filter((p) => d(p.baseQty.toString()).gt(0)).map((p) => p.pairAddress),
+      ]),
+    ];
+    const observationHistory = await this.loadObservationHistory(db, historyAddresses);
     const securityByMint = await this.loadSecurity(pairs);
     const aggregateExposureUsd =
       valuation.equityUsd === null
@@ -358,23 +428,52 @@ export class StageRunner {
   ): Promise<Record<string, ObservationPoint[]>> {
     const history: Record<string, ObservationPoint[]> = {};
     for (const pairAddress of pairAddresses) {
+      // Latest window: desc take N, then reverse to ascending for indicators.
       const rows = await db.marketObservation.findMany({
         where: { pairAddress },
-        orderBy: { receivedAt: "asc" },
+        orderBy: { receivedAt: "desc" },
         take: 40,
       });
-      history[pairAddress] = rows.map((row) => ({
-        receivedAt: row.receivedAt.toISOString(),
-        priceUsd: row.priceUsd?.toString() ?? null,
-        liquidityUsd: row.liquidityUsd?.toString() ?? null,
-        volume5mUsd: row.volume5mUsd?.toString() ?? null,
-        volume24hUsd: row.volume24hUsd?.toString() ?? null,
-        txnsM5Buys: row.txnsM5Buys,
-        txnsM5Sells: row.txnsM5Sells,
-        priceChangeM5Pct: row.priceChangeM5?.toString() ?? null,
-      }));
+      history[pairAddress] = rows
+        .slice()
+        .reverse()
+        .map((row) => ({
+          receivedAt: row.receivedAt.toISOString(),
+          priceUsd: row.priceUsd?.toString() ?? null,
+          liquidityUsd: row.liquidityUsd?.toString() ?? null,
+          volume5mUsd: row.volume5mUsd?.toString() ?? null,
+          volume24hUsd: row.volume24hUsd?.toString() ?? null,
+          txnsM5Buys: row.txnsM5Buys,
+          txnsM5Sells: row.txnsM5Sells,
+          priceChangeM5Pct: row.priceChangeM5?.toString() ?? null,
+        }));
     }
     return history;
+  }
+
+  private async positionOpenMeta(
+    db: PrismaClient | Prisma.TransactionClient,
+    pairAddress: string,
+    currentMarkUsd: string | null,
+  ): Promise<{ openedAt: string | null; peakMarkUsd: string | null }> {
+    const firstBuy = await db.fill.findFirst({
+      where: { pairAddress, side: "BUY" },
+      orderBy: { createdAt: "asc" },
+    });
+    const openedAt = firstBuy?.createdAt.toISOString() ?? null;
+    let peak = currentMarkUsd ? d(currentMarkUsd) : null;
+    if (openedAt) {
+      const since = new Date(openedAt);
+      const highs = await db.marketObservation.findMany({
+        where: { pairAddress, receivedAt: { gte: since }, priceUsd: { not: null } },
+        orderBy: { priceUsd: "desc" },
+        take: 1,
+      });
+      const high = highs[0]?.priceUsd?.toString();
+      if (high) peak = peak ? DecimalMax(peak, d(high)) : d(high);
+      if (firstBuy) peak = peak ? DecimalMax(peak, d(firstBuy.priceUsd.toString())) : d(firstBuy.priceUsd.toString());
+    }
+    return { openedAt, peakMarkUsd: peak ? usd(peak) : null };
   }
 
   private async loadSecurity(pairs: CyclePair[]): Promise<Record<string, SecurityAssessment>> {

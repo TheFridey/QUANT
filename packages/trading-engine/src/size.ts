@@ -46,6 +46,25 @@ export function maxEntryNotional(input: {
   return usd(cap);
 }
 
+/**
+ * Admit a sized notional against the minimum order. Never rounds up through the risk cap.
+ * If risk-sized notional is below min order, reject with MIN_ORDER_EXCEEDS_RISK_CAP when
+ * the risk cap itself is the binding constraint relative to the minimum.
+ */
+export function admitNotionalAgainstMinOrder(input: {
+  riskSizedNotionalUsd: string;
+  minOrderNotionalUsd: string;
+}):
+  | { ok: true; notionalUsd: string }
+  | { ok: false; reason: "BELOW_MIN_NOTIONAL" | "MIN_ORDER_EXCEEDS_RISK_CAP" | "SIZE_ZERO" } {
+  if (d(input.riskSizedNotionalUsd).lte(0)) return { ok: false, reason: "SIZE_ZERO" };
+  if (d(input.riskSizedNotionalUsd).gte(input.minOrderNotionalUsd)) {
+    return { ok: true, notionalUsd: usd(d(input.riskSizedNotionalUsd)) };
+  }
+  // Risk-sized amount is below the floor. Do not inflate to minOrder through the risk cap.
+  return { ok: false, reason: "MIN_ORDER_EXCEEDS_RISK_CAP" };
+}
+
 export function qtyForNotional(notionalUsd: string, midPriceUsd: string): string {
   if (d(midPriceUsd).lte(0)) return qty(new Decimal(0));
   return qty(d(notionalUsd).div(d(midPriceUsd)));

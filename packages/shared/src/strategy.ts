@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { d } from "./money.js";
+import { d, maxPositionNotionalAtStart } from "./money.js";
 
 const decimalString = z.string().regex(/^-?\d+(\.\d+)?$/);
 
@@ -100,11 +100,24 @@ export const strategyConfigSchema = z
         });
       }
     }
-    if (value.maxPositions < 1 || value.maxPositions > 10) {
-      ctx.addIssue({ code: "custom", path: ["maxPositions"], message: "Must be from 1 to 10" });
+    if (value.maxPositions < 1 || value.maxPositions > 50) {
+      ctx.addIssue({ code: "custom", path: ["maxPositions"], message: "Must be from 1 to 50" });
     }
-    if (value.universeLimit < 1 || value.universeLimit > 30) {
-      ctx.addIssue({ code: "custom", path: ["universeLimit"], message: "Must be from 1 to 30" });
+    if (value.universeLimit < 1 || value.universeLimit > 100) {
+      ctx.addIssue({ code: "custom", path: ["universeLimit"], message: "Must be from 1 to 100" });
+    }
+    const headroom = maxPositionNotionalAtStart({
+      startingBalanceUsd: value.startingBalanceUsd,
+      maxPositionPctEquity: value.maxPositionPctEquity,
+      feeBps: value.feeBps,
+      maxSlippageBps: value.maxSlippageBps,
+    });
+    if (d(headroom).lt(value.minOrderNotionalUsd)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["minOrderNotionalUsd"],
+        message: `minOrderNotionalUsd exceeds max position budget at start (${headroom} after costs). Raise equity/position % or lower min order — never round up through risk.`,
+      });
     }
     if (value.liveMaxAgeMs < 5000 || value.liveMaxAgeMs > 300000) {
       ctx.addIssue({ code: "custom", path: ["liveMaxAgeMs"], message: "Must be from 5000 to 300000" });
@@ -201,9 +214,14 @@ export const strategyPatchSchema = z
   })
   .strict();
 
-/** Institutional paper defaults. Missing keys on older configs merge from here. */
+/**
+ * Institutional paper defaults with activity headroom.
+ * Hard risk % caps stay tight; starting equity is raised so 5% max position
+ * clears min order + fees (avoids the former $100×5%=$5=$min deadlock).
+ * Missing keys on older configs merge from here.
+ */
 export const DEFAULT_STRATEGY: StrategyConfig = {
-  startingBalanceUsd: "100.00000000",
+  startingBalanceUsd: "10000.00000000",
   feeBps: "30",
   maxSlippageBps: "150",
   minLiquidityUsd: "25000",
@@ -214,14 +232,14 @@ export const DEFAULT_STRATEGY: StrategyConfig = {
   exitM5ChangePct: "-1.5",
   stopLossPct: "3",
   takeProfitPct: "5",
-  maxPositions: 4,
+  maxPositions: 8,
   maxPositionPctEquity: "5",
   maxDailyLossPct: "3",
   maxParticipationPctLiquidity: "1",
-  minOrderNotionalUsd: "5",
+  minOrderNotionalUsd: "25",
   allowDelayedExits: true,
   flattenOnEmergency: false,
-  universeLimit: 12,
+  universeLimit: 24,
   liveMaxAgeMs: 45000,
   delayedMaxAgeMs: 180000,
   maxRiskPerTradePct: "0.5",
@@ -248,12 +266,33 @@ export function parseStrategyConfig(value: unknown): StrategyConfig {
     return strategyConfigSchema.parse(DEFAULT_STRATEGY);
   }
   const stored = Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
-  return strategyConfigSchema.parse({ ...DEFAULT_STRATEGY, ...stored });
+  return strategyConfigSchema.parse(healDeadlockDefaults({ ...DEFAULT_STRATEGY, ...stored }));
 }
 
 export function mergeStrategy(current: StrategyConfig, patch: unknown): StrategyConfig {
   const parsedPatch = strategyPatchSchema.parse(patch);
   return strategyConfigSchema.parse({ ...current, ...parsedPatch });
+}
+
+/**
+ * Legacy paper configs used $100 equity × 5% max = $5 min order (zero headroom after fees).
+ * Heal those rows on load without silently loosening % risk caps.
+ */
+function healDeadlockDefaults(config: StrategyConfig): StrategyConfig {
+  const headroom = maxPositionNotionalAtStart({
+    startingBalanceUsd: config.startingBalanceUsd,
+    maxPositionPctEquity: config.maxPositionPctEquity,
+    feeBps: config.feeBps,
+    maxSlippageBps: config.maxSlippageBps,
+  });
+  if (d(headroom).gte(config.minOrderNotionalUsd)) return config;
+  return {
+    ...config,
+    startingBalanceUsd: DEFAULT_STRATEGY.startingBalanceUsd,
+    minOrderNotionalUsd: DEFAULT_STRATEGY.minOrderNotionalUsd,
+    maxPositions: Math.max(config.maxPositions, DEFAULT_STRATEGY.maxPositions),
+    universeLimit: Math.max(config.universeLimit, DEFAULT_STRATEGY.universeLimit),
+  };
 }
 
 function inRange(value: string, min: string, max: string): boolean {

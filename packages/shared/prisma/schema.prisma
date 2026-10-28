@@ -26,15 +26,17 @@ model EngineControl {
 }
 
 model PaperAccount {
-  id                 String         @id @default("primary")
-  cashUsd            Decimal        @db.Decimal(24, 8)
-  startingBalanceUsd Decimal        @db.Decimal(24, 8)
-  highWaterMarkUsd   Decimal?       @db.Decimal(24, 8)
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
-  positions          Position[]
-  orders             Order[]
-  ledger             LedgerEntry[]
+  id                    String         @id @default("primary")
+  cashUsd               Decimal        @db.Decimal(24, 8)
+  startingBalanceUsd    Decimal        @db.Decimal(24, 8)
+  highWaterMarkUsd      Decimal?       @db.Decimal(24, 8)
+  sessionStartEquityUsd Decimal?       @db.Decimal(24, 8)
+  sessionStartedAt      DateTime?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  positions             Position[]
+  orders                Order[]
+  ledger                LedgerEntry[]
 }
 
 model MarketObservation {
@@ -308,30 +310,35 @@ model AgentDecision {
 }
 
 model Order {
-  id            String    @id @default(cuid())
-  clientOrderId String    @unique
-  cycleId       String
-  accountId     String
-  pairAddress   String
-  baseSymbol    String
-  side          String
-  intent        String
-  status        String
-  qty           Decimal   @db.Decimal(24, 8)
-  filledQty     Decimal   @default(0) @db.Decimal(24, 8)
-  reasonCodes   String[]
-  rejectReason  String?
-  observationId String?
-  submittedAt   DateTime  @default(now())
-  eligibleAt    DateTime?
-  expiresAt     DateTime?
-  createdAt     DateTime  @default(now())
-  account       PaperAccount @relation(fields: [accountId], references: [id])
-  fills         Fill[]
+  id              String    @id @default(cuid())
+  clientOrderId   String    @unique
+  cycleId         String
+  accountId       String
+  pairAddress     String
+  baseSymbol      String
+  side            String
+  intent          String
+  status          String
+  qty             Decimal   @db.Decimal(24, 8)
+  filledQty       Decimal   @default(0) @db.Decimal(24, 8)
+  reasonCodes     String[]
+  rejectReason    String?
+  observationId   String?
+  executionMode   String    @default("PAPER")
+  venue           String    @default("PAPER")
+  instrumentId    String?
+  strategyVersion String?
+  submittedAt     DateTime  @default(now())
+  eligibleAt      DateTime?
+  expiresAt       DateTime?
+  createdAt       DateTime  @default(now())
+  account         PaperAccount @relation(fields: [accountId], references: [id])
+  fills           Fill[]
 
   @@index([createdAt])
   @@index([cycleId])
   @@index([status, eligibleAt])
+  @@index([executionMode, venue])
 }
 
 model Fill {
