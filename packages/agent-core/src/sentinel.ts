@@ -41,7 +41,11 @@ export function runSentinel(
   if (reasons.length === 0) reasons.push("DATA_OK");
 
   const rejected = reasons.some(
-    (reason) => reason !== "DATA_OK" && reason !== "DATA_DELAYED" && reason !== "DISCOVERY_FILTERED",
+    (reason) =>
+      reason !== "DATA_OK" &&
+      reason !== "DATA_DELAYED" &&
+      reason !== "DISCOVERY_FILTERED" &&
+      !(reason === "DATA_DEMO" && config.allowDemoPaperEntries === true),
   );
   const score = discoveryScore(pair, pairAgeMinutes);
   const candidate: DiscoveryCandidate = {

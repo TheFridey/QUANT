@@ -55,13 +55,39 @@ export const TRADABLE_QUOTE_MINTS = [
 ] as const;
 
 export function isTradableQuote(quoteAddress: string): boolean {
-  return (TRADABLE_QUOTE_MINTS as readonly string[]).includes(quoteAddress);
+  if ((TRADABLE_QUOTE_MINTS as readonly string[]).includes(quoteAddress)) return true;
+  // Paper FX/ETF quotes settle in USD (or listed fiat codes) — not Solana mints.
+  const fiat = quoteAddress.trim().toUpperCase();
+  return fiat === "USD" || fiat === "EUR" || fiat === "GBP" || fiat === "JPY";
 }
 
+export function isPaperMultiMarketPair(pair: { chainId: string; source: string }): boolean {
+  return (
+    pair.chainId === "fx" ||
+    pair.chainId === "equity" ||
+    pair.source === "fx_stub" ||
+    pair.source === "etf_stub"
+  );
+}
+
+export const MARKET_SOURCES = [
+  "dexscreener",
+  "birdeye",
+  "replay",
+  "fx_stub",
+  "etf_stub",
+  "index_stub",
+] as const;
+export type MarketSource = (typeof MARKET_SOURCES)[number];
+
+export const MARKET_CHAIN_IDS = ["solana", "fx", "equity"] as const;
+export type MarketChainId = (typeof MARKET_CHAIN_IDS)[number];
+
 export const normalizedPairSchema = z.object({
-  source: z.enum(["dexscreener", "birdeye", "replay"]),
-  chainId: z.literal("solana"),
-  pairAddress: z.string().min(32).max(128),
+  source: z.enum(MARKET_SOURCES),
+  chainId: z.enum(MARKET_CHAIN_IDS),
+  /** Solana pair address or canonical paper instrument id (e.g. fx:EURUSD). */
+  pairAddress: z.string().min(1).max(128),
   dexId: z.string().min(1),
   url: z.string().nullable(),
   baseAddress: z.string().min(1),
@@ -111,14 +137,14 @@ export const operatorOrderSchema = z.discriminatedUnion("side", [
   z
     .object({
       side: z.literal("BUY"),
-      pairAddress: z.string().min(32).max(128),
+      pairAddress: z.string().min(1).max(128),
       notionalUsd: z.string().regex(/^\d+(\.\d{1,8})?$/),
     })
     .strict(),
   z
     .object({
       side: z.literal("SELL"),
-      pairAddress: z.string().min(32).max(128),
+      pairAddress: z.string().min(1).max(128),
     })
     .strict(),
 ]);

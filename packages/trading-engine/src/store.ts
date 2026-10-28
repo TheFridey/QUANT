@@ -154,7 +154,7 @@ async function fillExistingPending(
     });
     return { status: "REJECTED", reason: "MISSING_PRICE" };
   }
-  const freshness = classifyFreshness({
+  const freshness = resolveObservationFreshness(observation.freshness, {
     mode: input.mode,
     receivedAt: observation.receivedAt,
     now: input.now,
@@ -162,16 +162,20 @@ async function fillExistingPending(
     delayedMaxAgeMs: input.config.delayedMaxAgeMs,
   });
   if (input.order.side === "BUY" && freshness !== "LIVE") {
-    const reason = freshnessReason(freshness);
-    await tx.order.update({
-      where: { id: orderId },
-      data: { status: "REJECTED", rejectReason: reason },
-    });
-    return { status: "REJECTED", reason };
+    const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true;
+    if (!demoOk) {
+      const reason = freshnessReason(freshness);
+      await tx.order.update({
+        where: { id: orderId },
+        data: { status: "REJECTED", rejectReason: reason },
+      });
+      return { status: "REJECTED", reason };
+    }
   }
   if (input.order.side === "SELL" && freshness !== "LIVE") {
-    const allowed = freshness === "DELAYED" && input.config.allowDelayedExits;
-    if (!allowed) {
+    const delayedOk = freshness === "DELAYED" && input.config.allowDelayedExits;
+    const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true;
+    if (!delayedOk && !demoOk) {
       const reason = freshnessReason(freshness);
       await tx.order.update({
         where: { id: orderId },
@@ -300,7 +304,7 @@ async function fillCommittedOrder(
     await reject(tx, input, "MISSING_PRICE", expiresAt, eligibleAt);
     return { status: "REJECTED", reason: "MISSING_PRICE" };
   }
-  const freshness = classifyFreshness({
+  const freshness = resolveObservationFreshness(observation.freshness, {
     mode: input.mode,
     receivedAt: observation.receivedAt,
     now: input.now,
@@ -308,13 +312,17 @@ async function fillCommittedOrder(
     delayedMaxAgeMs: input.config.delayedMaxAgeMs,
   });
   if (input.order.side === "BUY" && freshness !== "LIVE") {
-    const reason = freshnessReason(freshness);
-    await reject(tx, input, reason, expiresAt, eligibleAt);
-    return { status: "REJECTED", reason };
+    const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true;
+    if (!demoOk) {
+      const reason = freshnessReason(freshness);
+      await reject(tx, input, reason, expiresAt, eligibleAt);
+      return { status: "REJECTED", reason };
+    }
   }
   if (input.order.side === "SELL" && freshness !== "LIVE") {
-    const allowed = freshness === "DELAYED" && input.config.allowDelayedExits;
-    if (!allowed) {
+    const delayedOk = freshness === "DELAYED" && input.config.allowDelayedExits;
+    const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true;
+    if (!delayedOk && !demoOk) {
       const reason = freshnessReason(freshness);
       await reject(tx, input, reason, expiresAt, eligibleAt);
       return { status: "REJECTED", reason };
@@ -423,6 +431,22 @@ async function fillCommittedOrder(
     data: { cashUsd: applied.state.cashUsd },
   });
   return { status: "FILLED", reason: "FILLED" };
+}
+
+function resolveObservationFreshness(
+  stored: string | null | undefined,
+  input: {
+    mode: DataMode;
+    receivedAt: Date;
+    now: Date;
+    liveMaxAgeMs: number;
+    delayedMaxAgeMs: number;
+  },
+) {
+  // Honour explicit DEMO provenance on stub FX/ETF rows — never promote to LIVE.
+  if (stored === "DEMO") return "DEMO" as const;
+  if (stored === "REPLAY") return "REPLAY" as const;
+  return classifyFreshness(input);
 }
 
 function freshnessReason(freshness: string): ReasonCode {

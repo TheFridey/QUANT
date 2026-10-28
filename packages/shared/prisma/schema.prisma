@@ -548,3 +548,62 @@ model AutonomyControl {
   updatedAt                  DateTime @updatedAt
   updatedBy                  String?
 }
+
+model RiskReservation {
+  id            String   @id @default(cuid())
+  accountId     String
+  clientOrderId String   @unique
+  status        String
+  cashUsd       Decimal  @db.Decimal(24, 8)
+  exposureUsd   Decimal  @db.Decimal(24, 8)
+  slots         Int
+  riskUsd       Decimal  @db.Decimal(24, 8)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([accountId, status])
+}
+
+model ProtectionOrder {
+  id              String   @id @default(cuid())
+  accountId       String
+  positionKey     String
+  ocoGroupId      String
+  kind            String
+  origin          String
+  triggerPriceUsd Decimal? @db.Decimal(24, 8)
+  trailPct        Decimal? @db.Decimal(16, 6)
+  status          String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([ocoGroupId])
+  @@index([positionKey, status])
+}
+
+model OpportunityFunnelEvent {
+  id           String   @id @default(cuid())
+  cycleId      String
+  pairAddress  String
+  instrumentId String?
+  stage        String
+  reasonCodes  String[]
+  detail       Json?
+  createdAt    DateTime @default(now())
+
+  @@index([cycleId])
+  @@index([stage, createdAt])
+}
+
+model DurableAlert {
+  id        String    @id @default(cuid())
+  severity  String    @default("INFO")
+  code      String
+  message   String
+  acked     Boolean   @default(false)
+  payload   Json?
+  createdAt DateTime  @default(now())
+  ackedAt   DateTime?
+
+  @@index([acked, createdAt])
+}

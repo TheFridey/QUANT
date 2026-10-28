@@ -48,17 +48,17 @@ Pre-change failures (environment, not trading-logic regressions):
 | 13 | AEGIS REVIEW/BLOCK entry-blocking; UNKNOWN honest | **CONFIRMED** | `aegis.ts` `blocksEntry` for BUY+BLOCK/REVIEW; UNKNOWN ≠ PASS; does not hard-block paper entry |
 | 14 | Green CI ≠ trading scenarios work | **CONFIRMED** | CI can pass unit tests while multi-market E2E / fault scenarios absent; sandbox tests fail locally without bwrap |
 
-## Validation after Gate A/B patches
+## Validation after Gate A/B/C continuation
 
 ```text
 pnpm build:packages   # ok
 pnpm typecheck        # ok
 pnpm lint             # ok
-pnpm test             # 143 passed / 1 skipped (bubblewrap available in this env)
+pnpm test             # 163 passed / 1 skipped
 ```
 
-Regression coverage added: `packages/agent-core/src/gate-a.regression.test.ts`, `packages/trading-engine/src/size.test.ts`, `packages/shared/src/{money,sessions,execution-gate}.test.ts`, `packages/market-data/src/fx-feed.test.ts`.
+Added: reservations, protection/OCO, correlation, reconcile, session-equity, strategy-library, funnel, paper-multimarket ingest, multi-market.e2e.
 
-Migration applied: `20261028220000_mvp_order_identity_session`.
+Migrations: `20261028220000_mvp_order_identity_session`, `20261028230000_mvp_reservations_funnel_alerts`.
 
 See REQUIREMENTS_MATRIX.md for status counts.

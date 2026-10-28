@@ -7,3 +7,4 @@ export * from "./registry.js";
 export * from "./index-feed.js";
 export * from "./fx-feed.js";
 export * from "./external-demo.js";
+export * from "./paper-multimarket.js";

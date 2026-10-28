@@ -1,6 +1,7 @@
 import {
   confidenceFixed,
   d,
+  isPaperMultiMarketPair,
   isTradableQuote,
   type CyclePair,
   type ObservationPoint,
@@ -9,6 +10,7 @@ import {
   type StrategyConfig,
   Decimal,
 } from "@odin/shared";
+import { evaluatePromotedStrategy } from "./strategy-library.js";
 import { MODEL_VERSIONS } from "./versions.js";
 import type { DecisionDraft, PlanInput, PositionView } from "./types.js";
 
@@ -122,6 +124,66 @@ export function runPulse(
     if (!held) return draft(pair, "HOLD", ["NO_INTENT"], "1.000000", {}, signal, started, baseMeta.inputSource);
     return draft(pair, "ACT", ["FULL_POSITION_EXIT"], "1.000000", { side: "SELL", intent: "FLATTEN" }, signal, started, baseMeta.inputSource);
   }
+
+  // Promoted strategy modules can drive intents when an activeStrategyId is set.
+  const promoted = evaluatePromotedStrategy({
+    strategyId: input.activeStrategyId,
+    pair,
+    config: input.config,
+    heldQty: position?.baseQty ?? "0",
+    history: (input.observationHistory?.[pair.pairAddress] ?? []).map((row) => ({
+      instrumentId: pair.pairAddress,
+      pairAddress: pair.pairAddress,
+      receivedAt: row.receivedAt,
+      priceUsd: row.priceUsd,
+      liquidityUsd: row.liquidityUsd,
+      volume24hUsd: row.volume24hUsd,
+      priceChangeM5Pct: row.priceChangeM5Pct,
+      priceChangeH1Pct: null,
+      txnsM5Buys: row.txnsM5Buys,
+      txnsM5Sells: row.txnsM5Sells,
+      dataState: pair.freshness,
+    })),
+  });
+  if (promoted) {
+    if (promoted.intent === "EXIT_LONG" && held) {
+      return draft(
+        pair,
+        "ACT",
+        ["FULL_POSITION_EXIT", ...(promoted.reasonCodes as never[])],
+        "1.000000",
+        { side: "SELL", intent: "EXIT", strategyId: input.activeStrategyId, signal },
+        signal,
+        started,
+        `strategy:${input.activeStrategyId}`,
+      );
+    }
+    if (promoted.intent === "ENTER_LONG" && !held && surveillance.decision !== "REJECT") {
+      return draft(
+        pair,
+        "ACT",
+        ["ENTRY_MOMENTUM", "PULSE_SIGNAL", ...(promoted.reasonCodes as never[])],
+        "1.000000",
+        { side: "BUY", intent: "ENTRY", strategyId: input.activeStrategyId, signal },
+        signal,
+        started,
+        `strategy:${input.activeStrategyId}`,
+      );
+    }
+    if (promoted.intent === "HOLD" || promoted.intent === "RESEARCH_NOTE") {
+      return draft(
+        pair,
+        "HOLD",
+        promoted.reasonCodes as never[],
+        "1.000000",
+        { strategyId: input.activeStrategyId, signal },
+        signal,
+        started,
+        `strategy:${input.activeStrategyId}`,
+      );
+    }
+  }
+
   if (!held && surveillance.decision === "REJECT") {
     return draft(pair, "HOLD", ["BLOCKED_BY_SENTINEL"], "1.000000", { signal }, signal, started, baseMeta.inputSource);
   }
@@ -177,7 +239,7 @@ export function runPulse(
     return draft(pair, "HOLD", ["MANIPULATION_WARNING", ...signal.reasonCodes], signal.confidence, { signal }, signal, started, baseMeta.inputSource);
   }
 
-  if (pair.priceChangeM5Pct === null || pair.priceChangeH1Pct === null || pair.txnsM5Buys === null || pair.txnsM5Sells === null) {
+  if (pair.priceChangeM5Pct === null || pair.priceChangeH1Pct === null) {
     return draft(pair, "HOLD", ["INSUFFICIENT_DATA", ...signal.reasonCodes.filter((code) => code !== "PULSE_SIGNAL")], "0.000000", { signal }, signal, started, baseMeta.inputSource);
   }
   if (!isTradableQuote(pair.quoteAddress)) {
@@ -185,6 +247,18 @@ export function runPulse(
   }
   if (d(pair.priceChangeM5Pct).abs().gt(input.config.maxEntryM5ChangePct)) {
     return draft(pair, "HOLD", ["PRICE_ANOMALY"], "1.000000", { priceChangeM5Pct: pair.priceChangeM5Pct, signal }, signal, started, baseMeta.inputSource);
+  }
+  // Paper FX/ETF: momentum thresholds without Solana buy/sell txn counts.
+  const multiMarket = isPaperMultiMarketPair(pair);
+  if (multiMarket) {
+    const entry =
+      d(pair.priceChangeM5Pct).gte(input.config.entryM5ChangePct) &&
+      d(pair.priceChangeH1Pct).gte(input.config.minH1ChangePct);
+    if (!entry) return draft(pair, "HOLD", ["NO_EDGE", ...signal.reasonCodes], "1.000000", { signal }, signal, started, baseMeta.inputSource);
+    return draft(pair, "ACT", ["ENTRY_MOMENTUM", "PULSE_SIGNAL", "PAPER_FX"], "0.700000", { side: "BUY", intent: "ENTRY", signal, market: pair.chainId }, signal, started, baseMeta.inputSource);
+  }
+  if (pair.txnsM5Buys === null || pair.txnsM5Sells === null) {
+    return draft(pair, "HOLD", ["INSUFFICIENT_DATA", ...signal.reasonCodes.filter((code) => code !== "PULSE_SIGNAL")], "0.000000", { signal }, signal, started, baseMeta.inputSource);
   }
   const entry =
     d(pair.priceChangeM5Pct).gte(input.config.entryM5ChangePct) &&

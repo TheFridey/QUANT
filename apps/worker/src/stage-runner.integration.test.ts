@@ -7,6 +7,7 @@ import { silentBus, StageRunner, type MarketFeed } from "./stage-runner.js";
 
 const databaseUrl = process.env.DATABASE_URL_TEST;
 const enabled = Boolean(databaseUrl && databaseUrl.includes("odin_test"));
+const solanaOnlyConfig = { ...DEFAULT_STRATEGY, multiMarketPaperIngest: false };
 
 describe.skipIf(!enabled)("paper cycle persistence", () => {
   let prisma: PrismaClient;
@@ -15,16 +16,16 @@ describe.skipIf(!enabled)("paper cycle persistence", () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
     await prisma.$executeRaw`SELECT pg_advisory_lock(641099)`;
     await prisma.$executeRawUnsafe(
-      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "ResearchProposal", "CycleRun", "PaperAccount", "EngineControl", "User" RESTART IDENTITY CASCADE`,
+      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "ResearchProposal", "CycleRun", "PaperAccount", "EngineControl", "User", "RiskReservation", "ProtectionOrder", "OpportunityFunnelEvent", "DurableAlert" RESTART IDENTITY CASCADE`,
     );
     await ensureFoundation(prisma, {
       email: process.env.ADMIN_EMAIL ?? "admin@odin.local",
       password: process.env.ADMIN_PASSWORD ?? "odin-paper-dev",
-      config: DEFAULT_STRATEGY,
+      config: solanaOnlyConfig,
     });
     await prisma.engineControl.update({
       where: { id: "primary" },
-      data: { status: "RUNNING", config: toJson(DEFAULT_STRATEGY) },
+      data: { status: "RUNNING", config: toJson(solanaOnlyConfig) },
     });
   });
 
@@ -114,7 +115,7 @@ describe.skipIf(!enabled)("paper cycle persistence", () => {
           observationId: fills[0]?.observationId ?? "",
           reasonCodes: ["ORDER_PROPOSED"],
         },
-        config: DEFAULT_STRATEGY,
+        config: solanaOnlyConfig,
         mode: "live",
         now: new Date(),
       });

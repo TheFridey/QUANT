@@ -71,6 +71,10 @@ export type PlanInput = {
   highWaterMarkUsd?: string | null;
   /** Current marked exposure of open positions. */
   aggregateExposureUsd?: string | null;
+  /** Account-wide entry suspension after reconcile unknown exposure. */
+  entriesSuspended?: boolean;
+  /** Active strategy module id when promotion drives decisions. */
+  activeStrategyId?: string | null;
   now?: Date;
 };
 

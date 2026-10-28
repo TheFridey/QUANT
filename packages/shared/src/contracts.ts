@@ -30,13 +30,13 @@ export type DiscoveryFilters = z.infer<typeof discoveryFiltersSchema>;
 
 export const discoveryCandidateSchema = z
   .object({
-    pairAddress: z.string().min(32).max(128),
+    pairAddress: z.string().min(1).max(128),
     baseAddress: z.string().min(1),
     baseSymbol: z.string().min(1),
     quoteAddress: z.string().min(1),
     quoteSymbol: z.string().min(1),
     dexId: z.string().min(1),
-    source: z.enum(["dexscreener", "birdeye", "replay"]),
+    source: z.enum(["dexscreener", "birdeye", "replay", "fx_stub", "etf_stub", "index_stub"]),
     priceUsd: decimalString.nullable(),
     liquidityUsd: decimalString.nullable(),
     volume24hUsd: decimalString.nullable(),
@@ -61,7 +61,7 @@ export type DiscoveryCandidate = z.infer<typeof discoveryCandidateSchema>;
 
 export const watchlistEntrySchema = z
   .object({
-    pairAddress: z.string().min(32).max(128),
+    pairAddress: z.string().min(1).max(128),
     baseAddress: z.string().min(1),
     baseSymbol: z.string().min(1),
     score: decimalString,
@@ -76,7 +76,7 @@ export type WatchlistEntry = z.infer<typeof watchlistEntrySchema>;
 
 export const pulseSignalSchema = z
   .object({
-    pairAddress: z.string().min(32).max(128),
+    pairAddress: z.string().min(1).max(128),
     score: decimalString.nullable(),
     confidence: decimalString,
     evidence: z.record(z.string(), z.unknown()),

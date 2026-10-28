@@ -22,7 +22,15 @@ export const strategyConfigSchema = z
     maxParticipationPctLiquidity: decimalString,
     minOrderNotionalUsd: decimalString,
     allowDelayedExits: z.boolean(),
+    /** Allow DEMO-labelled paper entries for FX/ETF stubs (never relabelled LIVE). */
+    allowDemoPaperEntries: z.boolean(),
+    /** Operator control: block new entries while still allowing risk-reducing exits. */
+    pauseNewEntries: z.boolean(),
+    /** Activate breakeven stop after this unrealized gain % (null = disabled). */
+    breakevenActivatePct: decimalString.nullable(),
     flattenOnEmergency: z.boolean(),
+    /** Include FX/ETF paper instruments in worker ingest alongside Solana. */
+    multiMarketPaperIngest: z.boolean(),
     universeLimit: z.number().int(),
     liveMaxAgeMs: z.number().int(),
     delayedMaxAgeMs: z.number().int(),
@@ -148,6 +156,13 @@ export const strategyConfigSchema = z
     if (value.relativeVolumeMin !== null && !inRange(value.relativeVolumeMin, "0", "100")) {
       ctx.addIssue({ code: "custom", path: ["relativeVolumeMin"], message: "Must be between 0 and 100 when set" });
     }
+    if (value.breakevenActivatePct !== null && !inRange(value.breakevenActivatePct, "0.1", "100")) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["breakevenActivatePct"],
+        message: "Must be between 0.1 and 100 when set",
+      });
+    }
     if (value.trailingStopPct !== null && !inRange(value.trailingStopPct, "0.1", "100")) {
       ctx.addIssue({ code: "custom", path: ["trailingStopPct"], message: "Must be between 0.1 and 100 when set" });
     }
@@ -190,7 +205,11 @@ export const strategyPatchSchema = z
     maxParticipationPctLiquidity: decimalString.optional(),
     minOrderNotionalUsd: decimalString.optional(),
     allowDelayedExits: z.boolean().optional(),
+    allowDemoPaperEntries: z.boolean().optional(),
+    pauseNewEntries: z.boolean().optional(),
+    breakevenActivatePct: decimalString.nullable().optional(),
     flattenOnEmergency: z.boolean().optional(),
+    multiMarketPaperIngest: z.boolean().optional(),
     universeLimit: z.number().int().optional(),
     liveMaxAgeMs: z.number().int().optional(),
     delayedMaxAgeMs: z.number().int().optional(),
@@ -238,7 +257,11 @@ export const DEFAULT_STRATEGY: StrategyConfig = {
   maxParticipationPctLiquidity: "1",
   minOrderNotionalUsd: "25",
   allowDelayedExits: true,
+  allowDemoPaperEntries: true,
+  pauseNewEntries: false,
+  breakevenActivatePct: "2",
   flattenOnEmergency: false,
+  multiMarketPaperIngest: true,
   universeLimit: 24,
   liveMaxAgeMs: 45000,
   delayedMaxAgeMs: 180000,

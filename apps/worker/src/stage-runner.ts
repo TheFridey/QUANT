@@ -1,6 +1,11 @@
 import { assessSecurity, planCycle, unknownAssessment, type DecisionDraft } from "@odin/agent-core";
 import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
-import { BirdeyeClient, fetchSolanaUniverse, type ProviderResult } from "@odin/market-data";
+import {
+  BirdeyeClient,
+  buildPaperMultiMarketPairs,
+  fetchSolanaUniverse,
+  type ProviderResult,
+} from "@odin/market-data";
 import type { NormalizedPair, ObservationPoint, SecurityAssessment } from "@odin/shared";
 import {
   AGENT_BUS_CHANNEL,
@@ -272,7 +277,11 @@ export class StageRunner {
       return;
     }
     const result = await this.feed.fetchUniverse(config.universeLimit);
-    if (!result.ok) {
+    const paperExtras =
+      config.multiMarketPaperIngest === true
+        ? buildPaperMultiMarketPairs({ now })
+        : [];
+    if (!result.ok && paperExtras.length === 0) {
       await this.prisma.cycleRun.update({
         where: { id: cycleId },
         data: { dataState: "STALE", observationCount: 0, error: result.error },
@@ -280,7 +289,10 @@ export class StageRunner {
       await upsertDecision(this.prisma, cycleId, emptyDecision("UPSTREAM_UNAVAILABLE", result.error));
       return;
     }
-    for (const pair of result.data) {
+    const solanaPairs = result.ok ? result.data : [];
+    let liveCount = 0;
+    let demoCount = 0;
+    for (const pair of solanaPairs) {
       const freshness = classifyFreshness({
         mode: "live",
         receivedAt: now,
@@ -293,18 +305,35 @@ export class StageRunner {
         create: observationData(cycleId, pair, freshness, now),
         update: {},
       });
+      liveCount += 1;
     }
-    const state: DataState = result.data.length === 0 ? "STALE" : "LIVE";
+    for (const pair of paperExtras) {
+      // Explicit DEMO — never labelled LIVE.
+      await this.prisma.marketObservation.upsert({
+        where: { ingestJobId_pairAddress: { ingestJobId: cycleId, pairAddress: pair.pairAddress } },
+        create: observationData(cycleId, pair, "DEMO", now),
+        update: {},
+      });
+      demoCount += 1;
+    }
+    const total = liveCount + demoCount;
+    const state: DataState =
+      liveCount > 0 ? "LIVE" : demoCount > 0 ? "DEMO" : "STALE";
     await this.prisma.cycleRun.update({
       where: { id: cycleId },
       data: {
         dataState: state,
-        observationCount: result.data.length,
-        error: result.data.length === 0 ? "DexScreener returned no Solana pairs" : null,
+        observationCount: total,
+        error:
+          total === 0
+            ? "DexScreener returned no Solana pairs and multi-market paper ingest empty"
+            : !result.ok
+              ? `Solana upstream unavailable; paper multi-market DEMO rows ingested (${demoCount})`
+              : null,
       },
     });
-    if (result.data.length === 0) {
-      await upsertDecision(this.prisma, cycleId, emptyDecision("EMPTY_UNIVERSE", "DexScreener returned no Solana pairs"));
+    if (total === 0) {
+      await upsertDecision(this.prisma, cycleId, emptyDecision("EMPTY_UNIVERSE", "No Solana or paper multi-market pairs"));
     }
   }
 
@@ -798,6 +827,7 @@ function toCyclePair(
   row: {
     id: string;
     source: string;
+    chainId?: string;
     pairAddress: string;
     dexId: string;
     url: string | null;
@@ -818,16 +848,27 @@ function toCyclePair(
     pairCreatedAt?: Date | null;
     fdvUsd?: { toString(): string } | null;
     marketCapUsd?: { toString(): string } | null;
+    freshness?: string;
     receivedAt: Date;
   },
   now: Date,
   config: StrategyConfig,
   mode: DataMode,
 ): CyclePair {
-  const source = row.source === "birdeye" || row.source === "replay" ? row.source : "dexscreener";
+  const source =
+    row.source === "birdeye" ||
+    row.source === "replay" ||
+    row.source === "fx_stub" ||
+    row.source === "etf_stub" ||
+    row.source === "index_stub"
+      ? row.source
+      : "dexscreener";
+  const chainId =
+    row.chainId === "fx" || row.chainId === "equity" || row.chainId === "solana" ? row.chainId : source === "fx_stub" ? "fx" : source === "etf_stub" || source === "index_stub" ? "equity" : "solana";
+  const stubDemo = source === "fx_stub" || source === "etf_stub" || source === "index_stub" || row.freshness === "DEMO";
   return {
     source,
-    chainId: "solana",
+    chainId,
     pairAddress: row.pairAddress,
     dexId: row.dexId,
     url: row.url,
@@ -849,13 +890,15 @@ function toCyclePair(
     fdvUsd: row.fdvUsd?.toString() ?? null,
     marketCapUsd: row.marketCapUsd?.toString() ?? null,
     observationId: row.id,
-    freshness: classifyFreshness({
-      mode,
-      receivedAt: row.receivedAt,
-      now,
-      liveMaxAgeMs: config.liveMaxAgeMs,
-      delayedMaxAgeMs: config.delayedMaxAgeMs,
-    }),
+    freshness: stubDemo
+      ? "DEMO"
+      : classifyFreshness({
+          mode,
+          receivedAt: row.receivedAt,
+          now,
+          liveMaxAgeMs: config.liveMaxAgeMs,
+          delayedMaxAgeMs: config.delayedMaxAgeMs,
+        }),
     receivedAt: row.receivedAt.toISOString(),
   };
 }
