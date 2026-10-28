@@ -79,3 +79,11 @@ ORACLE keeps a persistent queue with thirteen capabilities: performance review, 
 Limits reject duplicate fingerprints, extra concurrent work, retries above the cap, and daily spend above the decimal cap. Repeated failures terminate the queue. A file snapshot reloads spend and items in a new process. The API enqueue path applies the same limits to `ResearchQueueItem` rows and hardcodes `aiDiscovery` false. Research centre responses include the capability list and the deterministic proposals. Null returns stay null.
 
 `pnpm exec vitest run packages/evolution/src/oracle-research.test.ts` — 2 passed. `pnpm typecheck` and `pnpm lint` passed.
+
+## Phase 6 — ARCHIVIST trade intelligence
+
+Completed 2026-10-28 17:35.
+
+Reconstruction keeps BEFORE (market structure, momentum, liquidity, volume, volatility, agent signals, historical context, strategy version, entry hypothesis, risk calculations), DURING (price path, MFE, MAE, slippage, liquidity changes, regime, risk events, execution events), and AFTER (exit rationale, net P&L, costs, compliance, post-exit behaviour, missed opportunities, unexpected outcomes) as separate records. Entry features are built only from `memoryForEntryDecision`, which drops AFTER and post-exit rows and omits P&L and exit fields. Winner and loser cohorts require a decimal net P&L. A missing net result is `UNMEASURABLE` and is not counted as a winner. The API exposes `/evolution/memory/reconstruction` and `/evolution/memory/factors` from persisted `TradeMemory` rows.
+
+`pnpm exec vitest run packages/evolution/src/archivist.test.ts packages/evolution/src/challenge.test.ts` — 6 passed. `pnpm typecheck` and `pnpm lint` passed.

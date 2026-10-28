@@ -65,6 +65,16 @@ export class EvolutionController {
     return this.evolution.genome();
   }
 
+  @Get("memory/reconstruction")
+  reconstruction(@Query("tradeId") tradeId?: string) {
+    return this.evolution.reconstructMemory(tradeId);
+  }
+
+  @Get("memory/factors")
+  factors() {
+    return this.evolution.memoryFactors();
+  }
+
   @Get("memory")
   memory(
     @Query("q") q?: string,

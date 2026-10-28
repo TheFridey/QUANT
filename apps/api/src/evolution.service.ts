@@ -8,6 +8,9 @@ import {
   ModelRouter,
   assertKnownTier,
   capturePhaseContext,
+  featuresForEntry,
+  queryWinnersAndLosers,
+  reconstructTrade,
   compareStrategies,
   createOracleSupervisor,
   dailyBriefing,
@@ -455,6 +458,44 @@ export class EvolutionService {
       includePostExit: query.includePostExit !== "false",
       limit: query.limit ? Number(query.limit) : 50,
     });
+  }
+
+  async reconstructMemory(tradeId?: string) {
+    const rows = await this.prisma.tradeMemory.findMany({
+      where: tradeId ? { tradeId } : undefined,
+      orderBy: { capturedAt: "asc" },
+      take: 500,
+    });
+    const records = rows.map((row) => ({
+      tradeId: row.tradeId,
+      pairAddress: row.pairAddress,
+      phase: row.phase as "BEFORE" | "DURING" | "AFTER",
+      capturedAt: row.capturedAt.toISOString(),
+      context: row.context as Record<string, unknown>,
+      postExit: row.postExit,
+    }));
+    const ids = [...new Set(records.map((row) => row.tradeId))];
+    return ids.map((id) => {
+      const scoped = records.filter((row) => row.tradeId === id);
+      return {
+        reconstruction: reconstructTrade(scoped),
+        entry: featuresForEntry({ records: scoped }, id),
+      };
+    });
+  }
+
+  async memoryFactors() {
+    const rows = await this.prisma.tradeMemory.findMany({ orderBy: { capturedAt: "asc" }, take: 500 });
+    return queryWinnersAndLosers(
+      rows.map((row) => ({
+        tradeId: row.tradeId,
+        pairAddress: row.pairAddress,
+        phase: row.phase as "BEFORE" | "DURING" | "AFTER",
+        capturedAt: row.capturedAt.toISOString(),
+        context: row.context as Record<string, unknown>,
+        postExit: row.postExit,
+      })),
+    );
   }
 
   async recordMemory(body: unknown) {

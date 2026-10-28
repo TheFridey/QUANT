@@ -4,6 +4,7 @@ export * from "./forge.js";
 export * from "./challenge.js";
 export * from "./validate.js";
 export * from "./memory.js";
+export * from "./archivist.js";
 export * from "./lifecycle.js";
 export * from "./autonomy.js";
 export * from "./oracle-supervisor.js";
