@@ -106,3 +106,22 @@ The command centre keeps its existing shell. New modules read persisted API stat
 Browser check on 2026-10-28 17:40 Europe/London with headless Chrome: logged in as the local admin, opened Research Operations, FORGE Monitor, AI Model Operations, Strategy Evolution, Data Integrity, Research Confidence, and Research Memory at desktop width, and Research Confidence at 390px. Confidence badge class for `PIPELINE_COMPLETED` was `border-border text-muted`. Panel copy showed return unavailable. FORGE showed no stored reports. Integrity showed one usable observation. Model operations showed `challenge-primary` and unavailable endpoints. Research operations showed `REVIEW_PERFORMANCE`.
 
 `pnpm typecheck` and `pnpm lint` passed.
+
+## Phase 8 — Acceptance
+
+Completed 2026-10-28 17:45.
+
+`packages/evolution/src/acceptance.test.ts` drives a fixture provider whose model field is `FIXTURE`. That fixture is not a live model. No live provider call was made. With bubblewrap available, two compiled sources produced different signals (`HOLD` versus `ENTER_LONG`) and different source hashes. The pipeline report verifies, keeps a null return unmeasurable, and proposes a follow-up experiment. FORGE and CHALLENGE endpoints stay distinct.
+
+Missing prices produce no fills and a null return. Demo freshness does not become a measured entry. An unconfigured router returns `UNAVAILABLE` and does not record a successful model call. A generated source that reaches for the host canary does not surface that value. `reviewPromotion` leaves `appliedToPaperEngine` false for both unreviewed and approved inputs, so this phase does not write `EngineControl`. Autonomy schema rejects real-money execution and unreviewed deploy. `submitOrder` remains the paper-engine path and contains no live-broker submission. Deterministic ORACLE proposals keep a null return and `aiDiscovery: false`. Entry features omit after-trade P&L.
+
+`pnpm exec vitest run packages/evolution/src/acceptance.test.ts` — 2 passed. `pnpm test` — 29 files, 96 passed, 1 skipped (optional live provider). `pnpm typecheck` and `pnpm lint` passed.
+
+## Remaining limitations
+
+- Bubblewrap is a user-namespace sandbox with the host `/usr` tree mounted read-only so Node and `prlimit` can start. It is not a virtual machine and it does not install a seccomp profile. If `bwrap` is absent, generated-code execution stays disabled and signals are not claimed.
+- No live model call has been made. Unconfigured providers stay `UNAVAILABLE`.
+- No strategy in these tests reached statistical, out-of-sample, forward-paper, or deployment eligibility. A null return stays unmeasurable.
+- Approved promotion still does not copy a strategy into the paper engine. That write remains an explicit future operator action.
+- Equity index data is unchanged: the adapter does not invent live index prints.
+- Docker is not installed on this machine. Isolation uses bubblewrap.
