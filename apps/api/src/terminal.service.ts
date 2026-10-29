@@ -39,6 +39,9 @@ import {
   resolveExecutionContext,
   stageJobId,
   parseStrategyConfig,
+  isOperationalStrategyKey,
+  strategyPatchHasNonOperationalKeys,
+  strategyPatchOnlyOperational,
   strategyPatchSchema,
   usd,
   evaluateSession,
@@ -1016,7 +1019,19 @@ export class TerminalService {
       const input = parseBodySafe(emergencyStopSchema, body ?? {});
       flattenRequested = Boolean(input.flatten);
     }
-    if (action === "resume" || action === "start") flattenRequested = false;
+    // D16: resume/start must not silently clear an incomplete flatten request.
+    if ((action === "resume" || action === "start") && flattenRequested) {
+      const config = this.readConfig(engine.config);
+      const tradingEnvironment = config?.tradingEnvironment ?? "MARKET_DATA_PAPER";
+      const ctx = resolveExecutionContext({
+        config: { tradingEnvironment },
+        dataMode: this.mode(),
+      });
+      const open = await this.prisma.position.count({
+        where: { accountId: ctx.accountId, baseQty: { gt: 0 } },
+      });
+      if (open === 0) flattenRequested = false;
+    }
     const updated = await this.prisma.engineControl.update({
       where: { id: "primary" },
       data: { status: next, flattenRequested, updatedBy: actor },
@@ -1036,15 +1051,20 @@ export class TerminalService {
     const parsedPatch = strategyPatchSchema.parse(patch);
     const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     if (!engine) throw new NotFoundException("Engine is not initialised");
-    if (engine.status === "RUNNING") throw new ConflictException("Pause the engine before changing risk limits");
+    const patchRecord = parsedPatch as Record<string, unknown>;
+    const operationalOnly = strategyPatchOnlyOperational(patchRecord);
+    // D16: operational flags work while RUNNING; strategy/risk patches still require pause.
+    if (engine.status === "RUNNING" && strategyPatchHasNonOperationalKeys(patchRecord)) {
+      throw new ConflictException("Pause the engine before changing risk limits");
+    }
     const current = parseStrategyConfig(engine.config);
     if (promotedPaperStrategy(engine.activeStrategy)) {
-      const changed = Object.entries(parsedPatch).some(([key, value]) => {
-        if (value === undefined) return false;
+      const strategyChanged = Object.entries(parsedPatch).some(([key, value]) => {
+        if (value === undefined || isOperationalStrategyKey(key)) return false;
         const currentValue = (current as Record<string, unknown>)[key];
         return String(currentValue) !== String(value);
       });
-      if (changed) {
+      if (strategyChanged) {
         throw new ConflictException("The promoted paper strategy stays unchanged until a new operator promotion");
       }
     }
@@ -1056,13 +1076,45 @@ export class TerminalService {
       where: { id: "primary" },
       data: { config: toJson(next), updatedBy: actor },
     });
-    return { config: parseStrategyConfig(updated.config), status: updated.status };
+    return {
+      config: parseStrategyConfig(updated.config),
+      status: updated.status,
+      operationalOnly,
+      configRevision: updated.updatedAt.toISOString(),
+    };
   }
 
   async submitOrder(body: unknown) {
     const order = operatorOrderSchema.parse(body);
     const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
-    if (!engine || engine.status !== "RUNNING") throw new ConflictException("Paper orders are accepted only while the engine is running");
+    if (!engine) throw new ConflictException("Paper orders are accepted only while the engine is initialised");
+    // D16/D19: BUY requires RUNNING; reduce-only SELL allowed while PAUSED.
+    if (order.side === "BUY" && engine.status !== "RUNNING") {
+      throw new ConflictException("Paper buys are accepted only while the engine is running");
+    }
+    if (order.side === "SELL" && engine.status !== "RUNNING" && engine.status !== "PAUSED") {
+      throw new ConflictException("Reduce-only closes are accepted while running or paused");
+    }
+
+    const clientIntentId = order.clientIntentId ?? null;
+    if (clientIntentId) {
+      const existing = await this.findOperatorCycleByIntent(clientIntentId);
+      if (existing) return this.presentOrderReceipt(existing.id, clientIntentId, true);
+    }
+
+    const config = this.readConfig(engine.config);
+    const tradingEnvironment = config?.tradingEnvironment ?? "MARKET_DATA_PAPER";
+    const ctx = resolveExecutionContext({
+      config: { tradingEnvironment },
+      dataMode: this.mode(),
+    });
+    const pinned = {
+      accountId: ctx.accountId,
+      tradingEnvironment: ctx.tradingEnvironment,
+      dataMode: ctx.dataMode,
+      metricsAccountId: ctx.metricsAccountId,
+      configRevision: engine.updatedAt.toISOString(),
+    };
     const cycleId = newId("cyc");
     await this.prisma.cycleRun.create({
       data: {
@@ -1071,6 +1123,11 @@ export class TerminalService {
         status: "RUNNING",
         stage: "created",
         dataState: "PENDING",
+        accountId: pinned.accountId,
+        tradingEnvironment: pinned.tradingEnvironment,
+        dataMode: pinned.dataMode,
+        configRevision: pinned.configRevision,
+        pinnedContext: pinned as object,
         operator: toJson(order),
         startedAt: new Date(),
       },
@@ -1080,23 +1137,68 @@ export class TerminalService {
       { cycleId, trigger: "operator" },
       { jobId: stageJobId("ingest", cycleId), attempts: 3, removeOnComplete: 100, removeOnFail: 50 },
     );
-    const deadline = Date.now() + 12_000;
-    let cycle = await this.prisma.cycleRun.findUnique({ where: { id: cycleId } });
-    while (cycle && cycle.status === "RUNNING" && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      cycle = await this.prisma.cycleRun.findUnique({ where: { id: cycleId } });
+    // D19: accept asynchronously — do not block 12s and label in-flight work as an error.
+    return this.presentOrderReceipt(cycleId, clientIntentId, false);
+  }
+
+  async orderReceipt(query: { cycleId?: string; clientIntentId?: string }) {
+    const cycleId = query.cycleId?.trim();
+    const clientIntentId = query.clientIntentId?.trim();
+    if (!cycleId && !clientIntentId) {
+      throw new NotFoundException("Provide cycleId or clientIntentId");
     }
+    if (cycleId) return this.presentOrderReceipt(cycleId, clientIntentId ?? null, false);
+    const existing = await this.findOperatorCycleByIntent(clientIntentId!);
+    if (!existing) throw new NotFoundException("No operator intent receipt found");
+    return this.presentOrderReceipt(existing.id, clientIntentId!, true);
+  }
+
+  private async findOperatorCycleByIntent(clientIntentId: string) {
+    const recent = await this.prisma.cycleRun.findMany({
+      where: { trigger: "operator" },
+      orderBy: { startedAt: "desc" },
+      take: 80,
+    });
+    return (
+      recent.find((row) => {
+        if (!row.operator || typeof row.operator !== "object" || Array.isArray(row.operator)) return false;
+        return (row.operator as { clientIntentId?: unknown }).clientIntentId === clientIntentId;
+      }) ?? null
+    );
+  }
+
+  private async presentOrderReceipt(cycleId: string, clientIntentId: string | null, replayed: boolean) {
+    const cycle = await this.prisma.cycleRun.findUnique({ where: { id: cycleId } });
+    if (!cycle) throw new NotFoundException(`Operator cycle ${cycleId} not found`);
     const orders = await this.prisma.order.findMany({ where: { cycleId }, include: { fills: true } });
+    const status = cycle.status;
+    const pending = status === "RUNNING";
     return {
       cycleId,
-      status: cycle?.status ?? "RUNNING",
-      error: cycle?.error ?? null,
+      clientIntentId,
+      accepted: true,
+      replayed,
+      pending,
+      status,
+      stage: cycle.stage,
+      error: cycle.error ?? null,
+      message: pending
+        ? "Order accepted — worker cycle still running"
+        : status === "COMPLETE"
+          ? "Order cycle complete"
+          : `Order cycle ${status}`,
       orders: orders.map((item) => ({
+        id: item.id,
+        clientOrderId: item.clientOrderId,
         status: item.status,
         side: item.side,
         qty: item.qty.toString(),
         rejectReason: item.rejectReason,
-        fills: item.fills.map((fill) => ({ priceUsd: fill.priceUsd.toString(), qty: fill.qty.toString(), feeUsd: fill.feeUsd.toString() })),
+        fills: item.fills.map((fill) => ({
+          priceUsd: fill.priceUsd.toString(),
+          qty: fill.qty.toString(),
+          feeUsd: fill.feeUsd.toString(),
+        })),
       })),
     };
   }

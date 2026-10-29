@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel } from "@/components/terminal/panel";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { Button } from "@/components/ui/button";
@@ -18,22 +18,59 @@ type StrategyVersion = {
   config: Record<string, unknown>;
 };
 
+type DraftFields = {
+  balance: string;
+  maxPositions: string;
+  entry: string;
+  anomaly: string;
+  stop: string;
+  target: string;
+  trailing: string;
+  relVol: string;
+  minSamples: string;
+};
+
+function draftFromConfig(config: Record<string, string | number | boolean | null>): DraftFields {
+  return {
+    balance: String(config.startingBalanceUsd ?? ""),
+    maxPositions: String(config.maxPositions ?? ""),
+    entry: String(config.entryM5ChangePct ?? ""),
+    anomaly: String(config.maxEntryM5ChangePct ?? ""),
+    stop: String(config.stopLossPct ?? ""),
+    target: String(config.takeProfitPct ?? ""),
+    trailing: config.trailingStopPct == null ? "" : String(config.trailingStopPct),
+    relVol: config.relativeVolumeMin == null ? "" : String(config.relativeVolumeMin),
+    minSamples: String(config.minSampleTrades ?? 30),
+  };
+}
+
+function draftsEqual(a: DraftFields, b: DraftFields): boolean {
+  return (
+    a.balance === b.balance &&
+    a.maxPositions === b.maxPositions &&
+    a.entry === b.entry &&
+    a.anomaly === b.anomaly &&
+    a.stop === b.stop &&
+    a.target === b.target &&
+    a.trailing === b.trailing &&
+    a.relVol === b.relVol &&
+    a.minSamples === b.minSamples
+  );
+}
+
 export function StrategySection() {
   const { snapshot, refresh } = useSnapshot();
   const config = snapshot?.engine.config;
-  const [balance, setBalance] = useState("");
-  const [maxPositions, setMaxPositions] = useState("");
-  const [entry, setEntry] = useState("");
-  const [anomaly, setAnomaly] = useState("");
-  const [stop, setStop] = useState("");
-  const [target, setTarget] = useState("");
-  const [trailing, setTrailing] = useState("");
-  const [relVol, setRelVol] = useState("");
-  const [minSamples, setMinSamples] = useState("30");
+  const configRevision = snapshot?.engine.updatedAt ?? null;
+  const [draft, setDraft] = useState<DraftFields | null>(null);
+  const [baselineRevision, setBaselineRevision] = useState<string | null>(null);
+  const [baselineDraft, setBaselineDraft] = useState<DraftFields | null>(null);
+  const [serverConflict, setServerConflict] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [versions, setVersions] = useState<StrategyVersion[]>([]);
   const [versionName, setVersionName] = useState("default");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const dirtyRef = useRef(false);
 
   const loadVersions = useCallback(async () => {
     try {
@@ -49,23 +86,58 @@ export function StrategySection() {
     void loadVersions();
   }, [loadVersions]);
 
+  // D17: key drafts by config revision; preserve dirty edits across snapshot polls.
   useEffect(() => {
-    if (!config) return;
-    setBalance(String(config.startingBalanceUsd ?? ""));
-    setMaxPositions(String(config.maxPositions ?? ""));
-    setEntry(String(config.entryM5ChangePct ?? ""));
-    setAnomaly(String(config.maxEntryM5ChangePct ?? ""));
-    setStop(String(config.stopLossPct ?? ""));
-    setTarget(String(config.takeProfitPct ?? ""));
-    setTrailing(config.trailingStopPct == null ? "" : String(config.trailingStopPct));
-    setRelVol(config.relativeVolumeMin == null ? "" : String(config.relativeVolumeMin));
-    setMinSamples(String(config.minSampleTrades ?? 30));
-  }, [config]);
+    if (!config || !configRevision) return;
+    const next = draftFromConfig(config);
+    if (baselineRevision === null) {
+      setDraft(next);
+      setBaselineDraft(next);
+      setBaselineRevision(configRevision);
+      setServerConflict(false);
+      dirtyRef.current = false;
+      return;
+    }
+    if (configRevision === baselineRevision) return;
+    if (dirtyRef.current) {
+      setServerConflict(true);
+      return;
+    }
+    setDraft(next);
+    setBaselineDraft(next);
+    setBaselineRevision(configRevision);
+    setServerConflict(false);
+  }, [config, configRevision, baselineRevision]);
 
-  if (!snapshot) return null;
+  const dirty = useMemo(() => {
+    if (!draft || !baselineDraft) return false;
+    return !draftsEqual(draft, baselineDraft);
+  }, [draft, baselineDraft]);
 
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+
+  if (!snapshot || !draft) return null;
+
+  const activeDraft = draft;
   const ops = snapshot.opsControls;
   const instances = snapshot.strategyInstances ?? [];
+
+  function updateField<K extends keyof DraftFields>(key: K, value: DraftFields[K]) {
+    setDraft((current) => (current ? { ...current, [key]: value } : current));
+  }
+
+  function resetDraftToServer() {
+    if (!config || !configRevision) return;
+    const next = draftFromConfig(config);
+    setDraft(next);
+    setBaselineDraft(next);
+    setBaselineRevision(configRevision);
+    setServerConflict(false);
+    dirtyRef.current = false;
+    setMessage("Draft reset to server config.");
+  }
 
   async function patchOpsFlag(flag: "pauseNewEntries" | "allowDemoPaperEntries" | "multiMarketPaperIngest", value: boolean) {
     setMessage(null);
@@ -75,7 +147,7 @@ export function StrategySection() {
         body: JSON.stringify({ [flag]: value }),
       });
       await refresh();
-      setMessage(`Ops flag ${flag}=${value} saved (engine must be paused).`);
+      setMessage(`Ops flag ${flag}=${value} applied (works while RUNNING).`);
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Ops flag rejected");
     }
@@ -88,15 +160,15 @@ export function StrategySection() {
       await api("/engine/config", {
         method: "PATCH",
         body: JSON.stringify({
-          startingBalanceUsd: balance,
-          maxPositions: Number(maxPositions),
-          entryM5ChangePct: entry,
-          maxEntryM5ChangePct: anomaly,
-          stopLossPct: stop,
-          takeProfitPct: target,
-          trailingStopPct: trailing === "" ? null : trailing,
-          relativeVolumeMin: relVol === "" ? null : relVol,
-          minSampleTrades: Number(minSamples),
+          startingBalanceUsd: activeDraft.balance,
+          maxPositions: Number(activeDraft.maxPositions),
+          entryM5ChangePct: activeDraft.entry,
+          maxEntryM5ChangePct: activeDraft.anomaly,
+          stopLossPct: activeDraft.stop,
+          takeProfitPct: activeDraft.target,
+          trailingStopPct: activeDraft.trailing === "" ? null : activeDraft.trailing,
+          relativeVolumeMin: activeDraft.relVol === "" ? null : activeDraft.relVol,
+          minSampleTrades: Number(activeDraft.minSamples),
         }),
       });
       await refresh();
@@ -115,15 +187,15 @@ export function StrategySection() {
           name: versionName,
           notes: "Snapshot from Strategy Laboratory",
           config: {
-            startingBalanceUsd: balance,
-            maxPositions: Number(maxPositions),
-            entryM5ChangePct: entry,
-            maxEntryM5ChangePct: anomaly,
-            stopLossPct: stop,
-            takeProfitPct: target,
-            trailingStopPct: trailing === "" ? null : trailing,
-            relativeVolumeMin: relVol === "" ? null : relVol,
-            minSampleTrades: Number(minSamples),
+            startingBalanceUsd: activeDraft.balance,
+            maxPositions: Number(activeDraft.maxPositions),
+            entryM5ChangePct: activeDraft.entry,
+            maxEntryM5ChangePct: activeDraft.anomaly,
+            stopLossPct: activeDraft.stop,
+            takeProfitPct: activeDraft.target,
+            trailingStopPct: activeDraft.trailing === "" ? null : activeDraft.trailing,
+            relativeVolumeMin: activeDraft.relVol === "" ? null : activeDraft.relVol,
+            minSampleTrades: Number(activeDraft.minSamples),
           },
         }),
       });
@@ -168,7 +240,10 @@ export function StrategySection() {
             </div>
           </dl>
           <div className="space-y-2 text-xs">
-            <p className="text-muted">{ops?.note ?? "Alert ACK does not clear safety suspensions."}</p>
+            <p className="text-muted">
+              {ops?.note ?? "Alert ACK does not clear safety suspensions."} Operational flags apply while RUNNING;
+              strategy parameters still require pause.
+            </p>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -234,22 +309,38 @@ export function StrategySection() {
       </Panel>
 
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-      <Panel title="Strategy laboratory" extra={`Engine ${snapshot.engine.status}`} className="animate-odin-fade">
+      <Panel
+        title="Strategy laboratory"
+        extra={dirty ? "Unsaved draft" : `rev ${configRevision?.slice(0, 19) ?? "—"}`}
+        className="animate-odin-fade"
+      >
         <form className="grid max-w-xl gap-3 p-4" onSubmit={(event) => void saveEngine(event)}>
           <p className="text-xs text-muted">
-            Pause the engine before saving live config. Starting balance changes only while stopped and before any order.
-            Version snapshots feed Backtesting / ORACLE — they never auto-graduate to real money (no real-money venue).
+            Pause the engine before saving live strategy config. Starting balance changes only while stopped and before any order.
+            Drafts survive snapshot polling until you reset or save.
           </p>
-          <Field id="balance" label="Starting balance USD" value={balance} onChange={setBalance} />
-          <Field id="positions" label="Max positions" value={maxPositions} onChange={setMaxPositions} />
-          <Field id="entry" label="Entry 5-minute change %" value={entry} onChange={setEntry} />
-          <Field id="anomaly" label="Maximum 5-minute change %" value={anomaly} onChange={setAnomaly} />
-          <Field id="stop" label="Stop loss %" value={stop} onChange={setStop} />
-          <Field id="target" label="Take profit %" value={target} onChange={setTarget} />
-          <Field id="trailing" label="Trailing stop % (empty = off)" value={trailing} onChange={setTrailing} />
-          <Field id="relvol" label="Relative volume min (empty = off)" value={relVol} onChange={setRelVol} />
-          <Field id="minsamples" label="Min sample trades (release gate)" value={minSamples} onChange={setMinSamples} />
-          {message ? <p className={`text-sm ${message.includes("saved") || message.includes("stored") ? "text-profit" : "text-loss"}`}>{message}</p> : null}
+          {serverConflict ? (
+            <div className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+              Server config revision changed while you had unsaved edits.{" "}
+              <button type="button" className="underline" onClick={resetDraftToServer}>
+                Discard draft and load server
+              </button>
+            </div>
+          ) : null}
+          <Field id="balance" label="Starting balance USD" value={activeDraft.balance} onChange={(v) => updateField("balance", v)} />
+          <Field id="positions" label="Max positions" value={activeDraft.maxPositions} onChange={(v) => updateField("maxPositions", v)} />
+          <Field id="entry" label="Entry 5-minute change %" value={activeDraft.entry} onChange={(v) => updateField("entry", v)} />
+          <Field id="anomaly" label="Maximum 5-minute change %" value={activeDraft.anomaly} onChange={(v) => updateField("anomaly", v)} />
+          <Field id="stop" label="Stop loss %" value={activeDraft.stop} onChange={(v) => updateField("stop", v)} />
+          <Field id="target" label="Take profit %" value={activeDraft.target} onChange={(v) => updateField("target", v)} />
+          <Field id="trailing" label="Trailing stop % (empty = off)" value={activeDraft.trailing} onChange={(v) => updateField("trailing", v)} />
+          <Field id="relvol" label="Relative volume min (empty = off)" value={activeDraft.relVol} onChange={(v) => updateField("relVol", v)} />
+          <Field id="minsamples" label="Min sample trades (release gate)" value={activeDraft.minSamples} onChange={(v) => updateField("minSamples", v)} />
+          {message ? (
+            <p className={`text-sm ${message.includes("saved") || message.includes("stored") || message.includes("applied") || message.includes("reset") ? "text-profit" : "text-loss"}`}>
+              {message}
+            </p>
+          ) : null}
           <div className="flex flex-wrap gap-2">
             <Button type="submit" className="w-fit">
               Save live paper config
@@ -257,6 +348,11 @@ export function StrategySection() {
             <Button type="button" variant="outline" className="w-fit" onClick={() => void snapshotVersion()}>
               Snapshot version
             </Button>
+            {dirty ? (
+              <Button type="button" variant="ghost" className="w-fit" onClick={resetDraftToServer}>
+                Discard draft
+              </Button>
+            ) : null}
           </div>
         </form>
       </Panel>

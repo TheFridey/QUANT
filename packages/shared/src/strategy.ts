@@ -246,6 +246,31 @@ export const strategyPatchSchema = z
   .strict();
 
 /**
+ * Operational flags may change while RUNNING and after promotion.
+ * Strategy / hard-risk parameter patches remain gated separately (D16).
+ */
+export const OPERATIONAL_STRATEGY_KEYS = [
+  "pauseNewEntries",
+  "allowDemoPaperEntries",
+  "multiMarketPaperIngest",
+] as const;
+
+export type OperationalStrategyKey = (typeof OPERATIONAL_STRATEGY_KEYS)[number];
+
+export function isOperationalStrategyKey(key: string): key is OperationalStrategyKey {
+  return (OPERATIONAL_STRATEGY_KEYS as readonly string[]).includes(key);
+}
+
+export function strategyPatchHasNonOperationalKeys(patch: Record<string, unknown>): boolean {
+  return Object.entries(patch).some(([key, value]) => value !== undefined && !isOperationalStrategyKey(key));
+}
+
+export function strategyPatchOnlyOperational(patch: Record<string, unknown>): boolean {
+  const keys = Object.entries(patch).filter(([, value]) => value !== undefined);
+  return keys.length > 0 && keys.every(([key]) => isOperationalStrategyKey(key));
+}
+
+/**
  * Institutional paper defaults with activity headroom.
  * Hard risk % caps stay tight; starting equity is raised so 5% max position
  * clears min order + fees (avoids the former $100×5%=$5=$min deadlock).

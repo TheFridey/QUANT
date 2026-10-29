@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_STRATEGY, mergeStrategy, parseStrategyConfig } from "./strategy.js";
+import {
+  DEFAULT_STRATEGY,
+  mergeStrategy,
+  parseStrategyConfig,
+  strategyPatchOnlyOperational,
+  strategyPatchHasNonOperationalKeys,
+} from "./strategy.js";
 
 describe("strategy config", () => {
   it("accepts the default paper configuration with activity headroom", () => {
@@ -43,6 +49,13 @@ describe("strategy config", () => {
     expect(() => mergeStrategy(DEFAULT_STRATEGY, { startingBalanceUsd: "0" })).toThrow();
     expect(mergeStrategy(DEFAULT_STRATEGY, { maxPositions: 2 }).maxPositions).toBe(2);
     expect(() => mergeStrategy(DEFAULT_STRATEGY, { maxEntryM5ChangePct: "1" })).toThrow();
+  });
+
+  it("classifies operational-only patches for RUNNING updates (D16)", () => {
+    expect(strategyPatchOnlyOperational({ pauseNewEntries: true })).toBe(true);
+    expect(strategyPatchOnlyOperational({ pauseNewEntries: true, entryM5ChangePct: "3" })).toBe(false);
+    expect(strategyPatchHasNonOperationalKeys({ allowDemoPaperEntries: false })).toBe(false);
+    expect(strategyPatchHasNonOperationalKeys({ maxPositions: 2 })).toBe(true);
   });
 
   it("fills missing institutional keys from defaults when an older config is loaded", () => {

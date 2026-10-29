@@ -136,18 +136,28 @@ export const loginSchema = z
   })
   .strict();
 
+const clientIntentIdSchema = z
+  .string()
+  .trim()
+  .min(8)
+  .max(128)
+  .regex(/^[A-Za-z0-9_.:-]+$/);
+
 export const operatorOrderSchema = z.discriminatedUnion("side", [
   z
     .object({
       side: z.literal("BUY"),
       pairAddress: z.string().min(1).max(128),
       notionalUsd: z.string().regex(/^\d+(\.\d{1,8})?$/),
+      /** Durable client intent — retries reuse the same receipt (D19). */
+      clientIntentId: clientIntentIdSchema.optional(),
     })
     .strict(),
   z
     .object({
       side: z.literal("SELL"),
       pairAddress: z.string().min(1).max(128),
+      clientIntentId: clientIntentIdSchema.optional(),
     })
     .strict(),
 ]);

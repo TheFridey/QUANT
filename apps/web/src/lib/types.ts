@@ -65,6 +65,8 @@ export type PositionRow = {
   takeProfitPct?: string | null;
   exposurePct?: string | null;
   protected?: boolean;
+  protectionStatus?: "PROTECTED" | "EXIT_IN_PROGRESS" | "FAILED" | "UNKNOWN" | "UNPROTECTED" | string;
+  protectionRecoveryNeeded?: boolean;
   protectionOrigin?: string | null;
   protectionKinds?: string[];
   protectionAckState?: string | null;

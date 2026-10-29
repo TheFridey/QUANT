@@ -127,6 +127,12 @@ export class TerminalController {
     return this.terminal.submitOrder(body);
   }
 
+  @UseGuards(AdminGuard)
+  @Get("orders/receipt")
+  orderReceipt(@Query("cycleId") cycleId?: string, @Query("clientIntentId") clientIntentId?: string) {
+    return this.terminal.orderReceipt({ cycleId, clientIntentId });
+  }
+
   @Get("cycles/:id")
   cycle(@Param("id") id: string) {
     return this.terminal.snapshot().then((snapshot) => ({ snapshot, focus: id }));

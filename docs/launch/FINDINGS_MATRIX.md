@@ -21,11 +21,11 @@
 | D13 | P1 | IMPLEMENTED | `promotion.ts` evidenceFromExperimentReport; `evolution.service` promote resolves reportId server-side, refuses missing | `pnpm exec vitest run packages/evolution/src/promotion.test.ts apps/api/src/promote-paper.test.ts` | VERIFIED_UNIT |
 | D14 | P1 | IMPLEMENTED | `terminal.service` portfolio.analyticsWindows labels (sample scopes explicit; not single calendar) | snapshot payload | VERIFIED_UNIT (labels; full ledger redesign OPEN) |
 | D15 | P1 | IMPLEMENTED | `market-admission.ts` + stage-runner loadPlan MarketSelection map; plan blocks ENTRY, exits/monitoring remain | `pnpm exec vitest run packages/agent-core/src/market-admission.test.ts packages/agent-core/src/pulse-exits.test.ts` | VERIFIED_UNIT |
-| D16 | P1 | OPEN | Ops controls vs config immutability | api / web | — |
-| D17 | P1 | OPEN | Polling overwrites drafts | web | — |
-| D18 | P1 | OPEN | Socket≠market-live | web | — |
-| D19 | P1 | OPEN | Ticket idempotency / preview | api / web | — |
-| D20 | P1 | OPEN | Position actionable UI | web | — |
+| D16 | P1 | IMPLEMENTED | `updateConfig` operational-only while RUNNING; resume keeps incomplete flatten; PAUSED OPERATOR sell; strategy-section ops | `pnpm exec vitest run apps/api/src/ops-controls.test.ts packages/risk-engine/src/operating-controls.test.ts packages/shared/src/strategy.test.ts` | VERIFIED_UNIT |
+| D17 | P1 | IMPLEMENTED | Strategy form dirty drafts keyed by `engine.updatedAt`; conflict banner + discard | strategy-section | — |
+| D18 | P1 | IMPLEMENTED | Socket≠market pills; coalesce/abort refresh; stale revision ignore; connect_error; persist refreshMs | snapshot-context / command-bar | — |
+| D19 | P1 | IMPLEMENTED | `clientIntentId` + async `submitOrder` receipt; `/orders/receipt`; ticket preview qty/stop/fees/budget | `apps/api/src/ops-controls.test.ts` + trading-section | VERIFIED_UNIT (receipt/idempotency) |
+| D20 | P1 | IMPLEMENTED | Positions surface `protectionStatus`/`recoveryNeeded`; exception queue; row reduce-only close | positions-section | — |
 | D21 | P1 | IMPLEMENTED | Terminal snapshot env-scoped marks; provenance freshness; exact position keys | observation-origin + position-key | VERIFIED_UNIT (helpers) |
 | D22 | P2 | OPEN | History pagination | api / web | — |
 | D23 | P2 | DESIGN | Onboarding wizard | web | — |
@@ -41,14 +41,15 @@
 
 | Status | Count |
 | --- | --- |
-| IMPLEMENTED | 19 (D01–D15, D21, D25–D27) |
-| OPEN | 7 |
-| DESIGN | 4 |
+| IMPLEMENTED | 24 (D01–D21, D25–D27) |
+| OPEN | 2 (D22, D29) |
+| DESIGN | 4 (D23, D24, D28, D30) |
 | **Total** | **30** |
 
 ### Notes
 
 - Gate A code paths updated on this branch; full worker/DB verification still pending for D01/D02/D07.
 - Gate B (local): D08 multi-route mandatory refresh, D09 ExecutionGateway SANDBOX stub (no local PAPER masquerade; full demo lifecycle follow-on), D10 practice URL/readiness, D11 instance ownership, D12 HOLD≠bypass exits, D13 promotion evidence, D15 MarketSelection admission.
-- Gate D (partial): D14 analytics window labels; D25 single-operator auth/socket hardening; D26 loopback compose + rotation note; D27 CI production build (no Playwright browsers required). Blocked remainders: multi-user account rooms, tested restore, full-engine/browser soak, D16–D20/D22–D24/D28–D30.
+- Gate C (operator UX): D16 ops vs strategy immutability, D17 draft preservation, D18 socket≠market-live refresh hygiene, D19 ticket intent/preview/async receipt, D20 position protection/close actions.
+- Gate D (partial): D14 analytics window labels; D25 single-operator auth/socket hardening; D26 loopback compose + rotation note; D27 CI production build (no Playwright browsers required). Blocked remainders: multi-user account rooms, tested restore, full-engine/browser soak, D22–D24/D28–D30.
 - Live money remains disabled.

@@ -61,4 +61,25 @@ describe("operating controls (B25)", () => {
       }).decision,
     ).toBe("PASS");
   });
+
+  it("allows reduce-only OPERATOR sell while PAUSED (D16)", () => {
+    const pausedBuy = evaluateRisk({ ...base, engineStatus: "PAUSED" });
+    expect(pausedBuy.reasonCodes).toContain("ENGINE_HALTED");
+
+    const pausedExit = evaluateRisk({
+      ...base,
+      engineStatus: "PAUSED",
+      side: "SELL",
+      intent: "EXIT",
+    });
+    expect(pausedExit.reasonCodes).toContain("ENGINE_HALTED");
+
+    const pausedOperatorClose = evaluateRisk({
+      ...base,
+      engineStatus: "PAUSED",
+      side: "SELL",
+      intent: "OPERATOR",
+    });
+    expect(pausedOperatorClose.decision).toBe("PASS");
+  });
 });

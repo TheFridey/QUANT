@@ -22,7 +22,7 @@ const STATE_CLASS: Record<DataState, string> = {
 
 export function CommandBar() {
   const router = useRouter();
-  const { snapshot, socketState, control, error } = useSnapshot();
+  const { snapshot, socketState, lastRefreshAt, control, error } = useSnapshot();
   const [clock, setClock] = useState("");
   const [emergencyOpen, setEmergencyOpen] = useState(false);
 
@@ -38,6 +38,9 @@ export function CommandBar() {
   const can = (action: string) => snapshot.engine.allowedActions.includes(action);
   const agentActive = snapshot.agents?.filter((agent) => agent.decision).length ?? 0;
   const mode = snapshot.market.mode === "replay" ? "REPLAY" : snapshot.market.mode === "demo" ? "DEMO" : "PAPER";
+  const socketOk = socketState === "connected";
+  const marketLive = dataState === "LIVE";
+  const refreshAgeMs = lastRefreshAt ? Date.now() - new Date(lastRefreshAt).getTime() : null;
 
   return (
     <>
@@ -59,7 +62,13 @@ export function CommandBar() {
           {snapshot.engine.status}
         </Badge>
 
-        <StatusPill label="Market" value={socketState === "live" ? "WS live" : socketState} ok={socketState === "live"} />
+        <StatusPill label="Socket" value={socketState} ok={socketOk} />
+        <StatusPill label="Market" value={marketLive ? "live quotes" : (dataState ?? "no data").toLowerCase()} ok={marketLive} />
+        <StatusPill
+          label="Refresh"
+          value={refreshAgeMs == null ? "—" : refreshAgeMs < 1500 ? "just now" : `${Math.round(refreshAgeMs / 1000)}s ago`}
+          ok={refreshAgeMs != null && refreshAgeMs < 15_000}
+        />
         <StatusPill label="Agents" value={`${agentActive}/6`} ok={agentActive > 0} />
         <StatusPill
           label="Cycle"
@@ -104,6 +113,11 @@ export function CommandBar() {
         </div>
       </header>
       {error ? <div className="border-b border-loss/40 bg-loss/10 px-3 py-1.5 text-xs text-loss">{error}</div> : null}
+      {socketState === "error" ? (
+        <div className="border-b border-warning/40 bg-warning/10 px-3 py-1.5 text-xs text-warning">
+          Terminal socket connect_error — transport down; snapshot polling continues.
+        </div>
+      ) : null}
       {dataState && dataState !== "LIVE" ? (
         <div className="border-b border-primary/30 bg-primary/5 px-3 py-1.5 text-xs text-primary">
           Market snapshot is {dataState}. Paper buys require a LIVE quote on the selected pair.

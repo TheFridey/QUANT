@@ -48,7 +48,12 @@ export function evaluateRisk(input: RiskContext): RiskGate {
       return gate("REJECT", ["ENGINE_HALTED"], 1);
     }
   } else if (input.engineStatus !== "RUNNING") {
-    return gate("REJECT", ["ENGINE_HALTED"], 1);
+    // D16: reduce-only operator close remains available while PAUSED.
+    const reduceOnlyWhilePaused =
+      input.engineStatus === "PAUSED" && input.side === "SELL" && input.intent === "OPERATOR";
+    if (!reduceOnlyWhilePaused) {
+      return gate("REJECT", ["ENGINE_HALTED"], 1);
+    }
   }
 
   const freshness = freshnessGate(input);

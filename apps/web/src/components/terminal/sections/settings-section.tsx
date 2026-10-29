@@ -40,6 +40,10 @@ export function SettingsSection() {
             <dt className="text-muted">API socket</dt>
             <dd className="mono">{socketState}</dd>
           </div>
+          <p className="text-[11px] text-muted">
+            Socket state is terminal transport only — market LIVE comes from quote freshness on the snapshot.
+            Refresh interval persists in this browser.
+          </p>
           <div className="flex justify-between gap-3">
             <dt className="text-muted">Venue</dt>
             <dd className="mono">{snapshot?.venue ?? "PAPER"}</dd>
