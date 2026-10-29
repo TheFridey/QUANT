@@ -96,6 +96,8 @@ function sanitizeBody(text: string, secrets: readonly string[]): string {
   } catch {
     // non-JSON error body — keep raw text
   }
+  // Strip C0 controls + DEL so error bodies stay log-safe (eslint no-control-regex waived intentionally).
+  // eslint-disable-next-line no-control-regex -- deliberate sanitisation of untrusted broker text
   const clean = redactSecrets(message, secrets).replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
   return clean.length > MAX_ERROR_BODY_CHARS ? `${clean.slice(0, MAX_ERROR_BODY_CHARS)}…` : clean;
 }

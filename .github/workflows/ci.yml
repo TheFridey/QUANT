@@ -128,6 +128,8 @@ jobs:
       - name: Start api, worker, web
         run: |
           set -e
+          test -f apps/api/dist/src/main.js
+          test -f apps/worker/dist/src/main.js
           pnpm --filter @odin/api start > /tmp/odin-api.log 2>&1 &
           echo $! > /tmp/odin-api.pid
           pnpm --filter @odin/worker start > /tmp/odin-worker.log 2>&1 &
@@ -136,9 +138,15 @@ jobs:
           echo $! > /tmp/odin-web.pid
           for i in $(seq 1 90); do
             if curl -sf http://127.0.0.1:4318/api/health >/dev/null 2>&1 \
-              && curl -sf http://127.0.0.1:4317 >/dev/null 2>&1; then
+              && curl -sf http://127.0.0.1:4317 >/dev/null 2>&1 \
+              && kill -0 "$(cat /tmp/odin-worker.pid)" 2>/dev/null; then
               echo "stack ready after ${i}s"
               exit 0
+            fi
+            # Fail fast if worker exited (pnpm wrapper may still be up; check log for MODULE_NOT_FOUND).
+            if grep -q "Cannot find module" /tmp/odin-worker.log 2>/dev/null; then
+              echo "worker failed to start"
+              break
             fi
             sleep 1
           done

@@ -32,7 +32,8 @@ test("command centre loads live snapshot equity and agent drawer", async ({ page
 
   await page.getByRole("link", { name: "Market Scanner" }).click();
   await expect(page.getByRole("heading", { name: "Market radar" })).toBeVisible();
-  await expect(page.getByText(/^\d+ ranked$/).or(page.getByText("Watchlist empty"))).toBeVisible();
+  // Empty radar intentionally shows both "0 ranked" and "Watchlist empty".
+  await expect(page.getByText(/^\d+ ranked$/)).toBeVisible();
 
   await page.getByRole("link", { name: "Backtesting" }).click();
   await expect(

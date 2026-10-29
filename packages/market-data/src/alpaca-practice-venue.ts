@@ -115,8 +115,7 @@ export function mapAlpacaOrderStatus(raw: string): ExternalOrderStatus {
     case "accepted":
     case "pending_new":
     case "accepted_for_bidding":
-    // bracket/OTO child legs wait in `held` until the entry fills
-    case "held":
+    case "held": // bracket/OTO child legs wait in held until the entry fills
       return "ACCEPTED";
     case "partially_filled":
       return "PARTIALLY_FILLED";

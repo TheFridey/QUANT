@@ -104,7 +104,6 @@ describe.skipIf(!enabled)("engine soak StageRunner+DB", () => {
       }
 
       const wallMs = Date.now() - wallStart;
-      // eslint-disable-next-line no-console
       console.log(
         JSON.stringify({
           ok: errors === 0 && cycles > 0,

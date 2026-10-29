@@ -1,5 +1,6 @@
 import { BullModule } from "@nestjs/bullmq";
 import { Module } from "@nestjs/common";
+import { ensureDefaultStrategyInstances } from "@odin/agent-core";
 import { QUEUES } from "@odin/shared";
 import { ensureFoundation, loadEnvConfig } from "@odin/shared/bootstrap";
 import { createPrismaClient, PrismaClient } from "@odin/shared/db";
@@ -71,6 +72,7 @@ const queues = Object.values(QUEUES).map((name) => ({ name }));
         const env = await loadEnvConfig();
         const prisma = createPrismaClient();
         await ensureFoundation(prisma, { email: env.adminEmail, password: env.adminPassword });
+        await ensureDefaultStrategyInstances(prisma, "primary");
         await prisma.$disconnect();
         return true;
       },

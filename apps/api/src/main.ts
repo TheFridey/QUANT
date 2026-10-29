@@ -3,6 +3,7 @@ import "reflect-metadata";
 import { randomUUID } from "node:crypto";
 import { NestFactory } from "@nestjs/core";
 import helmet from "helmet";
+import { ensureDefaultStrategyInstances } from "@odin/agent-core";
 import { ensureFoundation, loadEnvConfig } from "@odin/shared/bootstrap";
 import { createPrismaClient } from "@odin/shared/db";
 import type { NextFunction, Response } from "express";
@@ -16,6 +17,8 @@ async function main(): Promise<void> {
   const env = await loadEnvConfig();
   const prisma = createPrismaClient();
   await ensureFoundation(prisma, { email: env.adminEmail, password: env.adminPassword });
+  // Seed durable defaults so operator UI has instances before the first worker cycle.
+  await ensureDefaultStrategyInstances(prisma, "primary");
   await prisma.$disconnect();
 
   const app = await NestFactory.create(AppModule, { bufferLogs: false });
