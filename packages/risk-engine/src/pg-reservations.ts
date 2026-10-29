@@ -127,6 +127,29 @@ export async function reserveInTx(
     return { ok: false as const, reason: "RISK_BUDGET" as const };
   }
 
+  // Stage I: under the same account lock, refuse when filled+held+proposed exceed the instance budget.
+  const strategyInstanceId = request.strategyInstanceId ?? null;
+  if (strategyInstanceId) {
+    const budget = d(request.instanceBudgetUsd ?? "0");
+    const heldForInstance = await tx.riskReservation.aggregate({
+      where: {
+        accountId: request.accountId,
+        strategyInstanceId,
+        status: "HELD",
+      },
+      _sum: { remainingCashUsd: true },
+    });
+    const pendingHeld = d(heldForInstance._sum.remainingCashUsd?.toString() ?? "0");
+    const filledCommitted = await tx.strategyAllocation.aggregate({
+      where: { accountId: request.accountId, strategyInstanceId },
+      _sum: { committedCapitalUsd: true },
+    });
+    const committed = d(filledCommitted._sum.committedCapitalUsd?.toString() ?? "0");
+    if (committed.plus(pendingHeld).plus(cashNeed).gt(budget)) {
+      return { ok: false as const, reason: "INSTANCE_BUDGET" as const };
+    }
+  }
+
   const created = await tx.riskReservation.create({
     data: {
       accountId: request.accountId,
@@ -141,6 +164,8 @@ export async function reserveInTx(
       remainingExposureUsd: request.exposureUsd,
       remainingRiskUsd: request.riskUsd,
       remainingSlots: request.slots,
+      strategyInstanceId,
+      intentId: request.intentId ?? null,
       createdAt: now,
       updatedAt: now,
     },
@@ -157,6 +182,8 @@ export async function reserveInTx(
         exposureUsd: request.exposureUsd,
         slots: request.slots,
         riskUsd: request.riskUsd,
+        strategyInstanceId,
+        intentId: request.intentId ?? null,
       },
       createdAt: now,
     },

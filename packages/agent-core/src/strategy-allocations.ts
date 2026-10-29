@@ -6,9 +6,15 @@
 export {
   applyAllocationFill,
   allocationVenueDrift,
+  distributeProRata,
+  instanceAvailableUsd,
   maxCloseableAllocationQty,
   netAllocationQty,
+  releaseExitQty,
   repairAllocationDrift,
+  reserveExitQty,
+  settleFillByOwnerScope,
   type AllocationView,
+  type OwnerScope,
   type StrategyAllocationStore,
 } from "@odin/trading-engine";

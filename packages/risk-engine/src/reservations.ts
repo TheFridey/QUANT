@@ -13,6 +13,14 @@ export type ReservationRequest = {
   exposureUsd: string;
   slots: number;
   riskUsd: string;
+  /** When set, admission also checks this instance's budget under the account lock (Stage I). */
+  strategyInstanceId?: string | null;
+  intentId?: string | null;
+  /**
+   * Instance capital budget (filled committed + HELD remaining + this request ≤ budget).
+   * Required when strategyInstanceId is set; omit for account-only reservations.
+   */
+  instanceBudgetUsd?: string | null;
 };
 
 export type ReservationBudget = {
@@ -55,6 +63,7 @@ export type ReservationResult =
         | "AGGREGATE_EXPOSURE"
         | "MAX_POSITIONS"
         | "RISK_BUDGET"
+        | "INSTANCE_BUDGET"
         | "DUPLICATE_RESERVATION"
         | "OVER_RELEASE"
         | "NEGATIVE_RELEASE"

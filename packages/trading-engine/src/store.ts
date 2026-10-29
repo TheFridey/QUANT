@@ -1,10 +1,15 @@
-import { classifyFreshness, type DataMode, type ReasonCode, type StrategyConfig } from "@odin/shared";
+import { classifyFreshness, d, newId, type DataMode, type ReasonCode, type StrategyConfig } from "@odin/shared";
 import { Prisma, type PrismaClient } from "@odin/shared/db";
 import { findEligibleFillObservation } from "./eligible-observation.js";
 import { applyFill, type BookState } from "./ledger.js";
 import { quoteFill } from "./fill.js";
 import { ensurePositionLifecycleOnOpen, reduceProtectionForFill } from "./position-lifecycle.js";
-import { applyAllocationFill } from "./strategy-allocations.js";
+import {
+  releaseExitQty,
+  reserveExitQty,
+  settleFillByOwnerScope,
+  type OwnerScope,
+} from "./strategy-allocations.js";
 
 export type CommitOrder = {
   clientOrderId: string;
@@ -24,6 +29,11 @@ export type CommitOrder = {
   strategyVersion?: string | null;
   /** Durable StrategyInstance owner (§5/§8). */
   strategyInstanceId?: string | null;
+  intentId?: string | null;
+  ownerScope?: OwnerScope | null;
+  estimatedCostUsd?: string | null;
+  estimatedNotionalUsd?: string | null;
+  submissionState?: string | null;
 };
 
 export async function lockAccount(tx: Prisma.TransactionClient, accountId: string): Promise<void> {
@@ -47,6 +57,15 @@ export async function commitProposedOrder(
   const eligibleAt = input.order.eligibleAt ? new Date(input.order.eligibleAt) : input.now;
   const expiresAt = input.order.expiresAt ? new Date(input.order.expiresAt) : null;
 
+  // Local STRATEGY sells: refuse before booking venue when the instance does not own the qty.
+  if (input.order.side === "SELL" && (input.order.ownerScope ?? "LEGACY") === "STRATEGY") {
+    const gate = await assertStrategyOwnsSell(tx, input.accountId, input.order);
+    if (!gate.ok) {
+      await reject(tx, input, gate.reason, expiresAt, eligibleAt);
+      return { status: "REJECTED", reason: gate.reason };
+    }
+  }
+
   if (Number.isFinite(eligibleAt.getTime()) && eligibleAt.getTime() > input.now.getTime()) {
     await tx.order.create({
       data: {
@@ -68,11 +87,27 @@ export async function commitProposedOrder(
         instrumentId: input.order.instrumentId ?? null,
         strategyVersion: input.order.strategyVersion ?? null,
         strategyInstanceId: input.order.strategyInstanceId ?? null,
+        intentId: input.order.intentId ?? null,
+        ownerScope: input.order.ownerScope ?? "LEGACY",
+        submissionState: input.order.submissionState ?? "LOCAL",
         submittedAt: input.now,
         eligibleAt,
         expiresAt,
       },
     });
+    // Pending STRATEGY exit reserves owned qty so concurrent cycles cannot oversell.
+    if (
+      input.order.side === "SELL" &&
+      (input.order.ownerScope ?? "LEGACY") === "STRATEGY" &&
+      input.order.strategyInstanceId
+    ) {
+      await reserveExitQty(tx, {
+        accountId: input.accountId,
+        strategyInstanceId: input.order.strategyInstanceId,
+        pairAddress: input.order.pairAddress,
+        qty: input.order.qty,
+      });
+    }
     return { status: "PENDING", reason: "ORDER_PENDING" };
   }
 
@@ -111,6 +146,7 @@ export async function settlePendingOrder(
       where: { id: order.id },
       data: { status: "EXPIRED", rejectReason: "ORDER_EXPIRED", reasonCodes: [...order.reasonCodes, "ORDER_EXPIRED"] },
     });
+    await releasePendingExitReservation(tx, order);
     return { status: "EXPIRED", reason: "ORDER_EXPIRED" };
   }
   if (order.eligibleAt && order.eligibleAt.getTime() > input.now.getTime()) {
@@ -121,6 +157,7 @@ export async function settlePendingOrder(
       where: { id: order.id },
       data: { status: "REJECTED", rejectReason: "MISSING_PRICE" },
     });
+    await releasePendingExitReservation(tx, order);
     return { status: "REJECTED", reason: "MISSING_PRICE" };
   }
 
@@ -155,6 +192,8 @@ export async function settlePendingOrder(
       instrumentId: order.instrumentId,
       strategyInstanceId: order.strategyInstanceId,
       strategyVersion: order.strategyVersion,
+      intentId: order.intentId,
+      ownerScope: order.ownerScope as OwnerScope,
     },
     config: input.config,
     mode: input.mode,
@@ -373,7 +412,7 @@ async function fillExistingPending(
       reduceQty: quoted.fill.qty,
     });
   }
-  await settleStrategyAllocation(tx, {
+  const settled = await settleFillByOwnerScope(tx, {
     accountId: input.accountId,
     order: input.order,
     fillQty: quoted.fill.qty,
@@ -381,6 +420,10 @@ async function fillExistingPending(
     feeUsd: quoted.fill.feeUsd,
     lifecycleId,
   });
+  if (!settled.ok) {
+    // Local path already booked venue — surface recovery via settleFill (local STRATEGY was pre-gated).
+    // For other scopes this should not happen; leave venue book intact and open recovery inside settle.
+  }
   await tx.paperAccount.update({
     where: { id: input.accountId },
     data: { cashUsd: applied.state.cashUsd },
@@ -507,6 +550,9 @@ async function fillCommittedOrder(
       instrumentId: input.order.instrumentId ?? null,
       strategyVersion: input.order.strategyVersion ?? null,
       strategyInstanceId: input.order.strategyInstanceId ?? null,
+      intentId: input.order.intentId ?? null,
+      ownerScope: input.order.ownerScope ?? "LEGACY",
+      submissionState: input.order.submissionState ?? "LOCAL",
       submittedAt: input.now,
       eligibleAt,
       expiresAt,
@@ -516,6 +562,7 @@ async function fillCommittedOrder(
     data: {
       orderId: order.id,
       observationId: observation.id,
+      source: "LOCAL_SIM",
       pairAddress: input.order.pairAddress,
       side: input.order.side,
       qty: quoted.fill.qty,
@@ -525,6 +572,7 @@ async function fillCommittedOrder(
       slippageBps: quoted.fill.slippageBps,
       liquidityUsd: quoted.fill.liquidityUsd,
       strategyInstanceId: input.order.strategyInstanceId ?? null,
+      feeKnown: true,
     },
   });
   await tx.ledgerEntry.createMany({
@@ -568,7 +616,7 @@ async function fillCommittedOrder(
       reduceQty: quoted.fill.qty,
     });
   }
-  await settleStrategyAllocation(tx, {
+  await settleFillByOwnerScope(tx, {
     accountId: input.accountId,
     order: input.order,
     fillQty: quoted.fill.qty,
@@ -583,41 +631,216 @@ async function fillCommittedOrder(
   return { status: "FILLED", reason: "FILLED" };
 }
 
+async function assertStrategyOwnsSell(
+  tx: Prisma.TransactionClient,
+  accountId: string,
+  order: CommitOrder,
+): Promise<{ ok: true } | { ok: false; reason: ReasonCode }> {
+  const strategyInstanceId = order.strategyInstanceId;
+  if (!strategyInstanceId) return { ok: false, reason: "ALLOCATION_NOT_OWNED" };
+  const row = await tx.strategyAllocation.findUnique({
+    where: {
+      accountId_strategyInstanceId_pairAddress: {
+        accountId,
+        strategyInstanceId,
+        pairAddress: order.pairAddress,
+      },
+    },
+  });
+  if (!row) return { ok: false, reason: "ALLOCATION_NOT_OWNED" };
+  const available = d(row.qty.toString()).minus(d(row.reservedExitQty.toString()));
+  if (d(order.qty).gt(available)) return { ok: false, reason: "SELL_EXCEEDS_POSITION" };
+  return { ok: true };
+}
+
 /**
- * Connect strategy-allocations into every fill settlement path (§9).
- * Unattributed fills (no strategyInstanceId) are skipped — legacy/operator may remain unowned
- * until reconcile creates an explicit UNATTRIBUTED bucket.
+ * Apply a broker-confirmed execution to a durable Order (SANDBOX path).
+ * Never discards a confirmed fill to preserve an internal invariant — shortfalls open RecoveryCase.
+ * Idempotent on (orderId, brokerExecutionId).
  */
-async function settleStrategyAllocation(
+export async function applyExternalFill(
   tx: Prisma.TransactionClient,
   input: {
     accountId: string;
-    order: CommitOrder;
-    fillQty: string;
-    priceUsd: string;
-    feeUsd: string;
-    lifecycleId: string | null;
+    orderId: string;
+    brokerExecutionId: string;
+    qty: string;
+    priceUsd: string | null;
+    feeUsd: string | null;
+    feeKnown: boolean;
+    executedAt: Date;
+    currency?: string;
   },
-): Promise<void> {
-  const strategyInstanceId = input.order.strategyInstanceId;
-  if (!strategyInstanceId) return;
-  const result = await applyAllocationFill(tx, {
-    accountId: input.accountId,
-    strategyInstanceId,
-    instrumentId: input.order.instrumentId ?? input.order.pairAddress,
-    pairAddress: input.order.pairAddress,
-    lifecycleId: input.lifecycleId,
-    side: input.order.side,
-    qty: input.fillQty,
-    priceUsd: input.priceUsd,
-    feeUsd: input.feeUsd,
-    forceNetClose: input.order.intent === "FLATTEN",
+): Promise<{ status: "FILLED" | "PARTIAL" | "REPLAY" | "REJECTED"; reason: string | null }> {
+  const existing = await tx.fill.findUnique({
+    where: {
+      orderId_brokerExecutionId: { orderId: input.orderId, brokerExecutionId: input.brokerExecutionId },
+    },
   });
-  if (!result.ok && input.order.side === "SELL" && !input.order.intent.includes("FLATTEN")) {
-    // Ownership-aware exit: do not invent allocation; surface via order reason on next reconcile.
-    // Immediate fills already booked venue net — durable alert path is separate.
-    return;
+  if (existing) return { status: "REPLAY", reason: "IDEMPOTENT_REPLAY" };
+
+  const order = await tx.order.findUnique({ where: { id: input.orderId } });
+  if (!order || order.accountId !== input.accountId) {
+    return { status: "REJECTED", reason: "ORDER_MISSING" };
   }
+  if (!input.priceUsd || d(input.priceUsd).lte(0)) {
+    // Incomplete broker fill — do not invent a price; open recovery and leave UNKNOWN.
+    await tx.recoveryCase.upsert({
+      where: { dedupeKey: `FILL_INCOMPLETE|${input.orderId}|${input.brokerExecutionId}` },
+      create: {
+        dedupeKey: `FILL_INCOMPLETE|${input.orderId}|${input.brokerExecutionId}`,
+        accountId: input.accountId,
+        kind: "FILL_INCOMPLETE",
+        severity: "ERROR",
+        orderId: input.orderId,
+        clientOrderId: order.clientOrderId,
+        pairAddress: order.pairAddress,
+        detail: { brokerExecutionId: input.brokerExecutionId, qty: input.qty, priceUsd: input.priceUsd },
+        status: "OPEN",
+      },
+      update: { attempts: { increment: 1 } },
+    });
+    await tx.order.update({
+      where: { id: order.id },
+      data: { submissionState: "UNKNOWN", lastBrokerStatus: "FILL_PRICE_MISSING" },
+    });
+    return { status: "REJECTED", reason: "FILL_INCOMPLETE" };
+  }
+
+  const fillQty = d(input.qty);
+  const price = d(input.priceUsd);
+  const fee = d(input.feeUsd ?? "0");
+  const notional = fillQty.mul(price);
+  const account = await tx.paperAccount.findUnique({ where: { id: input.accountId } });
+  const positions = await tx.position.findMany({ where: { accountId: input.accountId } });
+  if (!account) return { status: "REJECTED", reason: "ACCOUNT_MISSING" };
+
+  const state: BookState = {
+    cashUsd: account.cashUsd.toString(),
+    positions: positions.map((position) => ({
+      pairAddress: position.pairAddress,
+      baseSymbol: position.baseSymbol,
+      baseQty: position.baseQty.toString(),
+      avgCostUsd: position.avgCostUsd.toString(),
+      realizedPnlUsd: position.realizedPnlUsd.toString(),
+    })),
+  };
+  const priorPosition = positions.find((p) => p.pairAddress === order.pairAddress);
+  const priorQty = priorPosition?.baseQty.toString() ?? "0";
+  const applied = applyFill(state, {
+    pairAddress: order.pairAddress,
+    baseSymbol: order.baseSymbol,
+    side: order.side as "BUY" | "SELL",
+    fill: {
+      qty: fillQty.toFixed(8),
+      priceUsd: price.toFixed(8),
+      notionalUsd: notional.toFixed(8),
+      feeUsd: fee.toFixed(8),
+      slippageBps: "0",
+      liquidityUsd: "0",
+      estimatedCostUsd: notional.plus(fee).toFixed(8),
+      spreadBps: "0",
+      impactBps: "0",
+    },
+  });
+  if (!applied.ok) return { status: "REJECTED", reason: applied.reason };
+
+  const fill = await tx.fill.create({
+    data: {
+      orderId: order.id,
+      observationId: null,
+      source: "BROKER",
+      brokerExecutionId: input.brokerExecutionId,
+      executedAt: input.executedAt,
+      currency: input.currency ?? "USD",
+      feeKnown: input.feeKnown,
+      pairAddress: order.pairAddress,
+      side: order.side,
+      qty: fillQty.toFixed(8),
+      priceUsd: price.toFixed(8),
+      notionalUsd: notional.toFixed(8),
+      feeUsd: fee.toFixed(8),
+      slippageBps: "0",
+      liquidityUsd: "0",
+      strategyInstanceId: order.strategyInstanceId,
+    },
+  });
+  await tx.ledgerEntry.createMany({
+    data: applied.lines.map((line) => ({
+      accountId: input.accountId,
+      type: line.type,
+      amountUsd: line.amountUsd,
+      affectsCash: line.affectsCash,
+      orderId: order.id,
+      fillId: fill.id,
+      note: line.note,
+    })),
+  });
+  const nextPosition = applied.state.positions.find((position) => position.pairAddress === order.pairAddress);
+  if (!nextPosition) throw new Error("POSITION_MISSING_AFTER_FILL");
+  await tx.position.upsert({
+    where: { accountId_pairAddress: { accountId: input.accountId, pairAddress: order.pairAddress } },
+    create: {
+      accountId: input.accountId,
+      ...nextPosition,
+      strategyInstanceId: order.strategyInstanceId,
+    },
+    update: nextPosition,
+  });
+  const lifecycleId = await ensurePositionLifecycleOnOpen(tx, {
+    accountId: input.accountId,
+    pairAddress: order.pairAddress,
+    nextBaseQty: nextPosition.baseQty,
+    priorBaseQty: priorQty,
+  });
+  const newFilled = d(order.filledQty.toString()).plus(fillQty);
+  const fullyFilled = newFilled.gte(d(order.qty.toString()));
+  await tx.order.update({
+    where: { id: order.id },
+    data: {
+      filledQty: newFilled.toFixed(8),
+      status: fullyFilled ? "FILLED" : "PENDING",
+      submissionState: fullyFilled ? "TERMINAL" : order.submissionState,
+      lastBrokerSyncAt: input.executedAt,
+      lastBrokerStatus: fullyFilled ? "FILLED" : "PARTIALLY_FILLED",
+    },
+  });
+  await settleFillByOwnerScope(tx, {
+    accountId: input.accountId,
+    order: {
+      side: order.side as "BUY" | "SELL",
+      intent: order.intent,
+      pairAddress: order.pairAddress,
+      instrumentId: order.instrumentId,
+      strategyInstanceId: order.strategyInstanceId,
+      ownerScope: order.ownerScope,
+      clientOrderId: order.clientOrderId,
+    },
+    fillQty: fillQty.toFixed(8),
+    priceUsd: price.toFixed(8),
+    feeUsd: fee.toFixed(8),
+    lifecycleId,
+    externalConfirmed: true,
+  });
+  await tx.paperAccount.update({
+    where: { id: input.accountId },
+    data: { cashUsd: applied.state.cashUsd },
+  });
+  return { status: fullyFilled ? "FILLED" : "PARTIAL", reason: null };
+}
+
+/** Release exit reservation when a pending STRATEGY sell is cancelled/expired/rejected. */
+export async function releasePendingExitReservation(
+  tx: Prisma.TransactionClient,
+  order: { accountId: string; side: string; ownerScope: string | null; strategyInstanceId: string | null; pairAddress: string; qty: { toString(): string } | string },
+): Promise<void> {
+  if (order.side !== "SELL" || (order.ownerScope ?? "LEGACY") !== "STRATEGY" || !order.strategyInstanceId) return;
+  await releaseExitQty(tx, {
+    accountId: order.accountId,
+    strategyInstanceId: order.strategyInstanceId,
+    pairAddress: order.pairAddress,
+    qty: order.qty.toString(),
+  });
 }
 
 function resolveObservationFreshness(
@@ -669,11 +892,17 @@ async function reject(
       instrumentId: input.order.instrumentId ?? null,
       strategyVersion: input.order.strategyVersion ?? null,
       strategyInstanceId: input.order.strategyInstanceId ?? null,
+      intentId: input.order.intentId ?? null,
+      ownerScope: input.order.ownerScope ?? "LEGACY",
+      submissionState: input.order.submissionState ?? "LOCAL",
       eligibleAt: eligibleAt ?? undefined,
       expiresAt: expiresAt ?? undefined,
     },
   });
 }
+
+// newId kept for future RecoveryCase ids from this module.
+void newId;
 
 export async function readBook(prisma: PrismaClient, accountId: string): Promise<BookState> {
   const account = await prisma.paperAccount.findUniqueOrThrow({ where: { id: accountId } });

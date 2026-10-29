@@ -52,6 +52,9 @@ export type OrderOwnerScope = (typeof ORDER_OWNER_SCOPES)[number];
 /** Bucket id for quantity that cannot be attributed to a strategy. Never reported as strategy performance. */
 export const UNATTRIBUTED_INSTANCE_ID = "stratinst_unattributed";
 
+/** Bucket id for operator-ticket BUYs (manual ownership). Not strategy performance. */
+export const MANUAL_INSTANCE_ID = "stratinst_manual";
+
 export type IntentIdentityParts = {
   cycleId: string;
   accountId: string;
