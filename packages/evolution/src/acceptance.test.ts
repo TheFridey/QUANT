@@ -234,7 +234,9 @@ describe("project genesis acceptance", () => {
     expect(autonomyPolicySchema.safeParse({ ...DEFAULT_AUTONOMY, allowUnreviewedCodeDeploy: true }).success).toBe(false);
 
     const terminal = readFileSync(new URL("../../../apps/api/src/terminal.service.ts", import.meta.url), "utf8");
-    expect(terminal).toContain("Paper orders are accepted only while the engine is running");
+    // D16: buys require RUNNING; reduce-only sells remain available while PAUSED.
+    expect(terminal).toContain("Paper buys are accepted only while the engine is running");
+    expect(terminal).toContain("Reduce-only closes are accepted while running or paused");
     expect(terminal).not.toMatch(/api\.binance|jup\.ag\/swap|submitLiveOrder|placeRealOrder/);
 
     const proposals = proposeOracleCycle({
