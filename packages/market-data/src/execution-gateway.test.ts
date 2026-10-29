@@ -65,18 +65,21 @@ describe("ExecutionGateway (D09)", () => {
     }
   });
 
-  it("LocalPaper lookup returns NOT_FOUND until submit; positions need book wiring", async () => {
+  it("LocalPaper submit is admission-only; lookup/positions need LocalPaperBook wiring", async () => {
     const gateway = new LocalPaperExecutionGateway();
     const missing = await gateway.getOrder("missing");
     expect(missing.ok).toBe(false);
-    await gateway.submitOrder({
+    const ack = await gateway.submitOrder({
       clientOrderId: "c-lookup",
       instrumentId: "etf:SPY",
       side: "BUY",
       qty: "1",
     });
+    expect(ack.ok).toBe(true);
+    // Admission is not a ledger — without a book, lookup still fails (worker commits durably).
     const found = await gateway.getOrder("c-lookup");
-    expect(found.ok).toBe(true);
+    expect(found.ok).toBe(false);
+    if (!found.ok) expect(found.code).toMatch(/BOOK_REQUIRED|NOT_FOUND/);
     const positions = await gateway.getPositions();
     expect(positions.ok).toBe(false);
   });

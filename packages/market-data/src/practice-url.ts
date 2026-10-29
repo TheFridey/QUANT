@@ -23,6 +23,34 @@ export const ALPACA_DATA_HOSTS: readonly AllowedHost[] = [
   { hostname: "127.0.0.1", port: 443, allowHttp: true },
 ];
 
+/** Credential-bearing production allowlists: https only, no loopback. */
+export const ALPACA_PAPER_TRADE_HOSTS_STRICT: readonly AllowedHost[] = [
+  { hostname: "paper-api.alpaca.markets", port: 443 },
+];
+
+export const ALPACA_DATA_HOSTS_STRICT: readonly AllowedHost[] = [
+  { hostname: "data.alpaca.markets", port: 443 },
+];
+
+/**
+ * Builds a single-entry allowlist for a plain-http loopback test server.
+ * Only 127.0.0.1 / localhost are accepted so test transports can never reach a remote host.
+ */
+export function loopbackTestAllowlist(raw: string): { ok: true; allowlist: readonly AllowedHost[] } | { ok: false; reason: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, reason: "UNPARSEABLE_URL" };
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (parsed.protocol !== "http:" || (hostname !== "127.0.0.1" && hostname !== "localhost")) {
+    return { ok: false, reason: `LOOPBACK_ONLY:${parsed.protocol}//${hostname}` };
+  }
+  if (parsed.username || parsed.password) return { ok: false, reason: "USERINFO_REJECTED" };
+  return { ok: true, allowlist: [{ hostname, port: effectivePort(parsed), allowHttp: true }] };
+}
+
 export const OANDA_PRACTICE_HOSTS: readonly AllowedHost[] = [
   { hostname: "api-fxpractice.oanda.com", port: 443 },
   { hostname: "localhost", port: 443, allowHttp: true },

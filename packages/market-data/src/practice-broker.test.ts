@@ -106,7 +106,8 @@ describe("§14 Alpaca practice broker adapter", () => {
     expect(cancel.ok).toBe(true);
     const recon = await broker.reconcile();
     expect(recon.ok).toBe(true);
-    if (recon.ok) expect(recon.value.drift).toBe(false);
+    // Without a local snapshot, reconcile refuses a CLEAN/drift verdict (absence ≠ evidence).
+    if (recon.ok) expect(recon.value.comparable).toBe(false);
   });
 });
 

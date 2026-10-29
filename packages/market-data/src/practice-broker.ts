@@ -1,17 +1,28 @@
 import type { ProviderReadiness } from "@odin/shared";
 import {
-  ALPACA_PAPER_TRADE_HOSTS,
-  assertAllowlistedHttpsUrl,
-} from "./practice-url.js";
+  AlpacaPracticeVenue,
+  ALPACA_DEFAULT_DATA_URL,
+  ALPACA_DEFAULT_TRADE_URL,
+  ALPACA_REQUIRED_ENV,
+  buildAlpacaOrderBody,
+  parseAlpacaInstrumentId,
+  type AlpacaPracticeVenueOptions,
+} from "./alpaca-practice-venue.js";
+import { compareBrokerState, type LocalBrokerSnapshot, type ReconcileReport } from "./broker-reconcile.js";
+import type {
+  ExternalErrorCode,
+  ExternalExecutionVenue,
+  ExternalOrderStatus,
+  ExternalResult,
+  ExternalRetryClass,
+} from "./execution-contract.js";
+import { ALPACA_PAPER_TRADE_HOSTS_STRICT, assertAllowlistedHttpsUrl } from "./practice-url.js";
 import { inventoryAlpacaCredentials } from "./providers/alpaca-paper.js";
 
 /**
- * ONE real practice-broker adapter surface (§14).
+ * Legacy practice-broker surface (§14), now a thin facade over AlpacaPracticeVenue.
  * Official Alpaca Paper Trading API: https://docs.alpaca.markets/docs/trading-api
  * Practice host only (paper-api.alpaca.markets). Never routes LIVE→PAPER silently.
- *
- * Credentials missing → readiness MISSING_CREDENTIALS; network verification is
- * BLOCKED_EXTERNAL. Offline contract tests exercise request shaping + host guards.
  */
 
 export type PracticeBrokerCapability =
@@ -50,18 +61,24 @@ export type PracticeOrderState =
   | "accepted"
   | "filled"
   | "partially_filled"
+  | "cancel_pending"
   | "canceled"
   | "rejected"
+  | "expired"
   | "unknown";
 
 export type PracticeBrokerResult<T> =
   | { ok: true; value: T }
   | {
       ok: false;
-      code: "MISSING_CREDENTIALS" | "INVALID_CONFIGURATION" | "BLOCKED_EXTERNAL" | "TIMEOUT" | "RATE_LIMITED" | "UNKNOWN_OUTCOME" | "NOT_FOUND";
+      code: ExternalErrorCode | "BLOCKED_EXTERNAL";
       error: string;
-      retryClass: "none" | "idempotent_retry" | "reconcile_before_resubmit" | "backoff";
+      retryClass: ExternalRetryClass;
     };
+
+export type PracticeReconcileResult =
+  | { comparable: false; reason: string; ordersChecked: number; positionsChecked: number }
+  | { comparable: true; report: ReconcileReport };
 
 export interface PracticeBrokerAdapter {
   readonly id: string;
@@ -71,8 +88,8 @@ export interface PracticeBrokerAdapter {
   validatePracticeHost(): { ok: true } | { ok: false; error: string };
   getAccount(): Promise<PracticeBrokerResult<{ id: string; cash: string; buyingPower: string; currency: string }>>;
   listInstruments(): Promise<PracticeBrokerResult<Array<{ symbol: string; tradable: boolean }>>>;
-  getQuotes(symbols: string[]): Promise<PracticeBrokerResult<Array<{ symbol: string; bid: string; ask: string }>>>;
-  /** Persist pre-submit locally before network; returns shaped request for transport. */
+  getQuotes(symbols: string[]): Promise<PracticeBrokerResult<Array<{ symbol: string; bid: string | null; ask: string | null }>>>;
+  /** Pure request shaping (no network). */
   shapeOrder(request: PracticeOrderRequest): PracticeBrokerResult<{
     path: string;
     method: "POST";
@@ -81,12 +98,13 @@ export interface PracticeBrokerAdapter {
   }>;
   submitOrder(request: PracticeOrderRequest): Promise<PracticeBrokerResult<{ brokerOrderId: string; status: PracticeOrderState }>>;
   lookupOrder(clientOrderId: string): Promise<PracticeBrokerResult<{ brokerOrderId: string; status: PracticeOrderState; filledQty: string }>>;
+  /** Cancel *request*: status reflects the broker's state, never an assumed `canceled`. */
   cancelOrder(clientOrderId: string): Promise<PracticeBrokerResult<{ status: PracticeOrderState }>>;
   amendOrder(clientOrderId: string, patch: { qty?: string; limitPrice?: string }): Promise<PracticeBrokerResult<{ status: PracticeOrderState }>>;
-  listFills(clientOrderId: string): Promise<PracticeBrokerResult<Array<{ qty: string; price: string }>>>;
-  getPositions(): Promise<PracticeBrokerResult<Array<{ symbol: string; qty: string; avgEntry: string }>>>;
+  listFills(clientOrderId: string): Promise<PracticeBrokerResult<Array<{ executionId: string; qty: string; price: string | null }>>>;
+  getPositions(): Promise<PracticeBrokerResult<Array<{ symbol: string; qty: string; avgEntry: string | null }>>>;
   getBalances(): Promise<PracticeBrokerResult<Array<{ currency: string; cash: string }>>>;
-  reconcile(): Promise<PracticeBrokerResult<{ ordersChecked: number; positionsChecked: number; drift: boolean }>>;
+  reconcile(local?: LocalBrokerSnapshot, window?: { after: string; until?: string }): Promise<PracticeBrokerResult<PracticeReconcileResult>>;
 }
 
 /** Durable unknown-outcome tracker (§15) — pre-submit + ambiguous post-submit. */
@@ -137,70 +155,100 @@ export function classifyAmbiguousSubmit(lookup: PracticeBrokerResult<{ status: P
   if (lookup.value.status === "unknown") {
     return { action: "reconcile_before_resubmit", reason: "broker_unknown" };
   }
-  if (lookup.value.status === "filled" || lookup.value.status === "canceled" || lookup.value.status === "rejected") {
+  if (
+    lookup.value.status === "filled" ||
+    lookup.value.status === "canceled" ||
+    lookup.value.status === "rejected" ||
+    lookup.value.status === "expired"
+  ) {
     return { action: "complete", reason: lookup.value.status };
   }
   return { action: "reconcile_before_resubmit", reason: lookup.value.status };
 }
 
+export function toPracticeOrderState(status: ExternalOrderStatus): PracticeOrderState {
+  switch (status) {
+    case "ACCEPTED":
+      return "accepted";
+    case "PARTIALLY_FILLED":
+      return "partially_filled";
+    case "FILLED":
+      return "filled";
+    case "CANCEL_PENDING":
+      return "cancel_pending";
+    case "CANCELED":
+      return "canceled";
+    case "REJECTED":
+      return "rejected";
+    case "EXPIRED":
+      return "expired";
+    default:
+      return "unknown";
+  }
+}
+
+const TERMINAL_PRACTICE_STATES: ReadonlySet<PracticeOrderState> = new Set(["filled", "canceled", "rejected", "expired"]);
+
+function unsupported<T>(error: string): PracticeBrokerResult<T> {
+  return { ok: false, code: "UNSUPPORTED", error, retryClass: "none" };
+}
+
 export class AlpacaPracticeBroker implements PracticeBrokerAdapter {
   readonly id = "alpaca_practice_broker" as const;
   readonly venue = "alpaca_paper" as const;
+  private readonly practice: AlpacaPracticeVenue;
 
   constructor(
     private readonly env: {
       apiKeyId: string;
       apiSecretKey: string;
       baseUrl: string;
+      dataBaseUrl?: string;
     },
-    private readonly options: {
-      fetchImpl?: typeof fetch;
-      /** Offline transport for contract tests — never claims live READY. */
-      offline?: {
-        account?: { id: string; cash: string; buyingPower: string; currency: string };
-        orders?: Map<string, { brokerOrderId: string; status: PracticeOrderState; filledQty: string }>;
-      };
-      timeoutMs?: number;
-    } = {},
-  ) {}
+    options: AlpacaPracticeVenueOptions = {},
+  ) {
+    this.practice = new AlpacaPracticeVenue(
+      { apiKeyId: env.apiKeyId, apiSecretKey: env.apiSecretKey, baseUrl: env.baseUrl, dataBaseUrl: env.dataBaseUrl },
+      options,
+    );
+  }
 
   static fromEnv(env: NodeJS.ProcessEnv = process.env): AlpacaPracticeBroker {
     const inv = inventoryAlpacaCredentials(env);
     return new AlpacaPracticeBroker({
       apiKeyId: env.ALPACA_API_KEY_ID?.trim() ?? "",
       apiSecretKey: env.ALPACA_API_SECRET_KEY?.trim() ?? "",
-      baseUrl: inv.baseUrl,
+      baseUrl: inv.baseUrl || ALPACA_DEFAULT_TRADE_URL,
+      dataBaseUrl: inv.dataUrl || ALPACA_DEFAULT_DATA_URL,
     });
   }
 
+  /** The underlying contract venue (preferred for new callers). */
+  externalVenue(): AlpacaPracticeVenue {
+    return this.practice;
+  }
+
   readiness(): ProviderReadiness {
-    if (!this.env.apiKeyId || !this.env.apiSecretKey) return "MISSING_CREDENTIALS";
-    const host = this.validatePracticeHost();
-    if (!host.ok) return "INVALID_CONFIGURATION";
-    if (this.options.offline) return "READY";
-    // Credentials + practice host present — transport is live; first call proves connectivity.
-    return "READY";
+    return this.practice.readiness();
   }
 
   capabilities(): Record<PracticeBrokerCapability, boolean> {
-    const creds = Boolean(this.env.apiKeyId && this.env.apiSecretKey);
-    const hostOk = this.validatePracticeHost().ok;
-    const ready = creds && hostOk;
+    const caps = this.practice.capabilities();
     return {
       credentials: true,
-      accounts: ready,
+      accounts: caps.balances,
       capabilities: true,
-      instruments: ready,
-      quotes: ready,
-      orders: ready,
+      instruments: false,
+      quotes: caps.quotes,
+      orders: caps.submit,
       clientOrderId: true,
-      lookup: ready,
-      cancel: ready,
-      amend: ready,
-      fills: ready,
-      positions: ready,
-      balances: ready,
-      reconcile: ready,
+      lookup: caps.lookup,
+      cancel: caps.cancel,
+      amend: false,
+      fills: caps.executions,
+      positions: caps.positions,
+      balances: caps.balances,
+      reconcile: caps.reconcile,
       rateLimit: true,
       retryClass: true,
       timeout: true,
@@ -209,29 +257,25 @@ export class AlpacaPracticeBroker implements PracticeBrokerAdapter {
   }
 
   validatePracticeHost(): { ok: true } | { ok: false; error: string } {
-    const checked = assertAllowlistedHttpsUrl(this.env.baseUrl, ALPACA_PAPER_TRADE_HOSTS);
+    const configError = this.practice.configurationError();
+    if (configError) return { ok: false, error: configError };
+    const checked = assertAllowlistedHttpsUrl(this.env.baseUrl || ALPACA_DEFAULT_TRADE_URL, ALPACA_PAPER_TRADE_HOSTS_STRICT);
     if (!checked.ok) return { ok: false, error: checked.reason };
     return { ok: true };
   }
 
-  private blocked<T = never>(
-    code: "MISSING_CREDENTIALS" | "INVALID_CONFIGURATION" | "BLOCKED_EXTERNAL" | "TIMEOUT" | "RATE_LIMITED" | "UNKNOWN_OUTCOME" | "NOT_FOUND",
-    error: string,
-    retryClass: "none" | "idempotent_retry" | "reconcile_before_resubmit" | "backoff" = "none",
-  ): PracticeBrokerResult<T> {
-    return { ok: false, code, error, retryClass };
-  }
-
-  private ensureReady<T = never>(): PracticeBrokerResult<T> | null {
+  private preflight<T>(): PracticeBrokerResult<T> | null {
     const r = this.readiness();
     if (r === "MISSING_CREDENTIALS") {
-      return this.blocked(
-        "MISSING_CREDENTIALS",
-        "BLOCKED_EXTERNAL: set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY (paper). See docs/mvp/PROVIDER_CAPABILITIES.md",
-      );
+      return {
+        ok: false,
+        code: "MISSING_CREDENTIALS",
+        error: `BLOCKED_EXTERNAL: set ${ALPACA_REQUIRED_ENV.join(" and ")} (paper). See docs/mvp/PROVIDER_CAPABILITIES.md`,
+        retryClass: "none",
+      };
     }
     if (r === "INVALID_CONFIGURATION") {
-      return this.blocked("INVALID_CONFIGURATION", "Practice host validation failed");
+      return { ok: false, code: "INVALID_CONFIGURATION", error: "Practice host validation failed", retryClass: "none" };
     }
     return null;
   }
@@ -242,333 +286,180 @@ export class AlpacaPracticeBroker implements PracticeBrokerAdapter {
     body: Record<string, unknown>;
     clientOrderId: string;
   }> {
-    const blocked = this.ensureReady();
+    const blocked = this.preflight<never>();
     if (blocked) return blocked;
     if (!request.clientOrderId.trim()) {
-      return this.blocked("INVALID_CONFIGURATION", "clientOrderId required for idempotency");
+      return { ok: false, code: "VALIDATION_REJECTED", error: "clientOrderId required for idempotency", retryClass: "none" };
     }
+    const parsed = parseAlpacaInstrumentId(`equity:${request.symbol}`);
+    if (!parsed.ok) return unsupported(parsed.reason);
     return {
       ok: true,
       value: {
         path: "/v2/orders",
         method: "POST",
         clientOrderId: request.clientOrderId,
-        body: {
-          symbol: request.symbol,
+        body: buildAlpacaOrderBody(parsed.symbol, {
+          clientOrderId: request.clientOrderId,
+          instrumentId: `equity:${parsed.symbol}`,
+          side: request.side === "buy" ? "BUY" : "SELL",
           qty: request.qty,
-          side: request.side,
           type: request.type,
-          time_in_force: request.timeInForce,
-          client_order_id: request.clientOrderId,
-          ...(request.limitPrice ? { limit_price: request.limitPrice } : {}),
-        },
+          timeInForce: request.timeInForce,
+          limitPrice: request.limitPrice,
+        }),
       },
     };
   }
 
-  private headers(): Record<string, string> {
-    return {
-      "APCA-API-KEY-ID": this.env.apiKeyId,
-      "APCA-API-SECRET-KEY": this.env.apiSecretKey,
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    };
-  }
-
-  private async http<T>(
-    method: string,
-    path: string,
-    body?: unknown,
-  ): Promise<PracticeBrokerResult<T>> {
-    const host = this.validatePracticeHost();
-    if (!host.ok) return this.blocked("INVALID_CONFIGURATION", host.error);
-    const fetchImpl = this.options.fetchImpl ?? fetch;
-    const timeoutMs = this.options.timeoutMs ?? 15_000;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetchImpl(`${this.env.baseUrl.replace(/\/$/, "")}${path}`, {
-        method,
-        headers: this.headers(),
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: controller.signal,
-      });
-      if (res.status === 404) {
-        return this.blocked("NOT_FOUND", `HTTP 404 ${path}`, "idempotent_retry");
-      }
-      if (res.status === 429) {
-        return this.blocked("RATE_LIMITED", `HTTP 429 ${path}`, "backoff");
-      }
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        if (res.status >= 500) {
-          return this.blocked("UNKNOWN_OUTCOME", `HTTP ${res.status} ${text.slice(0, 200)}`, "reconcile_before_resubmit");
-        }
-        return this.blocked("INVALID_CONFIGURATION", `HTTP ${res.status} ${text.slice(0, 200)}`, "none");
-      }
-      const json = (await res.json()) as T;
-      return { ok: true, value: json };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("abort") || message.includes("Timeout")) {
-        return this.blocked("TIMEOUT", message, "reconcile_before_resubmit");
-      }
-      return this.blocked("UNKNOWN_OUTCOME", message, "reconcile_before_resubmit");
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  private mapAlpacaStatus(status: string | undefined): PracticeOrderState {
-    switch ((status ?? "").toLowerCase()) {
-      case "new":
-      case "accepted":
-      case "pending_new":
-        return "accepted";
-      case "partially_filled":
-        return "partially_filled";
-      case "filled":
-        return "filled";
-      case "canceled":
-      case "cancelled":
-        return "canceled";
-      case "rejected":
-      case "expired":
-        return "rejected";
-      case "pending_cancel":
-      case "pending_replace":
-        return "submitted";
-      default:
-        return "unknown";
-    }
-  }
-
-  async getAccount() {
-    const blocked = this.ensureReady();
+  async getAccount(): Promise<PracticeBrokerResult<{ id: string; cash: string; buyingPower: string; currency: string }>> {
+    const blocked = this.preflight<never>();
     if (blocked) return blocked;
-    if (this.options.offline?.account) return { ok: true as const, value: this.options.offline.account };
-    const res = await this.http<{ id: string; cash: string; buying_power: string; currency: string }>(
-      "GET",
-      "/v2/account",
-    );
+    const res = await this.practice.verifyConnection();
     if (!res.ok) return res;
     return {
-      ok: true as const,
-      value: {
-        id: res.value.id,
-        cash: res.value.cash,
-        buyingPower: res.value.buying_power,
-        currency: res.value.currency || "USD",
-      },
+      ok: true,
+      value: { id: res.value.accountId, cash: res.value.cash, buyingPower: res.value.buyingPower, currency: res.value.currency },
     };
   }
 
-  async listInstruments() {
-    const blocked = this.ensureReady();
+  async listInstruments(): Promise<PracticeBrokerResult<Array<{ symbol: string; tradable: boolean }>>> {
+    const blocked = this.preflight<never>();
     if (blocked) return blocked;
-    if (this.options.offline) {
-      return { ok: true as const, value: [{ symbol: "SPY", tradable: true }, { symbol: "QQQ", tradable: true }] };
-    }
-    const res = await this.http<Array<{ symbol: string; tradable: boolean }>>(
-      "GET",
-      "/v2/assets?status=active&asset_class=us_equity&attributes=",
-    );
+    return unsupported("instrument listing is not implemented; use resolveInstrument on the practice venue");
+  }
+
+  async getQuotes(symbols: string[]): Promise<PracticeBrokerResult<Array<{ symbol: string; bid: string | null; ask: string | null }>>> {
+    const blocked = this.preflight<never>();
+    if (blocked) return blocked;
+    const res = await this.practice.getQuotes(symbols.map((s) => `equity:${s}`));
     if (!res.ok) return res;
     return {
-      ok: true as const,
-      value: res.value.slice(0, 50).map((row) => ({ symbol: row.symbol, tradable: row.tradable })),
+      ok: true,
+      value: res.value.map((q) => ({ symbol: q.instrumentId.slice("equity:".length), bid: q.bid, ask: q.ask })),
     };
   }
 
-  async getQuotes(symbols: string[]) {
-    const blocked = this.ensureReady();
-    if (blocked) return blocked;
-    if (this.options.offline) {
-      return {
-        ok: true as const,
-        value: symbols.map((symbol) => ({ symbol, bid: "100", ask: "100.02" })),
-      };
-    }
-    if (symbols.length === 0) return { ok: true as const, value: [] };
-    // Latest quotes via data API host is separate; paper trade host exposes positions/account.
-    // Use snapshot endpoint on trade host is not available — return BLOCKED for empty data path.
-    return this.blocked(
-      "BLOCKED_EXTERNAL",
-      "Alpaca quotes require data API host (not paper-api). Use account/positions/orders on practice transport.",
-      "none",
-    );
-  }
-
-  async submitOrder(request: PracticeOrderRequest) {
+  async submitOrder(request: PracticeOrderRequest): Promise<PracticeBrokerResult<{ brokerOrderId: string; status: PracticeOrderState }>> {
     const shaped = this.shapeOrder(request);
     if (!shaped.ok) return shaped;
-    if (this.options.offline) {
-      const orders = this.options.offline.orders ?? new Map();
-      const existing = orders.get(request.clientOrderId);
-      if (existing) {
-        return { ok: true as const, value: { brokerOrderId: existing.brokerOrderId, status: existing.status } };
-      }
-      const row = { brokerOrderId: `alpaca_${request.clientOrderId}`, status: "accepted" as const, filledQty: "0" };
-      orders.set(request.clientOrderId, row);
-      this.options.offline.orders = orders;
-      return { ok: true as const, value: { brokerOrderId: row.brokerOrderId, status: row.status } };
-    }
-    const res = await this.http<{ id: string; status: string; filled_qty?: string }>(
-      "POST",
-      shaped.value.path,
-      shaped.value.body,
-    );
-    if (!res.ok) {
-      // Timeout / 5xx after submit → durable unknown outcome (caller must reconcile).
-      if (res.code === "TIMEOUT" || res.code === "UNKNOWN_OUTCOME") {
-        return this.blocked("UNKNOWN_OUTCOME", res.error, "reconcile_before_resubmit");
-      }
-      return res;
-    }
-    return {
-      ok: true as const,
-      value: {
-        brokerOrderId: res.value.id,
-        status: this.mapAlpacaStatus(res.value.status),
-      },
-    };
-  }
-
-  async lookupOrder(clientOrderId: string) {
-    const blocked = this.ensureReady();
-    if (blocked) return blocked;
-    if (this.options.offline?.orders) {
-      const row = this.options.offline.orders.get(clientOrderId);
-      if (!row) return this.blocked("NOT_FOUND", `No order for clientOrderId=${clientOrderId}`, "idempotent_retry");
-      return { ok: true as const, value: row };
-    }
-    const res = await this.http<{ id: string; status: string; filled_qty?: string }>(
-      "GET",
-      `/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(clientOrderId)}`,
-    );
-    if (!res.ok) return res;
-    return {
-      ok: true as const,
-      value: {
-        brokerOrderId: res.value.id,
-        status: this.mapAlpacaStatus(res.value.status),
-        filledQty: res.value.filled_qty ?? "0",
-      },
-    };
-  }
-
-  async cancelOrder(clientOrderId: string) {
-    const blocked = this.ensureReady();
-    if (blocked) return blocked;
-    if (this.options.offline?.orders) {
-      const row = this.options.offline.orders.get(clientOrderId);
-      if (!row) return this.blocked("NOT_FOUND", "cancel target missing", "none");
-      row.status = "canceled";
-      return { ok: true as const, value: { status: row.status } };
-    }
-    const looked = await this.lookupOrder(clientOrderId);
-    if (!looked.ok) return looked;
-    const res = await this.http<unknown>("DELETE", `/v2/orders/${encodeURIComponent(looked.value.brokerOrderId)}`);
-    if (!res.ok && res.code !== "NOT_FOUND") return res;
-    return { ok: true as const, value: { status: "canceled" as const } };
-  }
-
-  async amendOrder(clientOrderId: string, patch: { qty?: string; limitPrice?: string }) {
-    const blocked = this.ensureReady();
-    if (blocked) return blocked;
-    if (this.options.offline?.orders?.has(clientOrderId)) {
-      return { ok: true as const, value: { status: "accepted" as const } };
-    }
-    if (this.options.offline) return this.blocked("NOT_FOUND", "amend target missing", "none");
-    const looked = await this.lookupOrder(clientOrderId);
-    if (!looked.ok) return looked;
-    const res = await this.http<{ status: string }>("PATCH", `/v2/orders/${encodeURIComponent(looked.value.brokerOrderId)}`, {
-      qty: patch.qty,
-      limit_price: patch.limitPrice,
+    const res = await this.practice.submitOrder({
+      clientOrderId: request.clientOrderId,
+      instrumentId: `equity:${request.symbol}`,
+      side: request.side === "buy" ? "BUY" : "SELL",
+      qty: request.qty,
+      type: request.type,
+      timeInForce: request.timeInForce,
+      limitPrice: request.limitPrice,
     });
     if (!res.ok) return res;
-    return { ok: true as const, value: { status: this.mapAlpacaStatus(res.value.status) } };
+    return { ok: true, value: { brokerOrderId: res.value.brokerOrderId, status: toPracticeOrderState(res.value.status) } };
   }
 
-  async listFills(clientOrderId: string) {
-    const blocked = this.ensureReady();
+  async lookupOrder(
+    clientOrderId: string,
+  ): Promise<PracticeBrokerResult<{ brokerOrderId: string; status: PracticeOrderState; filledQty: string }>> {
+    const blocked = this.preflight<never>();
     if (blocked) return blocked;
-    if (this.options.offline?.orders) {
-      const row = this.options.offline.orders.get(clientOrderId);
-      if (!row) return this.blocked("NOT_FOUND", "fills target missing", "none");
-      if (row.status !== "filled" && row.status !== "partially_filled") return { ok: true as const, value: [] };
-      return { ok: true as const, value: [{ qty: row.filledQty, price: "100" }] };
-    }
-    const looked = await this.lookupOrder(clientOrderId);
-    if (!looked.ok) return looked;
-    if (looked.value.status !== "filled" && looked.value.status !== "partially_filled") {
-      return { ok: true as const, value: [] };
-    }
-    return {
-      ok: true as const,
-      value: [{ qty: looked.value.filledQty, price: "0" }],
-    };
-  }
-
-  async getPositions() {
-    const blocked = this.ensureReady();
-    if (blocked) return blocked;
-    if (this.options.offline) return { ok: true as const, value: [] };
-    const res = await this.http<Array<{ symbol: string; qty: string; avg_entry_price: string }>>(
-      "GET",
-      "/v2/positions",
-    );
+    const res = await this.practice.getOrderByClientId(clientOrderId);
     if (!res.ok) return res;
     return {
-      ok: true as const,
-      value: res.value.map((row) => ({
-        symbol: row.symbol,
-        qty: row.qty,
-        avgEntry: row.avg_entry_price,
-      })),
+      ok: true,
+      value: { brokerOrderId: res.value.brokerOrderId, status: toPracticeOrderState(res.value.status), filledQty: res.value.filledQty },
     };
   }
 
-  async getBalances() {
-    const blocked = this.ensureReady();
+  async cancelOrder(clientOrderId: string): Promise<PracticeBrokerResult<{ status: PracticeOrderState }>> {
+    const looked = await this.lookupOrder(clientOrderId);
+    if (!looked.ok) return looked;
+    if (TERMINAL_PRACTICE_STATES.has(looked.value.status)) return { ok: true, value: { status: looked.value.status } };
+    const res = await this.practice.cancelOrder(looked.value.brokerOrderId);
+    if (!res.ok) return res;
+    return { ok: true, value: { status: "cancel_pending" } };
+  }
+
+  async amendOrder(): Promise<PracticeBrokerResult<{ status: PracticeOrderState }>> {
+    const blocked = this.preflight<never>();
     if (blocked) return blocked;
-    if (this.options.offline?.account) {
-      return { ok: true as const, value: [{ currency: this.options.offline.account.currency, cash: this.options.offline.account.cash }] };
+    return unsupported("order amendment is not implemented for the practice venue");
+  }
+
+  async listFills(clientOrderId: string): Promise<PracticeBrokerResult<Array<{ executionId: string; qty: string; price: string | null }>>> {
+    const looked = await this.lookupOrder(clientOrderId);
+    if (!looked.ok) return looked;
+    const res = await this.practice.listExecutions({ orderId: looked.value.brokerOrderId });
+    if (!res.ok) return res;
+    if (!res.value.complete) {
+      return { ok: false, code: "UNKNOWN_OUTCOME", error: "fill pagination incomplete", retryClass: "idempotent_retry" };
     }
+    return { ok: true, value: res.value.items.map((e) => ({ executionId: e.executionId, qty: e.qty, price: e.price })) };
+  }
+
+  async getPositions(): Promise<PracticeBrokerResult<Array<{ symbol: string; qty: string; avgEntry: string | null }>>> {
+    const blocked = this.preflight<never>();
+    if (blocked) return blocked;
+    const res = await this.practice.getPositions();
+    if (!res.ok) return res;
+    return { ok: true, value: res.value.map((p) => ({ symbol: p.symbol, qty: p.qty, avgEntry: p.avgEntryPrice })) };
+  }
+
+  async getBalances(): Promise<PracticeBrokerResult<Array<{ currency: string; cash: string }>>> {
     const account = await this.getAccount();
     if (!account.ok) return account;
-    return {
-      ok: true as const,
-      value: [{ currency: account.value.currency, cash: account.value.cash }],
-    };
+    return { ok: true, value: [{ currency: account.value.currency, cash: account.value.cash }] };
   }
 
-  async reconcile() {
-    const blocked = this.ensureReady();
+  /** Without a local snapshot nothing is compared, so no drift verdict is returned. */
+  async reconcile(
+    local?: LocalBrokerSnapshot,
+    window?: { after: string; until?: string },
+  ): Promise<PracticeBrokerResult<PracticeReconcileResult>> {
+    const blocked = this.preflight<never>();
     if (blocked) return blocked;
-    if (this.options.offline) {
+    if (!local || !window) {
+      const [orders, positions] = await Promise.all([
+        this.practice.listOrders({ status: "open" }),
+        this.practice.getPositions(),
+      ]);
+      if (!orders.ok) return orders;
+      if (!positions.ok) return positions;
       return {
-        ok: true as const,
+        ok: true,
         value: {
-          ordersChecked: this.options.offline.orders?.size ?? 0,
-          positionsChecked: 0,
-          drift: false,
+          comparable: false,
+          reason: "no local snapshot supplied; call reconcile(local, window) or compareBrokerState",
+          ordersChecked: orders.value.items.length,
+          positionsChecked: positions.value.length,
         },
       };
     }
-    const [orders, positions] = await Promise.all([
-      this.http<unknown[]>("GET", "/v2/orders?status=open&limit=50"),
-      this.getPositions(),
-    ]);
-    if (!orders.ok) return orders;
-    if (!positions.ok) return positions;
-    return {
-      ok: true as const,
-      value: {
-        ordersChecked: orders.value.length,
-        positionsChecked: positions.value.length,
-        drift: false,
-      },
-    };
+    const report = await reconcileVenue(this.practice, local, window);
+    if (!report.ok) return report;
+    return { ok: true, value: { comparable: true, report: report.value } };
   }
+}
+
+/** Fetches broker state for the window and runs compareBrokerState. */
+export async function reconcileVenue(
+  venue: ExternalExecutionVenue,
+  local: LocalBrokerSnapshot,
+  window: { after: string; until?: string },
+  limits: { maxExecutionPages?: number } = {},
+): Promise<ExternalResult<ReconcileReport>> {
+  const account = await venue.verifyConnection();
+  if (!account.ok) return account;
+  const orders = await venue.listOrders({ status: "all", after: window.after });
+  if (!orders.ok) return orders;
+  const executions = await venue.listExecutions({ after: window.after, until: window.until, maxPages: limits.maxExecutionPages });
+  if (!executions.ok) return executions;
+  const positions = await venue.getPositions();
+  if (!positions.ok) return positions;
+  return {
+    ok: true,
+    value: compareBrokerState({
+      local,
+      broker: { orders: orders.value, executions: executions.value, positions: positions.value, account: account.value },
+      window: { after: window.after, until: window.until ?? null },
+    }),
+  };
 }
