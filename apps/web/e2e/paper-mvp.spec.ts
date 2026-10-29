@@ -243,7 +243,7 @@ test.describe("Gate 1 local paper browser workflows", () => {
       { env: { ...process.env, PGPASSWORD: "odin" }, stdio: "pipe" },
     );
 
-    let snap = await snapshot(page);
+    const snap = await snapshot(page);
     const openAlert = (snap.alerts ?? []).find((alert) => alert.id === "alert_e2e_pw" || !alert.acked);
     await page.goto("/terminal/risk");
     await expect(page.getByText(/ACK ≠ clear|ACK≠clear|Alert ACK does not|ACK≠clear safety/i).first()).toBeVisible();
