@@ -79,10 +79,12 @@ import {
   persistOcoGroup,
   positionOpenMetaForLifecycle,
   protectionGroupId,
+  allocationVenueDrift,
   enrichReconcileReport,
   reconcileOrders,
   reconcilePositionQty,
   releasePendingExitReservation,
+  repairAllocationDrift,
   recoverProtectionAfterRestart,
   resolveSafetyState,
   retryUnresolvedProtectionIntents,
@@ -1434,31 +1436,20 @@ export class StageRunner {
     db: PrismaClient | Prisma.TransactionClient,
     ctx: ExecutionContext,
   ): Promise<void> {
+    const startedAt = this.now();
     const orders = await db.order.findMany({
       where: { accountId: ctx.accountId },
       orderBy: { createdAt: "desc" },
       take: 500,
     });
+    // Local fill↔order ledger check. Never invent a broker mirror from the same rows (F06).
     const ledger = orders.map((row) => ({
       clientOrderId: row.clientOrderId,
       status: row.status,
       filledQty: row.filledQty.toString(),
       venue: row.venue,
     }));
-    const broker = ledger.map((row) => ({
-      clientOrderId: row.clientOrderId,
-      status: (row.status === "PENDING"
-        ? "ACKED"
-        : row.status === "FILLED"
-          ? "FILLED"
-          : row.status === "CANCELLED"
-            ? "CANCELLED"
-            : row.status === "REJECTED"
-              ? "REJECTED"
-              : "UNKNOWN") as "ACKED" | "FILLED" | "CANCELLED" | "REJECTED" | "UNKNOWN",
-      filledQty: row.filledQty,
-      venue: row.venue,
-    }));
+    const broker: typeof ledger = [];
     if (process.env.ODIN_RECONCILE_FAULT === "1") {
       broker.push({
         clientOrderId: "fault_unknown_exposure",
@@ -1467,9 +1458,18 @@ export class StageRunner {
         venue: "EXTERNAL",
       });
     }
-    const baseReport = reconcileOrders({ broker, ledger });
+    const baseReport = reconcileOrders({
+      broker: broker.map((row) => ({
+        clientOrderId: row.clientOrderId,
+        status: "FILLED" as const,
+        filledQty: row.filledQty,
+        venue: row.venue,
+      })),
+      ledger,
+    });
     const positions = await db.position.findMany({ where: { accountId: ctx.accountId } });
     const positionDrifts: Array<{ pairAddress: string; driftQty: string }> = [];
+    const allocationDifferences: Array<Record<string, unknown>> = [];
     for (const position of positions) {
       const filledOrders = await db.order.findMany({
         where: { accountId: ctx.accountId, pairAddress: position.pairAddress, status: "FILLED" },
@@ -1492,14 +1492,98 @@ export class StageRunner {
       if (!qtyCheck.ok) {
         positionDrifts.push({ pairAddress: position.pairAddress, driftQty: qtyCheck.driftQty });
       }
+
+      // Allocation vs venue net (Stage N) — under-attribution may book UNATTRIBUTED; over never silently wiped.
+      const allocationRows = await db.strategyAllocation.findMany({
+        where: { accountId: ctx.accountId, pairAddress: position.pairAddress },
+      });
+      const drift = allocationVenueDrift({
+        venueQty: position.baseQty.toString(),
+        allocations: allocationRows.map((r) => ({
+          qty: r.qty.toString(),
+          strategyInstanceId: r.strategyInstanceId,
+        })),
+      });
+      if (!drift.ok) {
+        const repaired = await repairAllocationDrift(db, {
+          accountId: ctx.accountId,
+          pairAddress: position.pairAddress,
+          instrumentId: position.pairAddress.includes(":") ? position.pairAddress : "solana:spot:universe",
+          venueQty: position.baseQty.toString(),
+        });
+        const repairReason =
+          !repaired.ok
+            ? repaired.reason
+            : !repaired.repaired
+              ? (repaired.reason ?? "UNREPAIRED_DRIFT")
+              : undefined;
+        allocationDifferences.push({
+          pairAddress: position.pairAddress,
+          driftQty: drift.driftQty,
+          allocationNet: drift.allocationNet,
+          repaired: repaired.ok ? repaired.repaired : false,
+          reason: repairReason,
+          audit: repaired.ok && repaired.repaired ? repaired.audit : undefined,
+        });
+        if (repaired.ok && !repaired.repaired) {
+          await db.recoveryCase.upsert({
+            where: { dedupeKey: `ALLOCATION_DRIFT|${ctx.accountId}|${position.pairAddress}` },
+            create: {
+              dedupeKey: `ALLOCATION_DRIFT|${ctx.accountId}|${position.pairAddress}`,
+              accountId: ctx.accountId,
+              kind: "ALLOCATION_DRIFT",
+              severity: "ERROR",
+              pairAddress: position.pairAddress,
+              detail: {
+                driftQty: drift.driftQty,
+                allocationNet: drift.allocationNet,
+                venueQty: position.baseQty.toString(),
+                reason: repairReason ?? "UNREPAIRED_DRIFT",
+              },
+              status: "OPEN",
+            },
+            update: {
+              detail: {
+                driftQty: drift.driftQty,
+                allocationNet: drift.allocationNet,
+                venueQty: position.baseQty.toString(),
+                reason: repairReason ?? "UNREPAIRED_DRIFT",
+              },
+              attempts: { increment: 1 },
+            },
+          });
+        }
+      }
     }
+
+    const allocationClean = allocationDifferences.length === 0;
+    await db.reconciliationRun.create({
+      data: {
+        accountId: ctx.accountId,
+        scope: "LOCAL_ALLOCATION",
+        venue: "LOCAL",
+        startedAt,
+        completedAt: this.now(),
+        status: allocationClean ? "CLEAN" : "DRIFT",
+        complete: true,
+        coverage: {
+          positionsChecked: positions.length,
+          ordersSampled: orders.length,
+          brokerCompared: false,
+          note: "Local allocation vs venue only — broker reconcile is a separate SANDBOX pass",
+        },
+        differences: allocationDifferences as object[],
+      },
+    });
+
     const report = enrichReconcileReport(baseReport, { positionDrifts });
+    const dirty = !report.ok || !allocationClean;
     this.observability.record({
       category: "portfolio_reconciliation",
-      name: report.ok ? "reconcile_clean" : "reconcile_dirty",
-      value: report.issues.length,
+      name: dirty ? "reconcile_dirty" : "reconcile_clean",
+      value: report.issues.length + allocationDifferences.length,
       unit: "issues",
-      meta: { suspendEntries: report.suspendEntries, accountId: ctx.accountId },
+      meta: { suspendEntries: report.suspendEntries, accountId: ctx.accountId, allocationClean },
     });
     if (report.suspendEntries) {
       await activateSafetyState(db, {
@@ -1514,14 +1598,14 @@ export class StageRunner {
         ctx.accountId,
       );
       await this.persistAlert(db, reconcileIssueAlert({ issues: report.issues }), ctx.accountId);
-    } else if (report.ok) {
+    } else if (!dirty) {
       await this.resolveSafetyAndAlerts(
         db,
         ctx.accountId,
         [ALERT_CODES.ENTRIES_SUSPENDED, ALERT_CODES.RECONCILE_ISSUE, SAFETY_CODES.ENTRIES_SUSPENDED],
         this.now(),
       );
-    } else {
+    } else if (!report.ok) {
       await this.persistAlert(db, reconcileIssueAlert({ issues: report.issues }), ctx.accountId);
     }
   }
