@@ -143,9 +143,9 @@ jobs:
               echo "stack ready after ${i}s"
               exit 0
             fi
-            # Fail fast if worker exited (pnpm wrapper may still be up; check log for MODULE_NOT_FOUND).
-            if grep -q "Cannot find module" /tmp/odin-worker.log 2>/dev/null; then
-              echo "worker failed to start"
+            # Fail fast if api/worker crashed during boot.
+            if grep -Eq "Cannot find module|failed to start|Unique constraint failed" /tmp/odin-api.log /tmp/odin-worker.log 2>/dev/null; then
+              echo "api or worker failed to start"
               break
             fi
             sleep 1
