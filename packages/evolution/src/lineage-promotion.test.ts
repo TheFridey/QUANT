@@ -20,10 +20,34 @@ describe("validateLineageForPromotion (§19–§20)", () => {
     });
     let chain: LineageChain = { nodes: [] };
     chain = appendLineageNode(chain, {
+      id: "hyp1",
+      kind: "HYPOTHESIS",
+      at: new Date().toISOString(),
+      parentId: null,
+      hashes: {},
+      evaluation: evaluationPartitions({ aggregateReturnPct: null, measuredUntouched: false }),
+    });
+    chain = appendLineageNode(chain, {
+      id: "ds1",
+      kind: "DATASET",
+      at: new Date().toISOString(),
+      parentId: "hyp1",
+      hashes: { datasetHash: hashes.datasetHash },
+      evaluation: evaluationPartitions({ aggregateReturnPct: null, measuredUntouched: false }),
+    });
+    chain = appendLineageNode(chain, {
+      id: "exp1",
+      kind: "EXPERIMENT",
+      at: new Date().toISOString(),
+      parentId: "ds1",
+      hashes,
+      evaluation: evaluationPartitions({ aggregateReturnPct: null, measuredUntouched: false }),
+    });
+    chain = appendLineageNode(chain, {
       id: "rpt1",
       kind: "REPORT",
       at: new Date().toISOString(),
-      parentId: null,
+      parentId: "exp1",
       hashes: { ...hashes, executableHash: hashes.reportHash },
       evaluation: evaluationPartitions({
         aggregateReturnPct: "1",
@@ -38,7 +62,7 @@ describe("validateLineageForPromotion (§19–§20)", () => {
       configHash: hashes.configHash,
     });
     expect(bad.ok).toBe(false);
-    if (!bad.ok) expect(bad.reason).toMatch(/report-hash-as-executable|APPROVAL/i);
+    if (!bad.ok) expect(bad.reason).toMatch(/report-hash-as-executable|APPROVAL|executable/i);
   });
 
   it("accepts distinct hashes with matching approval", () => {
@@ -53,11 +77,36 @@ describe("validateLineageForPromotion (§19–§20)", () => {
     });
     let chain: LineageChain = { nodes: [] };
     chain = appendLineageNode(chain, {
+      id: "hyp1",
+      kind: "HYPOTHESIS",
+      at: new Date().toISOString(),
+      parentId: null,
+      hashes: {},
+      evaluation: evaluationPartitions({ aggregateReturnPct: null, measuredUntouched: false }),
+      meta: { persisted: true },
+    });
+    chain = appendLineageNode(chain, {
+      id: "ds1",
+      kind: "DATASET",
+      at: new Date().toISOString(),
+      parentId: "hyp1",
+      hashes: { datasetHash: hashes.datasetHash },
+      evaluation: evaluationPartitions({ aggregateReturnPct: null, measuredUntouched: false }),
+    });
+    chain = appendLineageNode(chain, {
+      id: "exp1",
+      kind: "EXPERIMENT",
+      at: new Date().toISOString(),
+      parentId: "ds1",
+      hashes,
+      evaluation: evaluationPartitions({ aggregateReturnPct: null, measuredUntouched: false }),
+    });
+    chain = appendLineageNode(chain, {
       id: "rpt1",
       kind: "REPORT",
       at: new Date().toISOString(),
-      parentId: null,
-      hashes,
+      parentId: "exp1",
+      hashes: { ...hashes, reportHash: hashes.reportHash, datasetHash: hashes.datasetHash },
       evaluation: evaluationPartitions({
         aggregateReturnPct: "1.2",
         measuredUntouched: true,
@@ -74,6 +123,7 @@ describe("validateLineageForPromotion (§19–§20)", () => {
         sourceHash: hashes.sourceHash,
         executableHash: hashes.executableHash,
         configHash: hashes.configHash,
+        reportHash: hashes.reportHash,
       },
       evaluation: evaluationPartitions({
         aggregateReturnPct: "1.2",
@@ -81,6 +131,7 @@ describe("validateLineageForPromotion (§19–§20)", () => {
         untouchedTestReturnPct: "0.8",
         untouchedSampleSize: 30,
       }),
+      meta: { decision: "APPROVED", reviewer: "operator@odin.local" },
     });
     const ok = validateLineageForPromotion({
       chain,
@@ -88,6 +139,7 @@ describe("validateLineageForPromotion (§19–§20)", () => {
       sourceHash: hashes.sourceHash,
       artifactHash: hashes.executableHash,
       configHash: hashes.configHash,
+      approvalId: "appr1",
     });
     expect(ok).toEqual({ ok: true });
   });

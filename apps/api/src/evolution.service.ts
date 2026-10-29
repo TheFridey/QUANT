@@ -29,15 +29,18 @@ import {
   searchTradeMemory,
   transitionLifecycle,
   verifyExperimentReport,
+  applyUnvalidatedPaperExperiment,
   engineControlDataFromSlot,
-  evidenceFromExperimentReport,
-  hashPayload,
   promoteToPaperEngine,
   promotionBodySchema,
   slotFromEngineControl,
-  validateLineageForPromotion,
+  unvalidatedExperimentBodySchema,
+  validatePromotion,
+  validateUnvalidatedExperiment,
   type ExperimentReport,
-  type LineageChain,
+  type PersistedApproval,
+  type PersistedArtifact,
+  type PersistedReportRow,
 } from "@odin/evolution";
 import {
   IndexMarketProvider,
@@ -935,58 +938,134 @@ export class EvolutionService {
     const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     if (!engine) throw new NotFoundException("Engine is not initialised");
 
-    // D13: when reportId is provided, resolve immutable evidence server-side — never trust client forgeries.
-    let evidence = parsed.evidence;
-    if (parsed.reportId) {
-      const row = await this.prisma.experimentReport.findUnique({ where: { id: parsed.reportId } });
-      if (!row) {
-        throw new NotFoundException(
-          `Promotion refused: reportId ${parsed.reportId} is not a persisted ExperimentReport`,
-        );
-      }
-      const payload = row.payload as ExperimentReport;
-      const report: ExperimentReport = {
-        ...payload,
-        reportId: payload.reportId ?? row.id,
-      };
-      const artifactHash =
-        parsed.artifactId && /^[a-f0-9]{64}$/i.test(parsed.artifactId) ? parsed.artifactId : null;
-      const resolved = evidenceFromExperimentReport(report, { artifactHash });
-      if (!resolved.ok) {
-        throw new BadRequestException(resolved.reason);
-      }
-      // Ignore client evidence fields entirely once a reportId is bound.
-      evidence = resolved.evidence;
+    const reportRow = await this.prisma.experimentReport.findUnique({ where: { id: parsed.reportId } });
+    const artifactRow = await this.prisma.strategyArtifact.findUnique({ where: { id: parsed.artifactId } });
+    const approvalRows = await this.prisma.promotionApproval.findMany({
+      where: { reportId: parsed.reportId },
+      orderBy: { createdAt: "desc" },
+    });
 
-      // §19: durable lineage validation when a chain is persisted on the report payload.
-      const lineage = (payload as { lineage?: LineageChain }).lineage;
-      if (lineage?.nodes?.length) {
-        const lineageGate = validateLineageForPromotion({
-          chain: lineage,
-          reportId: report.reportId,
-          sourceHash: evidence.sourceHash,
-          artifactHash: evidence.artifactHash,
-          configHash: hashPayload(parsed.config),
-        });
-        if (!lineageGate.ok) {
-          throw new BadRequestException(lineageGate.reason);
+    const persistedReport: PersistedReportRow | null = reportRow
+      ? {
+          id: reportRow.id,
+          contentHash: reportRow.contentHash,
+          signature: reportRow.signature,
+          createdAt: reportRow.createdAt.toISOString(),
+          payload: reportRow.payload,
         }
-      }
-    }
-    if (!evidence) {
-      throw new BadRequestException("Promotion requires evidence or a persisted reportId");
+      : null;
+    const persistedArtifact: PersistedArtifact | null = artifactRow
+      ? {
+          id: artifactRow.id,
+          kind: artifactRow.kind,
+          moduleRef: artifactRow.moduleRef,
+          moduleVersion: artifactRow.moduleVersion,
+          sourceHash: artifactRow.sourceHash,
+          artifactHash: artifactRow.artifactHash,
+          runtimeLoadable: artifactRow.runtimeLoadable,
+        }
+      : null;
+    const approvalsForReport: PersistedApproval[] = approvalRows.map((row) => ({
+      id: row.id,
+      reportId: row.reportId,
+      reportContentHash: row.reportContentHash,
+      artifactId: row.artifactId,
+      artifactHash: row.artifactHash,
+      sourceHash: row.sourceHash,
+      configHash: row.configHash,
+      decision: row.decision,
+      reviewer: row.reviewer,
+      at: row.createdAt.toISOString(),
+    }));
+    const approval =
+      (parsed.approvalId
+        ? approvalsForReport.find((row) => row.id === parsed.approvalId)
+        : approvalsForReport.find(
+            (row) => row.decision === "APPROVED" && row.artifactId === parsed.artifactId,
+          )) ?? null;
+
+    const payload = persistedReport?.payload as ExperimentReport | undefined;
+    const hypothesisId = payload?.hypothesisId;
+    const hypothesisRow = hypothesisId
+      ? await this.prisma.researchProposal.findUnique({ where: { id: hypothesisId } })
+      : null;
+    const hypothesis = hypothesisRow
+      ? { id: hypothesisRow.id, persisted: true, at: hypothesisRow.createdAt.toISOString() }
+      : hypothesisId
+        ? { id: hypothesisId, persisted: false, at: null }
+        : null;
+
+    const gated = validatePromotion({
+      report: persistedReport,
+      artifact: persistedArtifact,
+      approval,
+      approvalsForReport,
+      hypothesis,
+      requestedConfig: parsed.config ?? null,
+    });
+    if (gated.validation.status !== "VALIDATED" || !gated.evidence || !gated.config || !gated.configHash) {
+      const failed = gated.validation.checks.filter((check) => !check.passed);
+      throw new BadRequestException({
+        message: `Promotion validation rejected: ${failed.map((check) => check.name).join(", ") || "REJECTED"}`,
+        checks: gated.validation.checks,
+      });
     }
 
+    const previousPromotion = await this.prisma.strategyPromotion.findFirst({
+      orderBy: { createdAt: "desc" },
+    });
+    const promotionId = newId("promo");
     const slot = slotFromEngineControl({ config: engine.config, activeStrategy: engine.activeStrategy });
     const result = promoteToPaperEngine(slot, {
       operatorId: operator,
       authorised: true,
       caller: "OPERATOR",
-      evidence,
-      config: parsed.config,
+      evidence: gated.evidence,
+      config: gated.config,
+      binding: {
+        mode: "VALIDATED",
+        validationStatus: "VALIDATED",
+        provenance: gated.provenance,
+        moduleRef: persistedArtifact!.moduleRef,
+        moduleVersion: persistedArtifact!.moduleVersion,
+        promotionId,
+        reportId: parsed.reportId,
+        approvalId: approval?.id ?? null,
+        artifactId: persistedArtifact!.id,
+      },
     });
-    if (!result.appliedToPaperEngine) return result;
+    if (!result.appliedToPaperEngine) {
+      throw new BadRequestException(result.reason);
+    }
+
     const write = engineControlDataFromSlot(slot);
+    await this.prisma.strategyPromotion.create({
+      data: {
+        id: promotionId,
+        mode: "VALIDATED",
+        validationStatus: "VALIDATED",
+        checks: toJson(gated.validation.checks),
+        provenance: gated.provenance,
+        reportId: parsed.reportId,
+        approvalId: approval?.id ?? null,
+        artifactId: persistedArtifact!.id,
+        strategyId: gated.evidence.strategyId,
+        strategyVersion: gated.evidence.strategyVersion,
+        moduleRef: persistedArtifact!.moduleRef,
+        moduleVersion: persistedArtifact!.moduleVersion,
+        sourceHash: gated.evidence.sourceHash,
+        artifactHash: gated.evidence.artifactHash,
+        configHash: gated.configHash,
+        config: toJson(gated.config),
+        activeStrategy: toJson(write.activeStrategy),
+        previousPromotionId: previousPromotion?.id ?? null,
+        previousActiveStrategy: engine.activeStrategy ? toJson(engine.activeStrategy) : undefined,
+        previousConfig: toJson(engine.config),
+        deploymentEligible: true,
+        liveEligible: false,
+        operator,
+      },
+    });
     const priorRuntime = (engine.runtimeState as Record<string, unknown> | null) ?? {};
     await this.prisma.engineControl.update({
       where: { id: "primary" },
@@ -999,15 +1078,128 @@ export class EvolutionService {
           lastPromotion: {
             at: new Date().toISOString(),
             operator,
-            reportId: parsed.reportId ?? null,
-            sourceHash: evidence.sourceHash,
-            artifactHash: evidence.artifactHash,
-            validated: Boolean(parsed.reportId),
+            promotionId,
+            reportId: parsed.reportId,
+            approvalId: approval?.id ?? null,
+            artifactId: persistedArtifact!.id,
+            sourceHash: gated.evidence.sourceHash,
+            artifactHash: gated.evidence.artifactHash,
+            mode: "VALIDATED",
           },
         },
       },
     });
-    return { ...result, reportId: parsed.reportId ?? null, validatedPromotion: Boolean(parsed.reportId) };
+    return {
+      ...result,
+      promotionId,
+      reportId: parsed.reportId,
+      approvalId: approval?.id ?? null,
+      artifactId: persistedArtifact!.id,
+      validation: gated.validation,
+      validatedPromotion: true,
+    };
+  }
+
+  /** Labelled paper-only experiment. Never deployment- or live-eligible. */
+  async applyUnvalidatedPaperExperiment(body: unknown, operatorId: string) {
+    const operator = operatorId.trim();
+    if (!operator) throw new BadRequestException("Unvalidated experiment requires an explicit operator identity");
+    const parsed = unvalidatedExperimentBodySchema.parse(body);
+    const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
+    if (!engine) throw new NotFoundException("Engine is not initialised");
+
+    const artifactRow = await this.prisma.strategyArtifact.findUnique({ where: { id: parsed.artifactId } });
+    const artifact: PersistedArtifact | null = artifactRow
+      ? {
+          id: artifactRow.id,
+          kind: artifactRow.kind,
+          moduleRef: artifactRow.moduleRef,
+          moduleVersion: artifactRow.moduleVersion,
+          sourceHash: artifactRow.sourceHash,
+          artifactHash: artifactRow.artifactHash,
+          runtimeLoadable: artifactRow.runtimeLoadable,
+        }
+      : null;
+    const gated = validateUnvalidatedExperiment({ artifact, config: parsed.config });
+    if (gated.validation.status === "REJECTED" || !artifact) {
+      throw new BadRequestException({
+        message: "Unvalidated experiment rejected",
+        checks: gated.validation.checks,
+      });
+    }
+
+    const previousPromotion = await this.prisma.strategyPromotion.findFirst({
+      orderBy: { createdAt: "desc" },
+    });
+    const promotionId = newId("promo");
+    const slot = slotFromEngineControl({ config: engine.config, activeStrategy: engine.activeStrategy });
+    const result = applyUnvalidatedPaperExperiment(slot, {
+      operatorId: operator,
+      authorised: true,
+      caller: "OPERATOR",
+      identity: {
+        strategyId: artifact.moduleRef ?? artifact.id,
+        strategyVersion: artifact.moduleVersion,
+        sourceHash: artifact.sourceHash,
+        artifactHash: artifact.artifactHash,
+      },
+      config: gated.config,
+      binding: {
+        moduleRef: artifact.moduleRef,
+        moduleVersion: artifact.moduleVersion,
+        promotionId,
+        artifactId: artifact.id,
+      },
+    });
+    if (!result.appliedToPaperEngine) {
+      throw new BadRequestException(result.reason);
+    }
+
+    const write = engineControlDataFromSlot(slot);
+    await this.prisma.strategyPromotion.create({
+      data: {
+        id: promotionId,
+        mode: "UNVALIDATED_PAPER_EXPERIMENT",
+        validationStatus: "UNVALIDATED_EXPERIMENT",
+        checks: toJson(gated.validation.checks),
+        provenance: "INCOMPLETE",
+        reportId: null,
+        approvalId: null,
+        artifactId: artifact.id,
+        strategyId: artifact.moduleRef ?? artifact.id,
+        strategyVersion: artifact.moduleVersion,
+        moduleRef: artifact.moduleRef,
+        moduleVersion: artifact.moduleVersion,
+        sourceHash: artifact.sourceHash,
+        artifactHash: artifact.artifactHash,
+        configHash: gated.configHash,
+        config: toJson(gated.config),
+        activeStrategy: toJson(write.activeStrategy),
+        previousPromotionId: previousPromotion?.id ?? null,
+        previousActiveStrategy: engine.activeStrategy ? toJson(engine.activeStrategy) : undefined,
+        previousConfig: toJson(engine.config),
+        deploymentEligible: false,
+        liveEligible: false,
+        operator,
+        label: parsed.label,
+        rationale: parsed.rationale,
+      },
+    });
+    await this.prisma.engineControl.update({
+      where: { id: "primary" },
+      data: {
+        config: toJson(write.config),
+        activeStrategy: toJson(write.activeStrategy),
+        updatedBy: operator,
+      },
+    });
+    return {
+      ...result,
+      promotionId,
+      artifactId: artifact.id,
+      validation: gated.validation,
+      validatedPromotion: false,
+    };
   }
 
   async getReport(id: string) {

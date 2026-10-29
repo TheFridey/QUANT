@@ -1,4 +1,10 @@
-import { DEFAULT_STRATEGY } from "@odin/shared";
+import { builtinArtifactIdentity } from "@odin/agent-core";
+import {
+  buildExperimentReport,
+  finaliseEvaluation,
+  EVALUATION_PROTOCOLS,
+} from "@odin/evolution";
+import { DEFAULT_STRATEGY, configHashOf, parseStrategyConfig } from "@odin/shared";
 import { ensureFoundation } from "@odin/shared/bootstrap";
 import { PrismaClient } from "@odin/shared/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -7,31 +13,7 @@ import { EvolutionService } from "./evolution.service.js";
 
 const databaseUrl = process.env.DATABASE_URL_TEST;
 const enabled = Boolean(databaseUrl && databaseUrl.includes("odin_test"));
-const sourceHash = "a".repeat(64);
-const artifactHash = "b".repeat(64);
-
-function evidence(overrides: Record<string, unknown> = {}) {
-  return {
-    strategyId: "strat_reviewed",
-    strategyVersion: "1.0.0",
-    sourceHash,
-    artifactHash,
-    artifactSourceHash: sourceHash,
-    approvalStatus: "APPROVED",
-    reviewed: true,
-    pipelineFinished: true,
-    experimentExecuted: true,
-    returnPct: "1.50",
-    sampleSize: 40,
-    minSampleSize: 30,
-    statisticsRecorded: true,
-    untouchedTestReturnPct: "1.10",
-    untouchedSampleSize: 30,
-    tunedOnEvaluationSample: false,
-    forwardPaperValidated: true,
-    ...overrides,
-  };
-}
+const identity = builtinArtifactIdentity("pulse-momentum-v1")!;
 
 const feed: MarketFeed = {
   async fetchUniverse() {
@@ -66,6 +48,159 @@ const feed: MarketFeed = {
   },
 };
 
+async function seedValidatedPromotion(prisma: PrismaClient, entryM5ChangePct: string) {
+  const config = parseStrategyConfig({ ...DEFAULT_STRATEGY, entryM5ChangePct });
+  const configHash = configHashOf(config);
+  const hypothesis = await prisma.researchProposal.create({
+    data: {
+      status: "PROPOSED",
+      parameterPatch: { entryM5ChangePct },
+      rationale: "integration fixture hypothesis",
+    },
+  });
+  const artifact = await prisma.strategyArtifact.create({
+    data: {
+      kind: "BUILTIN_MODULE",
+      moduleRef: identity.moduleRef,
+      moduleVersion: identity.moduleVersion,
+      sourceHash: identity.sourceHash,
+      artifactHash: identity.artifactHash,
+      runtimeLoadable: true,
+      createdBy: "operator@odin.local",
+    },
+  });
+  const executable = {
+    kind: "BUILTIN_MODULE" as const,
+    moduleRef: identity.moduleRef,
+    moduleVersion: identity.moduleVersion,
+    sourceHash: identity.sourceHash,
+    artifactHash: identity.artifactHash,
+    runtimeLoadable: true,
+  };
+  const evaluation = finaliseEvaluation(
+    {
+      protocol: EVALUATION_PROTOCOLS.PIPELINE_SANDBOX_V1,
+      config,
+      configHash,
+      dataset: {
+        id: "ds_integration",
+        hash: "dataset-hash-integration",
+        basis: "fixture",
+        startAt: "2026-01-01T00:00:00.000Z",
+        endAt: "2026-01-31T00:00:00.000Z",
+        observationCount: 100,
+      },
+      partitions: [
+        {
+          name: "FULL",
+          startAt: "2026-01-01T00:00:00.000Z",
+          endAt: "2026-01-31T00:00:00.000Z",
+          measured: true,
+          sampleSize: 40,
+          returnPct: "1.50",
+          maxDrawdownPct: "4",
+        },
+        {
+          name: "TEST",
+          startAt: "2026-01-20T00:00:00.000Z",
+          endAt: "2026-01-31T00:00:00.000Z",
+          measured: true,
+          sampleSize: 30,
+          returnPct: "1.10",
+          maxDrawdownPct: "3",
+        },
+      ],
+      minSampleSize: 30,
+      tuning: {
+        parameterTrials: 1,
+        tunedOnEvaluationSample: false,
+        basis: "single candidate",
+        history: [],
+      },
+      costs: {
+        feeBps: config.feeBps,
+        slippageModel: "fixture",
+        latencyMs: config.paperLatencyMs,
+      },
+      forwardPaper: {
+        status: "RECORDED",
+        resultIds: ["fwd_integration_1"],
+        closedTradeCount: 30,
+        returnPct: "0.80",
+      },
+    },
+    executable,
+  );
+  const reportPayload = buildExperimentReport({
+    reportId: "rpt_integration_placeholder",
+    hypothesisId: hypothesis.id,
+    strategyModuleId: "strat_reviewed",
+    strategyVersion: "1.0.0",
+    models: [],
+    datasetManifest: {
+      observationCount: 100,
+      startAt: "2026-01-01T00:00:00.000Z",
+      endAt: "2026-01-31T00:00:00.000Z",
+      sources: ["fixture"],
+      contentHash: "dataset-hash-integration",
+    },
+    periods: { train: null, validation: null, test: "2026-01-20T00:00:00.000Z" },
+    results: {
+      sampleSize: 40,
+      returnPct: "1.50",
+      maxDrawdownPct: "4",
+      releaseGateLabel: "PROMOTION_REVIEW",
+    },
+    uncertainty: [],
+    weaknesses: [],
+    challenge: { passed: true, summary: "ok", findings: [], reviewer: "CHALLENGE", independent: true },
+    approval: {
+      status: "APPROVED",
+      approvedBy: "operator@odin.local",
+      approvedAt: "2026-10-28T19:00:00.000Z",
+    },
+    reproducibility: { codeHash: identity.sourceHash, configHash, seed: null },
+    evaluation,
+    executable,
+  });
+  // Persist with id matching reportId so REPORT_SIGNATURE_VALID can check report.reportId === row.id.
+  const report = await prisma.experimentReport.create({
+    data: {
+      id: reportPayload.reportId,
+      hypothesisId: hypothesis.id,
+      strategyModuleId: reportPayload.strategyModuleId,
+      strategyVersion: reportPayload.strategyVersion,
+      payload: reportPayload,
+      contentHash: reportPayload.contentHash,
+      signature: reportPayload.signature,
+      approvalStatus: "APPROVED",
+      approvedBy: "operator@odin.local",
+      approvedAt: new Date("2026-10-28T19:00:00.000Z"),
+      provenance: evaluation.provenance,
+      sourceHash: identity.sourceHash,
+      artifactHash: identity.artifactHash,
+      configHash,
+      datasetHash: evaluation.dataset.hash,
+    },
+  });
+  // Rebuild with the persisted id if Prisma generated a different one (we forced id above).
+  expect(report.id).toBe(reportPayload.reportId);
+  const approval = await prisma.promotionApproval.create({
+    data: {
+      reportId: report.id,
+      reportContentHash: report.contentHash,
+      artifactId: artifact.id,
+      artifactHash: artifact.artifactHash,
+      sourceHash: artifact.sourceHash,
+      configHash,
+      decision: "APPROVED",
+      reviewer: "operator@odin.local",
+      notes: "integration approval",
+    },
+  });
+  return { config, configHash, hypothesis, artifact, report, approval };
+}
+
 describe.skipIf(!enabled)("promoted strategy persisted in PostgreSQL", () => {
   let prisma: PrismaClient;
 
@@ -73,7 +208,7 @@ describe.skipIf(!enabled)("promoted strategy persisted in PostgreSQL", () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
     await prisma.$executeRaw`SELECT pg_advisory_lock(641099)`;
     await prisma.$executeRawUnsafe(
-      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "ResearchProposal", "CycleRun", "PaperAccount", "EngineControl", "User", "TradeMemory", "StrategyInstance", "StrategyAllocation", "RiskReservationEvent", "RiskReservation", "ProtectionIntent", "ProtectionOrder", "OpportunityFunnelEvent", "DurableAlert", "AccountSafetyState" RESTART IDENTITY CASCADE`,
+      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "ForwardPaperResult", "StrategyPromotion", "PromotionApproval", "StrategyArtifact", "ExperimentReport", "ResearchProposal", "CycleRun", "PaperAccount", "EngineControl", "User", "TradeMemory", "StrategyInstance", "StrategyAllocation", "RiskReservationEvent", "RiskReservation", "ProtectionIntent", "ProtectionOrder", "OpportunityFunnelEvent", "DurableAlert", "AccountSafetyState" RESTART IDENTITY CASCADE`,
     );
     await ensureFoundation(prisma, {
       email: process.env.ADMIN_EMAIL ?? "admin@odin.local",
@@ -89,12 +224,19 @@ describe.skipIf(!enabled)("promoted strategy persisted in PostgreSQL", () => {
 
   it("reads the promoted primary engine back from PostgreSQL and the worker loads that strategy", async () => {
     const service = new EvolutionService(prisma);
-    const promotedConfig = { ...DEFAULT_STRATEGY, entryM5ChangePct: "4" };
+    const seeded = await seedValidatedPromotion(prisma, "4");
     const applied = await service.promotePaperStrategy(
-      { authorised: true, evidence: evidence(), config: promotedConfig },
+      {
+        authorised: true,
+        reportId: seeded.report.id,
+        artifactId: seeded.artifact.id,
+        approvalId: seeded.approval.id,
+        config: seeded.config,
+      },
       "operator@odin.local",
     );
     expect(applied.appliedToPaperEngine).toBe(true);
+    expect(applied.deploymentEligible).toBe(true);
 
     const stored = await prisma.engineControl.findUniqueOrThrow({ where: { id: "primary" } });
     const active = stored.activeStrategy as {
@@ -102,22 +244,29 @@ describe.skipIf(!enabled)("promoted strategy persisted in PostgreSQL", () => {
       strategyVersion: string;
       sourceHash: string;
       artifactHash: string;
+      mode: string;
+      deploymentEligible: boolean;
     };
     expect(active.strategyId).toBe("strat_reviewed");
     expect(active.strategyVersion).toBe("1.0.0");
-    expect(active.sourceHash).toBe(sourceHash);
-    expect(active.artifactHash).toBe(artifactHash);
+    expect(active.sourceHash).toBe(identity.sourceHash);
+    expect(active.artifactHash).toBe(identity.artifactHash);
+    expect(active.mode).toBe("VALIDATED");
+    expect(active.deploymentEligible).toBe(true);
     expect((stored.config as { entryM5ChangePct: string }).entryM5ChangePct).toBe("4");
 
-    const later = await service.promotePaperStrategy(
-      {
-        authorised: true,
-        evidence: evidence({ reviewed: false, approvalStatus: "PENDING", strategyVersion: "9.9.9" }),
-        config: { ...DEFAULT_STRATEGY, entryM5ChangePct: "2" },
-      },
-      "operator@odin.local",
-    );
-    expect(later.appliedToPaperEngine).toBe(false);
+    await expect(
+      service.promotePaperStrategy(
+        {
+          authorised: true,
+          reportId: "rpt_missing",
+          artifactId: seeded.artifact.id,
+          config: seeded.config,
+        },
+        "operator@odin.local",
+      ),
+    ).rejects.toThrow(/REPORT_PERSISTED|rejected|ExperimentReport/i);
+
     const unchanged = await prisma.engineControl.findUniqueOrThrow({ where: { id: "primary" } });
     expect((unchanged.config as { entryM5ChangePct: string }).entryM5ChangePct).toBe("4");
     expect((unchanged.activeStrategy as { strategyVersion: string }).strategyVersion).toBe("1.0.0");

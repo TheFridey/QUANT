@@ -1,6 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { z } from "zod";
 import type { ChallengeReport } from "./challenge.js";
+import { reportEvaluationSchema, reportExecutableSchema } from "./provenance.js";
 
 export const experimentReportSchema = z
   .object({
@@ -49,6 +50,9 @@ export const experimentReportSchema = z
     outcomes: z
       .record(z.string(), z.object({ met: z.boolean(), detail: z.string() }))
       .optional(),
+    /** Absent on legacy reports — those are LEGACY_INCOMPLETE and can never validate a promotion. */
+    evaluation: reportEvaluationSchema.optional(),
+    executable: reportExecutableSchema.optional(),
     contentHash: z.string().min(16),
     signature: z.string().min(16),
   })
@@ -100,6 +104,8 @@ export function buildExperimentReport(input: {
   approval?: ExperimentReport["approval"];
   reproducibility: ExperimentReport["reproducibility"];
   outcomes?: ExperimentReport["outcomes"];
+  evaluation?: ExperimentReport["evaluation"];
+  executable?: ExperimentReport["executable"];
 }): ExperimentReport {
   return signExperimentReport({
     reportId: input.reportId,
@@ -120,6 +126,8 @@ export function buildExperimentReport(input: {
     approval: input.approval ?? { status: "PENDING", approvedBy: null, approvedAt: null },
     reproducibility: input.reproducibility,
     outcomes: input.outcomes,
+    ...(input.evaluation ? { evaluation: input.evaluation } : {}),
+    ...(input.executable ? { executable: input.executable } : {}),
   });
 }
 

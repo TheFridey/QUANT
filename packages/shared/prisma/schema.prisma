@@ -542,10 +542,112 @@ model ExperimentReport {
   approvalStatus  String   @default("PENDING")
   approvedBy      String?
   approvedAt      DateTime?
+  /// COMPLETE | INCOMPLETE | LEGACY_INCOMPLETE — evidence columns are immutable (DB trigger).
+  provenance      String   @default("LEGACY_INCOMPLETE")
+  sourceHash      String?
+  artifactHash    String?
+  configHash      String?
+  datasetHash     String?
+  backtestRunId   String?
   createdAt       DateTime @default(now())
 
   @@index([hypothesisId, createdAt])
   @@index([contentHash])
+  @@index([artifactHash, configHash])
+}
+
+/// Persisted executable identity. Hash is computed server-side, never accepted from a client.
+model StrategyArtifact {
+  id              String   @id @default(cuid())
+  /// BUILTIN_MODULE | COMPILED_SANDBOX
+  kind            String
+  moduleRef       String?
+  moduleVersion   String
+  sourceHash      String
+  artifactHash    String   @unique
+  runtimeLoadable Boolean  @default(false)
+  meta            Json?
+  createdBy       String
+  createdAt       DateTime @default(now())
+
+  @@index([moduleRef])
+}
+
+/// Operator review bound to one report + artifact + config. Insert-only (DB trigger).
+model PromotionApproval {
+  id                String   @id @default(cuid())
+  reportId          String
+  reportContentHash String
+  artifactId        String
+  artifactHash      String
+  sourceHash        String
+  configHash        String
+  /// APPROVED | REJECTED
+  decision          String
+  reviewer          String
+  notes             String?
+  createdAt         DateTime @default(now())
+
+  @@index([reportId, createdAt])
+  @@index([artifactHash, configHash])
+}
+
+/// Every write of the primary paper slot. Insert-only (DB trigger); rollback is a new row.
+model StrategyPromotion {
+  id                     String   @id @default(cuid())
+  /// VALIDATED | UNVALIDATED_PAPER_EXPERIMENT | ROLLBACK
+  mode                   String
+  /// VALIDATED | UNVALIDATED_EXPERIMENT | LEGACY_INCOMPLETE (state restored by rollback keeps its own label)
+  validationStatus       String
+  checks                 Json
+  /// COMPLETE | INCOMPLETE
+  provenance             String
+  reportId               String?
+  approvalId             String?
+  artifactId             String?
+  strategyId             String
+  strategyVersion        String
+  moduleRef              String?
+  moduleVersion          String?
+  sourceHash             String
+  artifactHash           String
+  configHash             String
+  config                 Json
+  activeStrategy         Json?
+  previousPromotionId    String?
+  previousActiveStrategy Json?
+  previousConfig         Json
+  rollbackOfId           String?
+  deploymentEligible     Boolean  @default(false)
+  liveEligible           Boolean  @default(false)
+  operator               String
+  label                  String?
+  rationale              String?
+  createdAt              DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([artifactHash, configHash])
+}
+
+/// Forward paper outcome computed server-side from Orders/Fills stamped with a promoted identity.
+model ForwardPaperResult {
+  id               String   @id @default(cuid())
+  promotionId      String
+  artifactHash     String
+  configHash       String
+  windowStart      DateTime
+  windowEnd        DateTime
+  orderCount       Int
+  closedTradeCount Int
+  netPnlUsd        String?
+  returnPct        String?
+  closedPnls       Json
+  method           String
+  createdBy        String
+  createdAt        DateTime @default(now())
+
+  @@index([artifactHash, configHash, createdAt])
+  @@index([promotionId])
 }
 
 model TradeMemory {

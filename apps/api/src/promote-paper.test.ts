@@ -1,93 +1,262 @@
 import { readFileSync } from "node:fs";
-import { DEFAULT_STRATEGY } from "@odin/shared";
+import { builtinArtifactIdentity } from "@odin/agent-core";
+import {
+  buildExperimentReport,
+  finaliseEvaluation,
+  EVALUATION_PROTOCOLS,
+} from "@odin/evolution";
+import { DEFAULT_STRATEGY, configHashOf, parseStrategyConfig } from "@odin/shared";
 import type { PrismaClient } from "@odin/shared/db";
+import { BadRequestException } from "@nestjs/common";
 import { describe, expect, it } from "vitest";
 import { EvolutionService } from "./evolution.service.js";
 
-const sourceHash = "a".repeat(64);
-const artifactHash = "b".repeat(64);
+const identity = builtinArtifactIdentity("pulse-momentum-v1")!;
+const sourceHash = identity.sourceHash;
+const artifactHash = identity.artifactHash;
 
-function evidence(overrides: Record<string, unknown> = {}) {
-  return {
-    strategyId: "strat_reviewed",
-    strategyVersion: "1.0.0",
-    sourceHash,
-    artifactHash,
-    artifactSourceHash: sourceHash,
-    approvalStatus: "APPROVED",
-    reviewed: true,
-    pipelineFinished: true,
-    experimentExecuted: true,
-    returnPct: "1.50",
-    sampleSize: 40,
-    minSampleSize: 30,
-    statisticsRecorded: true,
-    untouchedTestReturnPct: "1.10",
-    untouchedSampleSize: 30,
-    tunedOnEvaluationSample: false,
-    forwardPaperValidated: true,
-    ...overrides,
+function promotedConfig(entryM5ChangePct = "3") {
+  return parseStrategyConfig({ ...DEFAULT_STRATEGY, entryM5ChangePct });
+}
+
+function buildValidatedFixtures(entryM5ChangePct = "3") {
+  const config = promotedConfig(entryM5ChangePct);
+  const configHash = configHashOf(config);
+  const hypothesisId = "hyp_promote";
+  const reportId = "rpt_bound";
+  const artifactId = "art_pulse";
+  const approvalId = "appr_1";
+  const createdAt = new Date("2026-10-28T19:00:00.000Z");
+  const executable = {
+    kind: "BUILTIN_MODULE" as const,
+    moduleRef: identity.moduleRef,
+    moduleVersion: identity.moduleVersion,
+    sourceHash: identity.sourceHash,
+    artifactHash: identity.artifactHash,
+    runtimeLoadable: true,
   };
+  const evaluation = finaliseEvaluation(
+    {
+      protocol: EVALUATION_PROTOCOLS.PIPELINE_SANDBOX_V1,
+      config,
+      configHash,
+      dataset: {
+        id: "ds_fixture",
+        hash: "dataset-hash-fixture",
+        basis: "fixture",
+        startAt: "2026-01-01T00:00:00.000Z",
+        endAt: "2026-01-31T00:00:00.000Z",
+        observationCount: 100,
+      },
+      partitions: [
+        {
+          name: "FULL",
+          startAt: "2026-01-01T00:00:00.000Z",
+          endAt: "2026-01-31T00:00:00.000Z",
+          measured: true,
+          sampleSize: 40,
+          returnPct: "1.50",
+          maxDrawdownPct: "4",
+        },
+        {
+          name: "TEST",
+          startAt: "2026-01-20T00:00:00.000Z",
+          endAt: "2026-01-31T00:00:00.000Z",
+          measured: true,
+          sampleSize: 30,
+          returnPct: "1.10",
+          maxDrawdownPct: "3",
+        },
+      ],
+      minSampleSize: 30,
+      tuning: {
+        parameterTrials: 1,
+        tunedOnEvaluationSample: false,
+        basis: "single candidate",
+        history: [],
+      },
+      costs: {
+        feeBps: config.feeBps,
+        slippageModel: "fixture",
+        latencyMs: config.paperLatencyMs,
+      },
+      forwardPaper: {
+        status: "RECORDED",
+        resultIds: ["fwd_1"],
+        closedTradeCount: 30,
+        returnPct: "0.80",
+      },
+    },
+    executable,
+  );
+  expect(evaluation.provenance).toBe("COMPLETE");
+  const report = buildExperimentReport({
+    reportId,
+    hypothesisId,
+    strategyModuleId: "strat_from_report",
+    strategyVersion: "2.0.0",
+    models: [],
+    datasetManifest: {
+      observationCount: 100,
+      startAt: "2026-01-01T00:00:00.000Z",
+      endAt: "2026-01-31T00:00:00.000Z",
+      sources: ["fixture"],
+      contentHash: "dataset-hash-fixture",
+    },
+    periods: { train: null, validation: null, test: "2026-01-20T00:00:00.000Z" },
+    results: {
+      sampleSize: 40,
+      returnPct: "1.50",
+      maxDrawdownPct: "4",
+      releaseGateLabel: "PROMOTION_REVIEW",
+    },
+    uncertainty: [],
+    weaknesses: [],
+    challenge: { passed: true, summary: "ok", findings: [], reviewer: "CHALLENGE", independent: true },
+    approval: { status: "APPROVED", approvedBy: "operator@odin.local", approvedAt: createdAt.toISOString() },
+    reproducibility: { codeHash: sourceHash, configHash, seed: null },
+    evaluation,
+    executable,
+  });
+  expect(report.contentHash).not.toBe(artifactHash);
+
+  const artifact = {
+    id: artifactId,
+    kind: "BUILTIN_MODULE",
+    moduleRef: identity.moduleRef,
+    moduleVersion: identity.moduleVersion,
+    sourceHash: identity.sourceHash,
+    artifactHash: identity.artifactHash,
+    runtimeLoadable: true,
+  };
+  const approval = {
+    id: approvalId,
+    reportId,
+    reportContentHash: report.contentHash,
+    artifactId,
+    artifactHash: identity.artifactHash,
+    sourceHash: identity.sourceHash,
+    configHash,
+    decision: "APPROVED",
+    reviewer: "operator@odin.local",
+    createdAt,
+  };
+  const hypothesis = {
+    id: hypothesisId,
+    status: "PROPOSED",
+    parameterPatch: {},
+    rationale: "fixture",
+    createdAt,
+  };
+  const reportRow = {
+    id: reportId,
+    payload: report,
+    contentHash: report.contentHash,
+    signature: report.signature,
+    createdAt,
+  };
+  return { config, configHash, report, reportRow, artifact, approval, hypothesis, reportId, artifactId, approvalId };
+}
+
+function mockPrisma(seed: ReturnType<typeof buildValidatedFixtures>, options?: { missingReport?: boolean }) {
+  let row: { id: string; config: unknown; activeStrategy: unknown; runtimeState?: unknown } = {
+    id: "primary",
+    config: { ...DEFAULT_STRATEGY },
+    activeStrategy: null,
+    runtimeState: {},
+  };
+  const promotions: unknown[] = [];
+  const updates: unknown[] = [];
+  const prisma = {
+    engineControl: {
+      findUnique: async () => row,
+      update: async (input: { data: { config: unknown; activeStrategy: unknown; updatedBy?: string; runtimeState?: unknown } }) => {
+        updates.push(input.data);
+        row = {
+          id: "primary",
+          config: input.data.config,
+          activeStrategy: input.data.activeStrategy,
+          runtimeState: input.data.runtimeState ?? row.runtimeState,
+        };
+        return row;
+      },
+    },
+    experimentReport: {
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        options?.missingReport || where.id !== seed.reportId ? null : seed.reportRow,
+    },
+    strategyArtifact: {
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        where.id === seed.artifactId ? seed.artifact : null,
+    },
+    promotionApproval: {
+      findMany: async ({ where }: { where: { reportId: string } }) =>
+        where.reportId === seed.reportId ? [seed.approval] : [],
+    },
+    researchProposal: {
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        where.id === seed.hypothesis.id ? seed.hypothesis : null,
+    },
+    strategyPromotion: {
+      findFirst: async () => null,
+      create: async (input: { data: Record<string, unknown> }) => {
+        promotions.push(input.data);
+        return input.data;
+      },
+    },
+  } as unknown as PrismaClient;
+  return { prisma, getRow: () => row, updates, promotions };
 }
 
 describe("paper engine promotion write", () => {
-  it("updates EngineControl primary and leaves it unchanged when promotion is refused", async () => {
-    const updates: unknown[] = [];
-    let row: { id: string; config: unknown; activeStrategy: unknown } = {
-      id: "primary",
-      config: { ...DEFAULT_STRATEGY },
-      activeStrategy: null,
-    };
-    const prisma = {
-      engineControl: {
-        findUnique: async () => row,
-        update: async (input: { data: { config: unknown; activeStrategy: unknown; updatedBy: string } }) => {
-          updates.push(input.data);
-          row = { id: "primary", config: input.data.config, activeStrategy: input.data.activeStrategy };
-          return row;
-        },
-      },
-    } as unknown as PrismaClient;
+  it("updates EngineControl primary after VALIDATED promotion and refuses rejected validation", async () => {
+    const seed = buildValidatedFixtures("3");
+    const { prisma, getRow, updates, promotions } = mockPrisma(seed);
     const service = new EvolutionService(prisma);
-    const config = { ...DEFAULT_STRATEGY, entryM5ChangePct: "3" };
-    const refused = await service.promotePaperStrategy(
-      { authorised: true, evidence: evidence({ reviewed: false, approvalStatus: "PENDING" }), config },
-      "operator@odin.local",
-    );
-    expect(refused.appliedToPaperEngine).toBe(false);
-    expect(refused.deploymentEligible).toBe(false);
+
+    const refused = await service
+      .promotePaperStrategy(
+        { authorised: true, reportId: "rpt_missing", artifactId: seed.artifactId, config: seed.config },
+        "operator@odin.local",
+      )
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(refused).toBeInstanceOf(BadRequestException);
     expect(updates).toHaveLength(0);
-    expect(row.config).toMatchObject({ entryM5ChangePct: "2" });
+    expect(promotions).toHaveLength(0);
 
     const applied = await service.promotePaperStrategy(
-      { authorised: true, evidence: evidence(), config },
+      {
+        authorised: true,
+        reportId: seed.reportId,
+        artifactId: seed.artifactId,
+        approvalId: seed.approvalId,
+        config: seed.config,
+      },
       "operator@odin.local",
     );
     expect(applied.appliedToPaperEngine).toBe(true);
     expect(applied.deploymentEligible).toBe(true);
+    expect(applied.validatedPromotion).toBe(true);
     expect(updates).toHaveLength(1);
-    expect(row.config).toMatchObject({ entryM5ChangePct: "3" });
-    expect(row.activeStrategy).toMatchObject({
-      strategyId: "strat_reviewed",
-      strategyVersion: "1.0.0",
+    expect(promotions).toHaveLength(1);
+    expect(getRow().config).toMatchObject({ entryM5ChangePct: "3" });
+    expect(getRow().activeStrategy).toMatchObject({
+      strategyId: "strat_from_report",
+      strategyVersion: "2.0.0",
       sourceHash,
       artifactHash,
+      mode: "VALIDATED",
+      deploymentEligible: true,
+      reportId: seed.reportId,
+      artifactId: seed.artifactId,
+      approvalId: seed.approvalId,
     });
-
-    const later = await service.promotePaperStrategy(
-      {
-        authorised: true,
-        evidence: evidence({ reviewed: false, approvalStatus: "PENDING", strategyVersion: "9.9.9" }),
-        config: { ...DEFAULT_STRATEGY, entryM5ChangePct: "9" },
-      },
-      "operator@odin.local",
-    );
-    expect(later.appliedToPaperEngine).toBe(false);
-    expect(updates).toHaveLength(1);
-    expect(row.config).toMatchObject({ entryM5ChangePct: "3" });
   });
 
-  it("rejects a model-labelled request body before it can write the engine", async () => {
+  it("rejects a model-labelled or evidence-only request body before it can write the engine", async () => {
     const prisma = {
       engineControl: {
         findUnique: async () => {
@@ -104,8 +273,21 @@ describe("paper engine promotion write", () => {
         {
           authorised: true,
           caller: "MODEL",
-          evidence: evidence(),
+          evidence: { strategyId: "x" },
           config: { ...DEFAULT_STRATEGY, entryM5ChangePct: "3" },
+        },
+        "operator@odin.local",
+      ),
+    ).rejects.toThrow();
+    await expect(
+      service.promotePaperStrategy(
+        {
+          authorised: true,
+          mode: "UNVALIDATED_PAPER_EXPERIMENT",
+          artifactId: "art_pulse",
+          config: { ...DEFAULT_STRATEGY },
+          label: "experiment",
+          rationale: "labelled paper only",
         },
         "operator@odin.local",
       ),
@@ -117,76 +299,55 @@ describe("paper engine promotion write", () => {
     const controller = readFileSync(new URL("./evolution.controller.ts", import.meta.url), "utf8");
     expect(service).not.toMatch(/submitOrder|placeOrder|api\.binance|jup\.ag\/swap/);
     expect(controller).toMatch(/@Post\("promote"\)/);
+    expect(controller).toMatch(/@Post\("promote\/unvalidated"\)/);
     expect(controller).not.toMatch(/submitOrder|api\.binance|jup\.ag\/swap/);
   });
 
-  it("refuses promotion when reportId is present but the report is missing (D13)", async () => {
-    const prisma = {
-      engineControl: {
-        findUnique: async () => ({
-          id: "primary",
-          config: { ...DEFAULT_STRATEGY },
-          activeStrategy: null,
-        }),
-        update: async () => {
-          throw new Error("engine should not be written");
-        },
-      },
-      experimentReport: {
-        findUnique: async () => null,
-      },
-    } as unknown as PrismaClient;
+  it("refuses promotion when reportId is present but the report is missing", async () => {
+    const seed = buildValidatedFixtures();
+    const { prisma, updates } = mockPrisma(seed, { missingReport: true });
     const service = new EvolutionService(prisma);
     await expect(
       service.promotePaperStrategy(
         {
           authorised: true,
           reportId: "rpt_missing",
-          evidence: evidence(),
-          config: { ...DEFAULT_STRATEGY, entryM5ChangePct: "3" },
+          artifactId: seed.artifactId,
+          config: seed.config,
         },
         "operator@odin.local",
       ),
-    ).rejects.toThrow(/rpt_missing|not a persisted ExperimentReport/i);
+    ).rejects.toThrow(/REPORT_PERSISTED|rejected|ExperimentReport/i);
+    expect(updates).toHaveLength(0);
   });
 
-  it("resolves persisted report evidence server-side and ignores forged client hashes (D13)", async () => {
-    const { buildExperimentReport } = await import("@odin/evolution");
-    const report = buildExperimentReport({
-      reportId: "rpt_bound",
-      hypothesisId: "hyp1",
-      strategyModuleId: "strat_from_report",
+  it("resolves persisted report/artifact/approval server-side (no client evidence)", async () => {
+    const seed = buildValidatedFixtures("4");
+    const { prisma, getRow } = mockPrisma(seed);
+    const service = new EvolutionService(prisma);
+    const applied = await service.promotePaperStrategy(
+      {
+        authorised: true,
+        reportId: seed.reportId,
+        artifactId: seed.artifactId,
+        config: seed.config,
+      },
+      "operator@odin.local",
+    );
+    expect(applied.appliedToPaperEngine).toBe(true);
+    expect(getRow().activeStrategy).toMatchObject({
+      strategyId: "strat_from_report",
       strategyVersion: "2.0.0",
-      models: [],
-      datasetManifest: {
-        observationCount: 50,
-        startAt: null,
-        endAt: null,
-        sources: ["fixture"],
-        contentHash: "d".repeat(64),
-      },
-      periods: { train: null, validation: null, test: null },
-      results: {
-        sampleSize: 40,
-        returnPct: "1.50",
-        maxDrawdownPct: "3",
-        releaseGateLabel: "PROMOTION_REVIEW",
-      },
-      uncertainty: [],
-      weaknesses: [],
-      challenge: { passed: true, summary: "ok", findings: [], reviewer: "CHALLENGE", independent: true },
-      approval: { status: "APPROVED", approvedBy: "operator@odin.local", approvedAt: "2026-10-28T19:00:00.000Z" },
-      reproducibility: { codeHash: sourceHash, configHash: "e".repeat(64), seed: null },
-      outcomes: {
-        PIPELINE_COMPLETED: { met: true, detail: "ok" },
-        EXPERIMENT_EXECUTED: { met: true, detail: "ok" },
-        RESULTS_MEASURABLE: { met: true, detail: "ok" },
-        STATISTICALLY_EVALUATED: { met: true, detail: "ok" },
-        OUT_OF_SAMPLE_VALIDATED: { met: true, detail: "ok" },
-        FORWARD_PAPER_VALIDATED: { met: true, detail: "ok" },
-        DEPLOYMENT_ELIGIBLE: { met: true, detail: "ok" },
-      },
+      sourceHash,
+      artifactHash,
+      mode: "VALIDATED",
+      deploymentEligible: true,
     });
+    expect(artifactHash).not.toBe(seed.report.contentHash);
+  });
+
+  it("applies an unvalidated paper experiment without deployment eligibility", async () => {
+    const seed = buildValidatedFixtures();
     let row: { id: string; config: unknown; activeStrategy: unknown } = {
       id: "primary",
       config: { ...DEFAULT_STRATEGY },
@@ -200,35 +361,34 @@ describe("paper engine promotion write", () => {
           return row;
         },
       },
-      experimentReport: {
+      strategyArtifact: {
         findUnique: async ({ where }: { where: { id: string } }) =>
-          where.id === "rpt_bound"
-            ? {
-                id: "rpt_bound",
-                payload: report,
-                contentHash: report.contentHash,
-                signature: report.signature,
-              }
-            : null,
+          where.id === seed.artifactId ? seed.artifact : null,
+      },
+      strategyPromotion: {
+        findFirst: async () => null,
+        create: async (input: { data: Record<string, unknown> }) => input.data,
       },
     } as unknown as PrismaClient;
     const service = new EvolutionService(prisma);
-    const applied = await service.promotePaperStrategy(
+    const applied = await service.applyUnvalidatedPaperExperiment(
       {
         authorised: true,
-        reportId: "rpt_bound",
-        // Forged client identity — must be ignored in favour of the persisted report.
-        evidence: evidence({ strategyId: "forged_client", strategyVersion: "9.9.9", artifactHash: "f".repeat(64) }),
-        config: { ...DEFAULT_STRATEGY, entryM5ChangePct: "4" },
+        mode: "UNVALIDATED_PAPER_EXPERIMENT",
+        artifactId: seed.artifactId,
+        config: seed.config,
+        label: "labelled experiment",
+        rationale: "explicit paper-only trial",
       },
       "operator@odin.local",
     );
     expect(applied.appliedToPaperEngine).toBe(true);
+    expect(applied.deploymentEligible).toBe(false);
+    expect(applied.validatedPromotion).toBe(false);
     expect(row.activeStrategy).toMatchObject({
-      strategyId: "strat_from_report",
-      strategyVersion: "2.0.0",
-      sourceHash,
-      artifactHash: report.contentHash,
+      mode: "UNVALIDATED_PAPER_EXPERIMENT",
+      deploymentEligible: false,
+      artifactId: seed.artifactId,
     });
   });
 });

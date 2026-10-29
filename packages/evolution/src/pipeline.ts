@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { d, newId, type Hypothesis, type AutonomyPolicy, DEFAULT_STRATEGY, parseStrategyConfig } from "@odin/shared";
+import { d, newId, type Hypothesis, type AutonomyPolicy, DEFAULT_STRATEGY, configHashOf, parseStrategyConfig } from "@odin/shared";
 import type { BacktestObservation } from "@odin/backtest";
 import { chronologicalSplits } from "@odin/backtest";
 import { forgeStrategyModule } from "./forge.js";
@@ -11,6 +11,7 @@ import { executeCompiledStrategy } from "./sandbox-runner.js";
 import { summariseStatistics, type StatisticsReport } from "./statistics.js";
 import { runChallengeReview } from "./challenge.js";
 import { buildExperimentReport, type ExperimentReport } from "./validate.js";
+import { EVALUATION_PROTOCOLS, finaliseEvaluation, type ReportExecutable } from "./provenance.js";
 import { transitionLifecycle, type LifecycleTransition } from "./lifecycle.js";
 import { ModelRouter } from "./router.js";
 import { createTradeMemoryStore, type TradeMemoryStore } from "./memory.js";
@@ -39,6 +40,8 @@ export type PipelineRunResult = {
   };
   challenge: { passed: boolean; summary: string };
   report: ExperimentReport | null;
+  /** Executable identity the report evaluated (persist as StrategyArtifact). */
+  executable: ReportExecutable | null;
   paper: { admitted: boolean; tradesRecorded: number };
   memory: TradeMemoryStore;
   nextExperimentProposed: boolean;
@@ -70,7 +73,11 @@ export async function runResearchPipeline(input: {
     endAt: string | null;
   };
   minSampleSize?: number;
-  forwardPaperValidated?: boolean;
+  /**
+   * Earlier reports for the same hypothesis (selection history). Omitted = unknown, which
+   * leaves tuning provenance INCOMPLETE instead of assuming no selection happened.
+   */
+  priorEvaluations?: Array<{ reportId: string; createdAt: string; datasetStartAt: string | null; datasetEndAt: string | null }>;
   router?: ModelRouter;
 }): Promise<PipelineRunResult> {
   const stages: string[] = ["OBSERVE"];
@@ -220,6 +227,15 @@ export async function runResearchPipeline(input: {
   const measuredReturn = simulation?.blocked ? null : (simulation?.returnPct ?? null);
   const measuredSample = simulation?.blocked ? 0 : (simulation?.closedPnls.length ?? 0);
   const minSampleSize = input.minSampleSize ?? config.minSampleTrades;
+  const testWindow = splits ? { start: Date.parse(splits.testStart), end: Date.parse(splits.testEnd) } : null;
+  const overlappingPrior =
+    input.priorEvaluations?.filter((prior) => {
+      if (!testWindow) return false;
+      if (prior.datasetStartAt === null || prior.datasetEndAt === null) return true;
+      return Date.parse(prior.datasetStartAt) <= testWindow.end && Date.parse(prior.datasetEndAt) >= testWindow.start;
+    }) ?? null;
+  // Re-running a hypothesis over the same test window and keeping the survivor is selection on it.
+  const tunedOnEvaluationSample = overlappingPrior === null ? null : overlappingPrior.length > 0;
   const outcomes = classifyResearchOutcomes({
     pipelineFinished: true,
     experimentExecuted: Boolean(forged.ok && forged.signalsClaimed),
@@ -229,8 +245,8 @@ export async function runResearchPipeline(input: {
     statisticsRecorded: statistics !== null,
     untouchedTestReturnPct: untouched.returnPct,
     untouchedSampleSize: untouched.sampleSize,
-    tunedOnEvaluationSample: false,
-    forwardPaperValidated: input.forwardPaperValidated === true,
+    tunedOnEvaluationSample,
+    forwardPaperValidated: false,
     promotionAuthorised: false,
   });
   acceptance.historical_measurable_results = outcomes.RESULTS_MEASURABLE.met ? "PASS" : "FAIL";
@@ -268,7 +284,77 @@ export async function runResearchPipeline(input: {
 
   stages.push("VALIDATE");
   let report: ExperimentReport | null = null;
+  let executable: ReportExecutable | null = null;
   if (forged.ok) {
+    const datasetHash = createHash("sha256")
+      .update(observations.map((row) => `${row.id}:${row.receivedAt}:${row.priceUsd ?? ""}`).join("|") || "empty")
+      .digest("hex");
+    const configHash = configHashOf(config);
+    const measuredFull = Boolean(simulation && !simulation.blocked);
+    executable = {
+      kind: "COMPILED_SANDBOX",
+      moduleRef: null,
+      moduleVersion: forged.manifest.version,
+      sourceHash: forged.sourceHash,
+      artifactHash: forged.artifactHash,
+      runtimeLoadable: false,
+    };
+    const evaluation = finaliseEvaluation(
+      {
+        protocol: EVALUATION_PROTOCOLS.PIPELINE_SANDBOX_V1,
+        config,
+        configHash,
+        dataset: {
+          id: `observations:${startAt ?? "none"}..${endAt ?? "none"}`,
+          hash: datasetHash,
+          basis: "MarketObservation id:receivedAt:priceUsd",
+          startAt,
+          endAt,
+          observationCount: observations.length,
+        },
+        partitions: [
+          {
+            name: "FULL",
+            startAt,
+            endAt,
+            measured: measuredFull,
+            sampleSize: measuredFull ? measuredSample : null,
+            returnPct: measuredReturn,
+            maxDrawdownPct: statistics?.maxDrawdownPct.value ?? null,
+          },
+          {
+            name: "TEST",
+            startAt: splits?.testStart ?? null,
+            endAt: splits?.testEnd ?? null,
+            measured: measuredFull && splits !== null,
+            sampleSize: measuredFull && splits ? untouched.sampleSize : null,
+            returnPct: measuredFull && splits ? untouched.returnPct : null,
+            maxDrawdownPct: null,
+          },
+        ],
+        minSampleSize,
+        tuning: {
+          parameterTrials: overlappingPrior === null ? null : overlappingPrior.length + 1,
+          tunedOnEvaluationSample,
+          basis:
+            overlappingPrior === null
+              ? "Selection history not supplied"
+              : "Single forged candidate with DEFAULT_STRATEGY; prior reports for this hypothesis over the test window count as selection",
+          history: (overlappingPrior ?? []).map((prior) => ({
+            ref: prior.reportId,
+            at: prior.createdAt,
+            detail: "Earlier evaluation of this hypothesis overlapping the test window",
+          })),
+        },
+        costs: {
+          feeBps: config.feeBps,
+          slippageModel: "research-backtest simulateResearchPath fills",
+          latencyMs: config.paperLatencyMs,
+        },
+        forwardPaper: { status: "NONE", resultIds: [], closedTradeCount: 0, returnPct: null },
+      },
+      executable,
+    );
     report = buildExperimentReport({
       reportId: newId("rpt"),
       hypothesisId: input.hypothesis.id ?? "hyp",
@@ -284,9 +370,7 @@ export async function runResearchPipeline(input: {
         startAt,
         endAt,
         sources: observations.length > 0 ? ["persisted_observations"] : ["empty"],
-        contentHash: createHash("sha256")
-          .update(observations.map((row) => `${row.id}:${row.receivedAt}:${row.priceUsd ?? ""}`).join("|") || "empty")
-          .digest("hex"),
+        contentHash: datasetHash,
       },
       periods: { train: splits?.trainStart ?? null, validation: splits?.validationStart ?? null, test: splits?.testStart ?? null },
       results: {
@@ -304,10 +388,12 @@ export async function runResearchPipeline(input: {
       challenge,
       reproducibility: {
         codeHash: forged.sourceHash,
-        configHash: createHash("sha256").update(JSON.stringify(DEFAULT_STRATEGY)).digest("hex"),
+        configHash,
         seed: null,
       },
       outcomes,
+      evaluation,
+      executable,
     });
     acceptance.versioned_evidence_report = "PASS";
 
@@ -346,7 +432,8 @@ export async function runResearchPipeline(input: {
       }
     }
     admitted = true;
-    acceptance.forward_paper_trades_recorded = input.forwardPaperValidated === true ? "PASS" : "SKIP";
+    // Forward paper evidence only exists as server-computed ForwardPaperResult rows.
+    acceptance.forward_paper_trades_recorded = "SKIP";
     acceptance.post_trade_memory_update = "SKIP";
   } else {
     acceptance.forward_paper_trades_recorded = "SKIP";
@@ -390,6 +477,7 @@ export async function runResearchPipeline(input: {
     },
     challenge: { passed: challenge.passed, summary: challenge.summary },
     report,
+    executable,
     paper: { admitted, tradesRecorded: paperTrades },
     memory,
     nextExperimentProposed,

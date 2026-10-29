@@ -16,3 +16,4 @@ export * from "./promotion.js";
 export * from "./data-integrity.js";
 export * from "./outcomes.js";
 export * from "./lineage.js";
+export * from "./provenance.js";

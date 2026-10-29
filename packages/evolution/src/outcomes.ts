@@ -30,7 +30,8 @@ export function classifyResearchOutcomes(input: {
   statisticsRecorded: boolean;
   untouchedTestReturnPct: string | null;
   untouchedSampleSize: number;
-  tunedOnEvaluationSample: boolean;
+  /** null = tuning/selection history unknown, which can never satisfy out-of-sample validation. */
+  tunedOnEvaluationSample: boolean | null;
   forwardPaperValidated: boolean;
   promotionAuthorised: boolean;
 }): ResearchOutcomeMap {
@@ -39,7 +40,7 @@ export function classifyResearchOutcomes(input: {
     measurable && input.statisticsRecorded && input.sampleSize >= input.minSampleSize && input.returnPct !== null;
   const oos =
     statistical &&
-    !input.tunedOnEvaluationSample &&
+    input.tunedOnEvaluationSample === false &&
     input.untouchedTestReturnPct !== null &&
     input.untouchedSampleSize >= input.minSampleSize;
   const forward = oos && input.forwardPaperValidated;
@@ -69,11 +70,13 @@ export function classifyResearchOutcomes(input: {
     },
     OUT_OF_SAMPLE_VALIDATED: {
       met: oos,
-      detail: input.tunedOnEvaluationSample
-        ? "Parameters were fit on the evaluation window"
-        : oos
-          ? `Untouched window return ${input.untouchedTestReturnPct}% (n=${input.untouchedSampleSize})`
-          : "Untouched window lacks a measured return at the minimum sample size",
+      detail: input.tunedOnEvaluationSample === null
+        ? "Tuning/selection history is unknown"
+        : input.tunedOnEvaluationSample
+          ? "Parameters were fit on the evaluation window"
+          : oos
+            ? `Untouched window return ${input.untouchedTestReturnPct}% (n=${input.untouchedSampleSize})`
+            : "Untouched window lacks a measured return at the minimum sample size",
     },
     FORWARD_PAPER_VALIDATED: {
       met: forward,

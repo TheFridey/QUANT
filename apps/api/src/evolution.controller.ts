@@ -140,4 +140,10 @@ export class EvolutionController {
   promote(@Body() body: unknown, @Req() request: RequestWithUser) {
     return this.evolution.promotePaperStrategy(body, request.user?.email ?? "");
   }
+
+  @UseGuards(AdminGuard)
+  @Post("promote/unvalidated")
+  promoteUnvalidated(@Body() body: unknown, @Req() request: RequestWithUser) {
+    return this.evolution.applyUnvalidatedPaperExperiment(body, request.user?.email ?? "");
+  }
 }
