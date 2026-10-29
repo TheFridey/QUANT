@@ -81,7 +81,7 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 | §33 Engine soak | StageRunner+DB | `VERIFIED_INTEGRATION` | wall **10038ms**; 71 cycles |
 | §34 Snapshot perf | e2e latency not claimed | `VERIFIED_UNIT` helpers only | snapshot-cost unit; no SLO claim |
 | §35 Migrations / unattributed | runtimeState migration; UNATTRIBUTED repair | `VERIFIED_INTEGRATION` | migrate deploy + repair helper |
-| §36 CI connected product | integration project + build + browser-e2e job | `IMPLEMENTED_UNVERIFIED` until Actions green on this push | unit/IT local green; browser job newly added |
+| §36 CI connected product | integration project + build + browser-e2e job | `VERIFIED_INTEGRATION` + `VERIFIED_E2E` (Actions) | `59c35e0` — all 6 checks green incl. `browser-e2e` |
 | §37 This matrix | honest statuses | this file | |
 | §38 Release gates | see below | | |
 | §39 PR | reviewable; do not merge | open PR #7 |
@@ -92,7 +92,7 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 
 | Gate | Meaning | Status |
 | --- | --- | --- |
-| Gate 1 — LOCAL PAPER MVP | Attributed intents, ownership, paper path, worker/DB + browser | **PASSING locally** — multi-intent/capacity/settlement/recon + operator capacity UI + validated promotion IT. Prior Playwright 8/8; browser CI job added this push (await Actions). |
+| Gate 1 — LOCAL PAPER MVP | Attributed intents, ownership, paper path, worker/DB + browser | **PASSING** — local unit/IT/soak + Actions `test`/`browser-e2e` green on `59c35e0`. |
 | Gate 2 — EXTERNAL PRACTICE | Named Alpaca demo | **BLOCKED_EXTERNAL** (HTTP transport + offline venue VERIFIED_UNIT; no owner creds) |
 | Gate 3 — LIVE | Live money | **DISABLED** |
 
@@ -112,3 +112,4 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 | 2026-10-29 | CI race fix; shared contracts; allocation settlement in store; market scoping; fairness cursor; budgets; ownership exits; practice HTTP+gateway; lineage promotion gate; paper-lifecycle IT; engine soak; operator whyNoTrades families; CAPABILITIES honesty |
 | 2026-10-29 | Playwright Gate 1 browser E2E against live stack + isolated `odin_e2e` — 8/8 pass; `VERIFIED_E2E` for listed paper UI paths; docs/PLAYWRIGHT.md |
 | 2026-10-29 | Runtime correctness: multi-intent planner, instance capacity, ownership settlement, honest recon, SANDBOX outbox, Alpaca practice venue, validated promotion provenance, operator capacity/ACK UI, deterministic feed + Actions browser-e2e job |
+| 2026-10-29 | CI green on `59c35e0` (lint/worker start path fix); all 6 Actions checks pass including browser-e2e |
