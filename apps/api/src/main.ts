@@ -10,6 +10,7 @@ import { AppModule } from "./app.module.js";
 import { ApiExceptionFilter } from "./filter.js";
 import { apiLog } from "./logger.js";
 import type { RequestWithUser } from "./http.js";
+import { allowedWebOrigins } from "./socket-origins.js";
 
 async function main(): Promise<void> {
   const env = await loadEnvConfig();
@@ -21,7 +22,7 @@ async function main(): Promise<void> {
   app.setGlobalPrefix("api");
   app.use(helmet());
   app.enableCors({
-    origin: [env.webOrigin, "http://127.0.0.1:4317", "http://localhost:4317"],
+    origin: allowedWebOrigins(env.webOrigin),
     allowedHeaders: ["authorization", "content-type"],
     methods: ["GET", "POST", "PATCH"],
   });

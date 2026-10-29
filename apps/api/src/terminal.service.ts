@@ -161,15 +161,19 @@ export class TerminalService {
       where: { accountId: account.id, type: "FEE" },
       _sum: { amountUsd: true },
     });
+    const closedTradeLimit = 200;
+    const equitySeriesLimit = 500;
+    const funnelEventLimit = 200;
     const closed = await this.prisma.ledgerEntry.findMany({
       where: { accountId: account.id, type: "REALIZED_PNL" },
       orderBy: { createdAt: "desc" },
-      take: 200,
+      take: closedTradeLimit, // analyticsWindows.closedTrades — latest N, not calendar ALL
     });
+    // D14: equity curve sample is earliest N snapshots (asc), not a calendar window.
     const equitySeriesRows = await this.prisma.equitySnapshot.findMany({
       where: { accountId: metricsAccountId, equityUsd: { not: null } },
       orderBy: { createdAt: "asc" },
-      take: 500,
+      take: equitySeriesLimit,
       select: { equityUsd: true },
     });
     const report = performanceReport({
@@ -179,6 +183,33 @@ export class TerminalService {
       closedTradePnlUsd: closed.map((entry) => entry.amountUsd.toString()),
       equitySeries: equitySeriesRows.map((row) => row.equityUsd!.toString()),
     });
+    const analyticsWindows = {
+      closedTrades: {
+        label: `latest_${closedTradeLimit}_realized_pnl_ledger`,
+        range: "SAMPLE_LATEST" as const,
+        limit: closedTradeLimit,
+        sampleSize: closed.length,
+      },
+      fees: {
+        label: "all_time_fee_ledger_sum",
+        range: "ALL" as const,
+        limit: null,
+        sampleSize: null,
+      },
+      equitySeries: {
+        label: `earliest_${equitySeriesLimit}_equity_snapshots`,
+        range: "SAMPLE_EARLIEST" as const,
+        limit: equitySeriesLimit,
+        sampleSize: equitySeriesRows.length,
+      },
+      funnel: {
+        label: `latest_${funnelEventLimit}_funnel_events`,
+        range: "SAMPLE_LATEST" as const,
+        limit: funnelEventLimit,
+        sampleSize: null as number | null,
+      },
+      note: "Portfolio win/loss/drawdown metrics mix these samples — not a single calendar window. Use equityHistory(range) for explicit 1H/24H/7D/30D/ALL charts.",
+    };
     const cycle = await this.prisma.cycleRun.findFirst({ orderBy: { startedAt: "desc" } });
     const decisions = cycle
       ? await this.prisma.agentDecision.findMany({ where: { cycleId: cycle.id }, orderBy: { createdAt: "asc" }, take: 120 })
@@ -229,8 +260,9 @@ export class TerminalService {
     const funnelRows = await this.prisma.opportunityFunnelEvent.findMany({
       where: { accountId: metricsAccountId },
       orderBy: { createdAt: "desc" },
-      take: 200,
+      take: funnelEventLimit,
     });
+    analyticsWindows.funnel.sampleSize = funnelRows.length;
     const funnelSummary = summarizeFunnel(
       funnelRows.map((row) => ({
         cycleId: row.cycleId,
@@ -507,6 +539,7 @@ export class TerminalService {
         maxDrawdownPct: report.maxDrawdownPct,
         sampleSize: report.sampleSize,
         observed: report.observed,
+        analyticsWindows,
         highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,
         availableFundsUsd: account.cashUsd.toString(),
         exposureUsd,

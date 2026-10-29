@@ -60,3 +60,27 @@ Numbering continues the programme log from MVP D014; these entries freeze Gate A
 **Decision:** `TerminalService.snapshot` filters latest cycle observations and mark fallbacks by `ctx.tradingEnvironment` (exact match). Position marks use same-environment observations only. `presentPair` / mark freshness prefer stored `dataOrigin` via `freshnessFromProvenance` so FIXTURE / REPLAY / DELAYED quotes cannot appear as LIVE for paper accounts.
 **Addresses:** D21  
 **Date:** 2026-10-29
+
+## D024 — Single-operator auth/session scope (D25)
+
+**Decision:** Documented deployment scope is **single trusted operator** (local/VPN paper). Logout revokes JWT server-side (`jti` + memory, Redis when available). Socket.IO CORS/origin checks use `WEB_ORIGIN` plus local paper defaults — never reflect-any. Connected sockets re-verify JWT expiry/revocation on an interval. Login rate limiting remains per-process memory (proxy-aware shared limiter deferred). Ordinary `POST /api/auth/login` paper credentials are unchanged.
+**Addresses:** D25  
+**Date:** 2026-10-29
+
+## D025 — Loopback infra bind + password rotation honesty (D26)
+
+**Decision:** `docker-compose.yml` publishes Postgres/Redis on `127.0.0.1` only. Production guidance: private network, no public DB/cache ports. `ADMIN_PASSWORD` env changes do not rewrite an existing seeded user hash — rotation is explicitly out-of-band until an admin password API exists.
+**Addresses:** D26  
+**Date:** 2026-10-29
+
+## D026 — CI builds without Playwright; soak is helper-only (D27)
+
+**Decision:** CI runs `pnpm build` (packages + api/worker/web) after existing tests; optional `build-packages` job compiles without DB services. Playwright browsers are not installed or required. `scripts/soak-capacity.mjs` is labelled helper≠full engine.
+**Addresses:** D27  
+**Date:** 2026-10-29
+
+## D027 — Terminal analytics windows are labelled samples (D14)
+
+**Decision:** Snapshot `portfolio.analyticsWindows` names each metric’s dataset (latest N closed trades, all-time fees, earliest N equity snapshots, latest N funnel events). Does not yet unify to one calendar cohort — labels prevent silent mix-ups; `equityHistory(range)` remains the explicit calendar API.
+**Addresses:** D14  
+**Date:** 2026-10-29

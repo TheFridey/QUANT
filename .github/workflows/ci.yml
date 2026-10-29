@@ -61,3 +61,25 @@ jobs:
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm lint
+      # Production-shaped compile (packages + api/worker/web). Does not install Playwright browsers.
+      - name: Production build
+        run: pnpm build
+
+  # Optional compile-only job without DB services (packages + apps). No Playwright.
+  build-packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build packages and apps
+        run: pnpm build
+        env:
+          # Next may read these at build time; values are non-secret CI placeholders.
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:4318

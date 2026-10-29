@@ -1,6 +1,9 @@
 # ODIN // QUANT infrastructure — Postgres + Redis only.
 # App processes (api/worker/web) run via `pnpm dev` against these services.
 # Research lab backtests read MarketObservation from Postgres; they do not invent prices.
+#
+# D26: bind published ports to loopback only. Do not publish 0.0.0.0 for shared/production hosts.
+# Production: keep Postgres/Redis on a private network (no host publish) behind the app tier.
 services:
   postgres:
     image: postgres:16-alpine
@@ -9,7 +12,7 @@ services:
       POSTGRES_PASSWORD: odin
       POSTGRES_DB: odin
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - odin_pg:/var/lib/postgresql/data
     healthcheck:
@@ -21,7 +24,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - odin_redis:/data

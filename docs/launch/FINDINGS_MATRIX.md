@@ -19,7 +19,7 @@
 | D11 | P1 | IMPLEMENTED | `strategy-instances.ts` buildInstancePlanGates; empty ENTER allowlist (no null fallback); EXIT→pulse; order `strategyInstanceId` stamp | `pnpm exec vitest run packages/agent-core/src/strategy-instances.test.ts packages/agent-core/src/pulse-exits.test.ts packages/agent-core/src/active-strategy.test.ts` | VERIFIED_UNIT |
 | D12 | P1 | IMPLEMENTED | `pulse.ts` promoted HOLD falls through to stop/target/time exits when held | `pnpm exec vitest run packages/agent-core/src/pulse-exits.test.ts` | VERIFIED_UNIT (exits; product accounting still OPEN) |
 | D13 | P1 | IMPLEMENTED | `promotion.ts` evidenceFromExperimentReport; `evolution.service` promote resolves reportId server-side, refuses missing | `pnpm exec vitest run packages/evolution/src/promotion.test.ts apps/api/src/promote-paper.test.ts` | VERIFIED_UNIT |
-| D14 | P1 | OPEN | Analytics window mix | analytics / terminal | — |
+| D14 | P1 | IMPLEMENTED | `terminal.service` portfolio.analyticsWindows labels (sample scopes explicit; not single calendar) | snapshot payload | VERIFIED_UNIT (labels; full ledger redesign OPEN) |
 | D15 | P1 | IMPLEMENTED | `market-admission.ts` + stage-runner loadPlan MarketSelection map; plan blocks ENTRY, exits/monitoring remain | `pnpm exec vitest run packages/agent-core/src/market-admission.test.ts packages/agent-core/src/pulse-exits.test.ts` | VERIFIED_UNIT |
 | D16 | P1 | OPEN | Ops controls vs config immutability | api / web | — |
 | D17 | P1 | OPEN | Polling overwrites drafts | web | — |
@@ -30,9 +30,9 @@
 | D22 | P2 | OPEN | History pagination | api / web | — |
 | D23 | P2 | DESIGN | Onboarding wizard | web | — |
 | D24 | P2 | DESIGN | Navigation hierarchy | web | — |
-| D25 | P1 | OPEN | Auth/session/socket | api | — |
-| D26 | P1 | OPEN | Deploy/backup/restore | compose / docs | — |
-| D27 | P1 | OPEN | CI/soak/capacity | .github / scripts | — |
+| D25 | P1 | IMPLEMENTED | Single-operator scope docs; logout+JWT revoke (memory/Redis); socket origin from env; JWT revalidate on socket; proxy rate-limit note | `pnpm exec vitest run apps/api/src/token-revocation.test.ts` | VERIFIED_UNIT (partial; account rooms / multi-user still OPEN) |
+| D26 | P1 | IMPLEMENTED | compose Postgres/Redis bind `127.0.0.1`; RUNBOOKS production bind + ADMIN_PASSWORD rotation limitation | compose + `docs/launch/RUNBOOKS.md` | — (restore drill still OPEN) |
+| D27 | P1 | IMPLEMENTED | CI `pnpm build` + `build-packages` job; soak comments helper≠full engine | `.github/workflows/ci.yml` / `scripts/soak-capacity.mjs` | — (full-engine/browser soak still OPEN) |
 | D28 | P2 | DESIGN | Research spend/lineage | evolution / lab | — |
 | D29 | P2 | OPEN | Snapshot/query cost | api | — |
 | D30 | P2 | DESIGN | A11y / feedback | web | — |
@@ -41,8 +41,8 @@
 
 | Status | Count |
 | --- | --- |
-| IMPLEMENTED | 15 (D01–D13, D15, D21) |
-| OPEN | 11 |
+| IMPLEMENTED | 19 (D01–D15, D21, D25–D27) |
+| OPEN | 7 |
 | DESIGN | 4 |
 | **Total** | **30** |
 
@@ -50,4 +50,5 @@
 
 - Gate A code paths updated on this branch; full worker/DB verification still pending for D01/D02/D07.
 - Gate B (local): D08 multi-route mandatory refresh, D09 ExecutionGateway SANDBOX stub (no local PAPER masquerade; full demo lifecycle follow-on), D10 practice URL/readiness, D11 instance ownership, D12 HOLD≠bypass exits, D13 promotion evidence, D15 MarketSelection admission.
+- Gate D (partial): D14 analytics window labels; D25 single-operator auth/socket hardening; D26 loopback compose + rotation note; D27 CI production build (no Playwright browsers required). Blocked remainders: multi-user account rooms, tested restore, full-engine/browser soak, D16–D20/D22–D24/D28–D30.
 - Live money remains disabled.
