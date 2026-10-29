@@ -2,8 +2,9 @@ import { DEFAULT_STRATEGY } from "@odin/shared";
 import { describe, expect, it } from "vitest";
 import {
   allocateOpportunities,
-  buildInstancePlanGates,
   evaluateConcurrentInstances,
+  fairnessCursorAfterAdmission,
+  toPlanIntents,
   type DurableStrategyInstance,
 } from "./strategy-instances.js";
 
@@ -26,7 +27,7 @@ function instance(
     health: "HEALTHY",
     status: "ACTIVE",
     moduleRef,
-    artifactHash: `art_${partial.id}`,
+    artifactHash: null,
     sourceHash: `src_${partial.id}`,
     ...partial,
   };
@@ -89,44 +90,49 @@ describe("concurrent strategy instances", () => {
     expect(allocated.accepted.filter((s) => s.intent === "ENTER_LONG")).toHaveLength(2);
     expect(allocated.deferred.filter((s) => s.intent === "ENTER_LONG")).toHaveLength(1);
 
-    const gates = buildInstancePlanGates(allocated.accepted);
-    expect(gates.exitByPair.get("fx:EURUSD")).toBe("i2");
-    expect(gates.entryAllowlist.has("fx:EURUSD")).toBe(true);
-    expect(gates.entryByPair.get("fx:EURUSD")?.strategyInstanceId).toBe("i2");
-    expect(gates.instanceByPair.get("fx:EURUSD")).toBeTruthy();
+    // Entries come back in full fair order so a rejected candidate never consumes another's turn.
+    expect(allocated.ordered.map((s) => s.strategyInstanceId)).toEqual(["i2", "i1", "i2", "i3"]);
   });
 
-  it("empty ENTER intents produce an empty allowlist (never null-fallback semantics)", () => {
-    const gates = buildInstancePlanGates([
-      {
-        intent: "EXIT_LONG",
-        reasonCodes: ["EXIT_MOMENTUM"],
-        instrumentId: "fx:EURUSD",
-        pairAddress: "fx:EURUSD",
-        strategyInstanceId: "i2",
-        strategyVersion: "pulse@1",
-        moduleRef: "pulse-momentum-v1",
-        accountId: "primary",
-        artifactHash: null,
-        sourceHash: null,
-      },
-      {
-        intent: "HOLD",
-        reasonCodes: ["NO_EDGE"],
-        instrumentId: "etf:SPY",
-        pairAddress: "etf:SPY",
-        strategyInstanceId: "i3",
-        strategyVersion: "mean@1",
-        moduleRef: "mean-revert-fade-v1",
-        accountId: "primary",
-        artifactHash: null,
-        sourceHash: null,
-      },
-    ]);
-    expect(gates.entryAllowlist.size).toBe(0);
-    expect(gates.entryByPair.size).toBe(0);
-    expect(gates.exitByPair.get("fx:EURUSD")).toBe("i2");
-    expect(gates.instanceByPair.get("fx:EURUSD")).toBe("i2");
+  it("two instances entering the same symbol keep distinct intent identity", () => {
+    const base = {
+      intent: "ENTER_LONG" as const,
+      reasonCodes: ["ENTRY_MOMENTUM"],
+      instrumentId: "fx:EURUSD",
+      pairAddress: "fx:EURUSD",
+      strategyVersion: "pulse@1",
+      moduleRef: "pulse-momentum-v1",
+      accountId: "primary",
+      artifactHash: null,
+      sourceHash: null,
+    };
+    const intents = toPlanIntents(
+      [
+        { ...base, strategyInstanceId: "a" },
+        { ...base, strategyInstanceId: "b" },
+        { ...base, strategyInstanceId: "a" },
+      ],
+      { cycleId: "cyc_1", accountId: "primary" },
+    );
+    expect(intents).toHaveLength(2);
+    expect(new Set(intents.map((i) => i.clientOrderId)).size).toBe(2);
+    expect(new Set(intents.map((i) => i.intentId)).size).toBe(2);
+    for (const intent of intents) expect(intent.clientOrderId).toMatch(/^q1-[a-z2-7]{26}$/);
+    const retry = toPlanIntents([{ ...base, strategyInstanceId: "a" }], { cycleId: "cyc_1", accountId: "primary" });
+    expect(retry[0]!.clientOrderId).toBe(intents[0]!.clientOrderId);
+    const nextCycle = toPlanIntents([{ ...base, strategyInstanceId: "a" }], { cycleId: "cyc_2", accountId: "primary" });
+    expect(nextCycle[0]!.clientOrderId).not.toBe(intents[0]!.clientOrderId);
+  });
+
+  it("fairness cursor resumes after the last actually admitted instance", () => {
+    const entry = (id: string) => ({ strategyInstanceId: id, action: "ENTER" });
+    const first = allocateOpportunities({ signals: [entry("a"), entry("b"), entry("c")], maxNewEntries: 1 });
+    expect(first.ordered[0]!.strategyInstanceId).toBe("a");
+    // "a" was rejected (e.g. budget) and "b" admitted → next cycle starts at "c".
+    const cursor = fairnessCursorAfterAdmission(["b"], null);
+    const second = allocateOpportunities({ signals: [entry("a"), entry("b"), entry("c")], maxNewEntries: 1, fairnessCursor: cursor });
+    expect(second.ordered[0]!.strategyInstanceId).toBe("c");
+    expect(fairnessCursorAfterAdmission([], "b")).toBe("b");
   });
 
   it("runs ≥3 instances across crypto/FX/ETF and attributes signals", () => {

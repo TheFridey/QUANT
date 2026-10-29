@@ -2,6 +2,7 @@ import { DEFAULT_STRATEGY, type CyclePair } from "@odin/shared";
 import { describe, expect, it } from "vitest";
 import { planCycle, type PlanInput } from "./plan.js";
 import { runPulse } from "./pulse.js";
+import { toPlanIntents } from "./strategy-instances.js";
 import type { DecisionDraft } from "./types.js";
 
 const pairAddress = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
@@ -126,15 +127,32 @@ describe("pulse invariant exits (D12) + instance exits (D11)", () => {
   it("instance EXIT_LONG reaches planning as a sell", () => {
     const plan = planCycle(
       planInput({
-        concurrentExitByPair: new Map([[pairAddress, "stratinst_test"]]),
-        concurrentInstanceByPair: new Map([[pairAddress, "stratinst_test"]]),
+        instanceIntents: toPlanIntents(
+          [
+            {
+              intent: "EXIT_LONG",
+              reasonCodes: ["EXIT_MOMENTUM"],
+              instrumentId: pairAddress,
+              pairAddress,
+              strategyInstanceId: "stratinst_test",
+              strategyVersion: "pulse@1",
+              moduleRef: "pulse-momentum-v1",
+              accountId: "primary",
+              artifactHash: null,
+              sourceHash: null,
+            },
+          ],
+          { cycleId: "cyc_exit", accountId: "primary" },
+        ),
+        allocations: new Map([[`stratinst_test::${pairAddress}`, { qty: "0.25000000", reservedExitQty: "0" }]]),
         pairs: [solPair({ priceUsd: "101", priceChangeM5Pct: "0.5" })],
         marks: { [pairAddress]: { priceUsd: "101", freshness: "LIVE" } },
       }),
     );
     expect(plan.orders.some((o) => o.side === "SELL" && o.intent === "EXIT")).toBe(true);
     expect(plan.orders[0]?.strategyInstanceId).toBe("stratinst_test");
-    expect(plan.decisions.some((d) => d.reasonCodes.includes("STRATEGY_INSTANCE_EXIT"))).toBe(true);
+    expect(plan.orders[0]?.ownerScope).toBe("STRATEGY");
+    expect(plan.decisions.some((d) => d.reasonCodes.includes("ALLOCATION_EXIT"))).toBe(true);
   });
 
   it("empty concurrent entry allowlist blocks automatic entries (D11/§5)", () => {
@@ -143,8 +161,7 @@ describe("pulse invariant exits (D12) + instance exits (D11)", () => {
         cashUsd: DEFAULT_STRATEGY.startingBalanceUsd,
         positions: [],
         aggregateExposureUsd: "0",
-        concurrentEntryAllowlist: new Set(),
-        concurrentEntryByPair: new Map(),
+        instanceIntents: [],
         pairs: [solPair({ priceChangeM5Pct: "3.5", priceChangeH1Pct: "1.2", txnsM5Buys: 80, txnsM5Sells: 20 })],
         marks: { [pairAddress]: { priceUsd: "100", freshness: "LIVE" } },
       }),

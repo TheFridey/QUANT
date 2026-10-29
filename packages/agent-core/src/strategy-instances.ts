@@ -1,7 +1,8 @@
-import { d, newId } from "@odin/shared";
+import { clientOrderIdFor, intentIdFor, intentIdempotencyKey, newId } from "@odin/shared";
 import { toJson, type PrismaClient } from "@odin/shared/db";
 import { defaultModuleRefForSeed, resolveStrategyBinding } from "./strategy-binding.js";
 import type { StrategyModule, StrategySignal, StrategyContext, StrategyBar } from "./strategy-library.js";
+import type { PlanIntent } from "./types.js";
 
 export type DurableStrategyInstance = {
   id: string;
@@ -272,12 +273,17 @@ function isSolanaInstrument(value: string): boolean {
 /**
  * Run durable instances on bars. One invalid/unhealthy binding does not abort others.
  * Exit signals sort before entries (exit priority).
+ *
+ * `ownedByInstance` gives each instance its OWN allocation view: strategy B must not
+ * see strategy A's holding as "held" (that suppressed B's entries and invented exits
+ * B does not own). Without it, the legacy net view is used.
  */
 export function evaluateConcurrentInstances(input: {
   instances: DurableStrategyInstance[];
   bars: StrategyBar[];
   context: StrategyContext;
   tradingEnvironment?: string | null;
+  ownedByInstance?: ReadonlyMap<string, StrategyContext["openPositions"]>;
 }): { signals: AttributedSignal[]; errors: Array<{ strategyInstanceId: string; message: string }> } {
   const signals: AttributedSignal[] = [];
   const errors: Array<{ strategyInstanceId: string; message: string }> = [];
@@ -293,11 +299,15 @@ export function evaluateConcurrentInstances(input: {
       });
       continue;
     }
+    const openPositions = input.ownedByInstance
+      ? (input.ownedByInstance.get(instance.id) ?? [])
+      : input.context.openPositions;
     for (const bar of input.bars) {
       if (!instanceMatchesInstrument(instance, bar)) continue;
       try {
         const signal = mod.onBar(bar, {
           ...input.context,
+          openPositions,
           config: { ...input.context.config, ...(instance.params as object) },
         });
         signals.push({
@@ -328,40 +338,6 @@ export function evaluateConcurrentInstances(input: {
   return { signals, errors };
 }
 
-/**
- * Atomic-ish budget gate for real admission (§10): drop ENTER when committed+pending
- * capital already meets/exceeds instance budgetUsd. Pending counts toward capacity.
- */
-export async function filterSignalsByInstanceBudget(
-  prisma: Pick<PrismaClient, "strategyAllocation">,
-  accountId: string,
-  instances: DurableStrategyInstance[],
-  signals: AttributedSignal[],
-): Promise<AttributedSignal[]> {
-  const budgets = new Map(instances.map((i) => [i.id, d(i.budgetUsd)]));
-  const allocs = await prisma.strategyAllocation.findMany({
-    where: { accountId, strategyInstanceId: { in: [...budgets.keys()] } },
-  });
-  const used = new Map<string, ReturnType<typeof d>>();
-  for (const row of allocs) {
-    const prior = used.get(row.strategyInstanceId) ?? d("0");
-    used.set(
-      row.strategyInstanceId,
-      prior.plus(d(row.committedCapitalUsd.toString())).plus(d(row.pendingCapitalUsd.toString())),
-    );
-  }
-  return signals.filter((signal) => {
-    if (signal.intent !== "ENTER_LONG") return true;
-    const budget = budgets.get(signal.strategyInstanceId);
-    if (!budget) return false;
-    const spent = used.get(signal.strategyInstanceId) ?? d("0");
-    if (spent.gte(budget)) {
-      return false;
-    }
-    return true;
-  });
-}
-
 /** Convert library signals into canonical intents for planning/risk/audit. */
 export function toCanonicalIntents(
   signals: AttributedSignal[],
@@ -374,9 +350,11 @@ export function toCanonicalIntents(
         ? "ENTER"
         : signal.intent === "EXIT_LONG"
           ? "EXIT"
-          : signal.intent === "RESEARCH_NOTE"
-            ? "RESEARCH"
-            : "HOLD";
+          : (signal.intent as string) === "REDUCE_LONG"
+            ? "REDUCE"
+            : signal.intent === "RESEARCH_NOTE"
+              ? "RESEARCH"
+              : "HOLD";
     return {
       strategyInstanceId: signal.strategyInstanceId,
       strategyVersion: signal.strategyVersion,
@@ -397,29 +375,91 @@ export function toCanonicalIntents(
 }
 
 /**
- * Deterministic opportunity allocation with exit priority + deficit round-robin fairness
- * across instances when multiple entries compete for the same slot budget (§15).
- * `fairnessCursor` rotates the starting instance so alphabetical order cannot permanently win.
- * No mandatory trade quota.
+ * Attach durable identity to actionable signals. Identity includes the owning
+ * instance, so two instances entering the same symbol in one cycle never collide,
+ * while a retry of the same cycle reproduces the same intentId/clientOrderId.
  */
-export function allocateOpportunities(input: {
-  signals: AttributedSignal[];
+export function toPlanIntents(
+  signals: readonly AttributedSignal[],
+  opts: { cycleId: string; accountId: string; configHashByInstance?: ReadonlyMap<string, string> },
+): PlanIntent[] {
+  const out: PlanIntent[] = [];
+  const seen = new Set<string>();
+  for (const signal of signals) {
+    const action =
+      signal.intent === "ENTER_LONG"
+        ? ("ENTER" as const)
+        : signal.intent === "EXIT_LONG"
+          ? ("EXIT" as const)
+          : (signal.intent as string) === "REDUCE_LONG"
+            ? ("REDUCE" as const)
+            : null;
+    if (!action) continue;
+    const pairAddress = signal.pairAddress || signal.instrumentId;
+    if (!pairAddress) continue;
+    const idempotencyKey = intentIdempotencyKey({
+      cycleId: opts.cycleId,
+      accountId: opts.accountId,
+      source: "STRATEGY",
+      ownerRef: signal.strategyInstanceId,
+      pairAddress,
+      action,
+    });
+    // Genuine duplicate (same owner, same instrument, same action, same cycle) collapses; independent owners do not.
+    if (seen.has(idempotencyKey)) continue;
+    seen.add(idempotencyKey);
+    out.push({
+      intentId: intentIdFor(idempotencyKey),
+      idempotencyKey,
+      clientOrderId: clientOrderIdFor(idempotencyKey),
+      source: "STRATEGY",
+      strategyInstanceId: signal.strategyInstanceId,
+      strategyVersion: signal.strategyVersion,
+      moduleRef: signal.moduleRef,
+      artifactHash: signal.artifactHash,
+      sourceHash: signal.sourceHash,
+      configHash: opts.configHashByInstance?.get(signal.strategyInstanceId) ?? null,
+      instrumentId: signal.instrumentId,
+      pairAddress,
+      action,
+      requestedQty: null,
+      reasonCodes: signal.reasonCodes,
+      observationReceivedAt: signal.observationReceivedAt ?? null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Deterministic fair ordering with exit priority + round-robin across instances (§15).
+ * `fairnessCursor` rotates the starting instance so alphabetical order cannot permanently win.
+ *
+ * Returns ALL entries in fair order (`ordered`). The planner admits from the front and,
+ * when a candidate is rejected (budget, risk, session…), continues with the next one —
+ * a rejected candidate never consumes another strategy's turn. `accepted`/`deferred`
+ * preview the first `maxNewEntries` for diagnostics. No mandatory trade quota.
+ */
+export function allocateOpportunities<T extends { strategyInstanceId: string; intent?: string; action?: string }>(input: {
+  signals: T[];
   maxNewEntries: number;
   /** Last admitted instance id from prior cycle — resume RR after that id. */
   fairnessCursor?: string | null;
 }): {
-  accepted: AttributedSignal[];
-  deferred: AttributedSignal[];
+  ordered: T[];
+  accepted: T[];
+  deferred: T[];
   nextFairnessCursor: string | null;
 } {
-  const exits = input.signals.filter(
-    (s) => s.intent === "EXIT_LONG" || (s.intent as string) === "REDUCE_LONG",
-  );
-  const entries = input.signals.filter((s) => s.intent === "ENTER_LONG");
-  const holds = input.signals.filter((s) => s.intent === "HOLD" || s.intent === "RESEARCH_NOTE");
-  const accepted: AttributedSignal[] = [...exits];
-  const deferred: AttributedSignal[] = [...holds];
-  const byInstance = new Map<string, AttributedSignal[]>();
+  const kind = (s: T) => {
+    const v = (s.action ?? s.intent ?? "") as string;
+    if (v === "EXIT_LONG" || v === "REDUCE_LONG" || v === "EXIT" || v === "REDUCE") return "EXIT";
+    if (v === "ENTER_LONG" || v === "ENTER") return "ENTER";
+    return "OTHER";
+  };
+  const exits = input.signals.filter((s) => kind(s) === "EXIT");
+  const entries = input.signals.filter((s) => kind(s) === "ENTER");
+  const holds = input.signals.filter((s) => kind(s) === "OTHER");
+  const byInstance = new Map<string, T[]>();
   for (const entry of entries) {
     const list = byInstance.get(entry.strategyInstanceId) ?? [];
     list.push(entry);
@@ -427,64 +467,42 @@ export function allocateOpportunities(input: {
   }
   const queues = [...byInstance.entries()].sort(([a], [b]) => a.localeCompare(b));
   if (queues.length > 0 && input.fairnessCursor) {
-    const idx = queues.findIndex(([id]) => id === input.fairnessCursor);
-    if (idx >= 0) {
-      const rotated = [...queues.slice(idx + 1), ...queues.slice(0, idx + 1)];
-      queues.splice(0, queues.length, ...rotated);
-    }
+    // Resume strictly after the cursor id, even when that instance has no entries this cycle.
+    const cursor = input.fairnessCursor;
+    const found = queues.findIndex(([id]) => id > cursor);
+    const startAt = found < 0 ? 0 : found;
+    const rotated = [...queues.slice(startAt), ...queues.slice(0, startAt)];
+    queues.splice(0, queues.length, ...rotated);
   }
-  let admitted = 0;
+  const fairEntries: T[] = [];
   let progressed = true;
-  let lastAdmitted: string | null = input.fairnessCursor ?? null;
-  while (admitted < input.maxNewEntries && progressed) {
+  while (progressed) {
     progressed = false;
-    for (const [instanceId, queue] of queues) {
-      if (admitted >= input.maxNewEntries) break;
+    for (const [, queue] of queues) {
       const next = queue.shift();
       if (!next) continue;
-      accepted.push(next);
-      admitted += 1;
-      lastAdmitted = instanceId;
+      fairEntries.push(next);
       progressed = true;
     }
   }
-  for (const [, queue] of queues) deferred.push(...queue);
-  return { accepted, deferred, nextFairnessCursor: lastAdmitted };
+  const limit = Math.max(0, input.maxNewEntries);
+  const accepted = [...exits, ...fairEntries.slice(0, limit)];
+  const deferred = [...holds, ...fairEntries.slice(limit)];
+  const lastPreview = fairEntries.slice(0, limit).at(-1);
+  return {
+    ordered: [...exits, ...fairEntries],
+    accepted,
+    deferred,
+    nextFairnessCursor: lastPreview?.strategyInstanceId ?? input.fairnessCursor ?? null,
+  };
 }
 
-/**
- * Build plan gates + attributed entry/exit maps from allocated instance signals.
- * Empty entryAllowlist is intentional: zero ENTER intents ⇒ zero automatic entries.
- * entryByPair / exitByPair carry full attribution so planning does not need a second strategy ACT.
- */
-export function buildInstancePlanGates(accepted: AttributedSignal[]): {
-  entryAllowlist: Set<string>;
-  exitByPair: Map<string, string>;
-  /** Full attributed ENTER — planning uses this path directly (not allowlist+pulse). */
-  entryByPair: Map<string, AttributedSignal>;
-  /** Full attributed EXIT / REDUCE. */
-  exitSignalByPair: Map<string, AttributedSignal>;
-  instanceByPair: Map<string, string>;
-} {
-  const entryAllowlist = new Set<string>();
-  const exitByPair = new Map<string, string>();
-  const entryByPair = new Map<string, AttributedSignal>();
-  const exitSignalByPair = new Map<string, AttributedSignal>();
-  const instanceByPair = new Map<string, string>();
-  for (const signal of accepted) {
-    const key = signal.pairAddress || signal.instrumentId;
-    if (!key) continue;
-    instanceByPair.set(key, signal.strategyInstanceId);
-    if (signal.intent === "ENTER_LONG") {
-      entryAllowlist.add(key);
-      entryByPair.set(key, signal);
-    }
-    if (signal.intent === "EXIT_LONG") {
-      exitByPair.set(key, signal.strategyInstanceId);
-      exitSignalByPair.set(key, signal);
-    }
-  }
-  return { entryAllowlist, exitByPair, entryByPair, exitSignalByPair, instanceByPair };
+/** Fairness cursor after planning: the last instance whose entry was actually admitted. */
+export function fairnessCursorAfterAdmission(
+  admittedEntryInstanceIds: readonly string[],
+  prior: string | null,
+): string | null {
+  return admittedEntryInstanceIds.at(-1) ?? prior;
 }
 
 function mapRow(row: {

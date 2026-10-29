@@ -125,67 +125,9 @@ export function runPulse(
     return draft(pair, "ACT", ["FULL_POSITION_EXIT"], "1.000000", { side: "SELL", intent: "FLATTEN" }, signal, started, baseMeta.inputSource);
   }
 
-  // Concurrent StrategyInstance EXIT intents reach planning even when PULSE/promoted would HOLD.
-  const instanceExitId = input.concurrentExitByPair?.get(pair.pairAddress);
-  if (instanceExitId && held) {
-    return draft(
-      pair,
-      "ACT",
-      ["FULL_POSITION_EXIT", "STRATEGY_INSTANCE_EXIT"],
-      "1.000000",
-      { side: "SELL", intent: "EXIT", strategyInstanceId: instanceExitId, signal },
-      signal,
-      started,
-      `strategy-instance:${instanceExitId}`,
-    );
-  }
-
-  // §5: attributed instance ENTER reaches planning directly — HOLD from global/promoted
-  // must not suppress an accepted concurrent ENTER. Empty instance output does not
-  // invent unrelated auto-entry (only pairs present in concurrentEntryByPair).
-  const instanceEntry = input.concurrentEntryByPair?.get(pair.pairAddress);
-  if (instanceEntry && !held) {
-    if (surveillance.decision === "REJECT") {
-      return draft(
-        pair,
-        "HOLD",
-        ["BLOCKED_BY_SENTINEL", "STRATEGY_INSTANCE_ENTRY"],
-        "1.000000",
-        {
-          strategyInstanceId: instanceEntry.strategyInstanceId,
-          strategyVersion: instanceEntry.strategyVersion,
-          moduleRef: instanceEntry.moduleRef ?? null,
-          signal,
-        },
-        signal,
-        started,
-        `strategy-instance:${instanceEntry.strategyInstanceId}`,
-      );
-    }
-    return draft(
-      pair,
-      "ACT",
-      ["STRATEGY_INSTANCE_ENTRY", ...(instanceEntry.reasonCodes as ReasonCode[])],
-      "1.000000",
-      {
-        side: "BUY",
-        intent: "ENTRY",
-        strategyInstanceId: instanceEntry.strategyInstanceId,
-        strategyVersion: instanceEntry.strategyVersion,
-        moduleRef: instanceEntry.moduleRef ?? null,
-        artifactHash: instanceEntry.artifactHash ?? null,
-        sourceHash: instanceEntry.sourceHash ?? null,
-        signal,
-      },
-      signal,
-      started,
-      `strategy-instance:${instanceEntry.strategyInstanceId}`,
-    );
-  }
-
-  // When concurrent instances are the authority, do not fall through to unrelated
-  // global PULSE auto-entry for pairs they did not accept (empty ≠ ungated).
-  const instanceGatingActive = input.concurrentEntryAllowlist != null || input.concurrentEntryByPair != null;
+  // Strategy-instance intents are planned individually in planCycle (many per pair allowed).
+  // When instances are the entry authority, global PULSE never invents unrelated auto-entries.
+  const instanceGatingActive = input.instanceIntents != null;
 
   // Promoted strategy modules can drive intents when an activeStrategyId is set.
   const promoted = evaluatePromotedStrategy({
@@ -305,7 +247,12 @@ export function runPulse(
         );
       }
     }
-    if (pair.priceChangeM5Pct !== null && d(pair.priceChangeM5Pct).lte(input.config.exitM5ChangePct)) {
+    // Momentum exits are a strategy decision: with instance gating each owner decides its own exit.
+    if (
+      !instanceGatingActive &&
+      pair.priceChangeM5Pct !== null &&
+      d(pair.priceChangeM5Pct).lte(input.config.exitM5ChangePct)
+    ) {
       return draft(pair, "ACT", ["EXIT_MOMENTUM"], "1.000000", { side: "SELL", intent: "EXIT", signal }, signal, started, baseMeta.inputSource);
     }
     return draft(pair, "HOLD", ["HOLD_POSITION"], "1.000000", { signal }, signal, started, baseMeta.inputSource);

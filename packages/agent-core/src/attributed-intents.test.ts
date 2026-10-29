@@ -4,12 +4,34 @@ import { planCycle, type PlanInput } from "./plan.js";
 import { runPulse } from "./pulse.js";
 import {
   allocateOpportunities,
-  buildInstancePlanGates,
   evaluateConcurrentInstances,
   toCanonicalIntents,
+  toPlanIntents,
+  type AttributedSignal,
   type DurableStrategyInstance,
 } from "./strategy-instances.js";
-import type { DecisionDraft } from "./types.js";
+import type { DecisionDraft, PlanIntent } from "./types.js";
+
+function intentFor(
+  strategyInstanceId: string,
+  pairAddress: string,
+  action: "ENTER" | "EXIT",
+  cycleId = "cyc_attr",
+): PlanIntent {
+  const signal: AttributedSignal = {
+    intent: action === "ENTER" ? "ENTER_LONG" : "EXIT_LONG",
+    reasonCodes: [action === "ENTER" ? "ENTRY_MOMENTUM" : "EXIT_MOMENTUM"],
+    instrumentId: pairAddress,
+    pairAddress,
+    strategyInstanceId,
+    strategyVersion: `${strategyInstanceId}@1.0.0`,
+    moduleRef: "pulse-momentum-v1",
+    accountId: "primary",
+    artifactHash: null,
+    sourceHash: null,
+  };
+  return toPlanIntents([signal], { cycleId, accountId: "primary" })[0]!;
+}
 
 const fx = "fx:EURUSD";
 const etf = "etf:SPY";
@@ -26,7 +48,7 @@ function instance(
     budgetUsd: "10000",
     health: "HEALTHY",
     status: "ACTIVE",
-    artifactHash: `art_${partial.id}`,
+    artifactHash: null,
     sourceHash: `src_${partial.id}`,
     ...partial,
   };
@@ -113,30 +135,29 @@ describe("§5 attributed concurrent intents", () => {
       sourceHash: "src",
     };
     const pair = etfPair({ priceChangeM5Pct: "-2.5", priceChangeH1Pct: "-0.5" });
-    // Global pulse would HOLD (no momentum); attributed MR ENTER still ACTs.
+    void mrEntry;
+    const intents = [intentFor("stratinst_mr", etf, "ENTER")];
+    // Global pulse HOLDs (no momentum, instance gating active) — it never invents an entry itself.
     const draft = runPulse(pair, undefined, passSurveillance, planInput({
       pairs: [pair],
       marks: { [etf]: { priceUsd: "520", freshness: "LIVE" } },
-      concurrentEntryAllowlist: new Set([etf]),
-      concurrentEntryByPair: new Map([[etf, mrEntry]]),
-      concurrentInstanceByPair: new Map([[etf, "stratinst_mr"]]),
+      instanceIntents: intents,
       activeStrategyId: "pulse-momentum-v1",
     }));
-    expect(draft.decision).toBe("ACT");
-    expect(draft.output).toMatchObject({ side: "BUY", intent: "ENTRY", strategyInstanceId: "stratinst_mr" });
-    expect(draft.reasonCodes).toContain("STRATEGY_INSTANCE_ENTRY");
+    expect(draft.decision).not.toBe("ACT");
 
     const plan = planCycle(
       planInput({
         pairs: [pair],
         marks: { [etf]: { priceUsd: "520", freshness: "LIVE" } },
-        concurrentEntryAllowlist: new Set([etf]),
-        concurrentEntryByPair: new Map([[etf, mrEntry]]),
-        concurrentInstanceByPair: new Map([[etf, "stratinst_mr"]]),
+        instanceIntents: intents,
         activeStrategyId: "pulse-momentum-v1",
       }),
     );
-    expect(plan.orders.some((o) => o.side === "BUY" && o.strategyInstanceId === "stratinst_mr")).toBe(true);
+    const buy = plan.orders.find((o) => o.side === "BUY" && o.strategyInstanceId === "stratinst_mr");
+    expect(buy).toBeDefined();
+    expect(buy?.clientOrderId).toBe(intents[0]!.clientOrderId);
+    expect(buy?.ownerScope).toBe("STRATEGY");
   });
 
   it("momentum ENTER reaches planning while mean-revert HOLDs", () => {
@@ -151,9 +172,7 @@ describe("§5 attributed concurrent intents", () => {
       planInput({
         pairs: [pair],
         marks: { [fx]: { priceUsd: "1.08", freshness: "LIVE" } },
-        concurrentEntryAllowlist: new Set([fx]),
-        concurrentEntryByPair: new Map([[fx, momEntry]]),
-        concurrentInstanceByPair: new Map([[fx, "stratinst_mom"]]),
+        instanceIntents: [intentFor(momEntry.strategyInstanceId, fx, "ENTER")],
         activeStrategyId: "mean-revert-fade-v1",
       }),
     );
@@ -171,9 +190,7 @@ describe("§5 attributed concurrent intents", () => {
     const plan = planCycle(
       planInput({
         pairs: [pair],
-        concurrentEntryAllowlist: new Set([fx]),
-        concurrentEntryByPair: new Map([[fx, bo]]),
-        concurrentInstanceByPair: new Map([[fx, "stratinst_bo"]]),
+        instanceIntents: [intentFor(bo.strategyInstanceId, fx, "ENTER")],
         // No activeStrategyId — instance path is sufficient.
         activeStrategyId: null,
       }),
@@ -199,8 +216,7 @@ describe("§5 attributed concurrent intents", () => {
         ],
         cashUsd: "8000",
         aggregateExposureUsd: "1080",
-        concurrentEntryAllowlist: new Set(),
-        concurrentEntryByPair: new Map(),
+        instanceIntents: [],
         activeStrategyId: "mean-revert-fade-v1",
       }),
     );
@@ -283,8 +299,7 @@ describe("§5 attributed concurrent intents", () => {
       planInput({
         pairs: [solPair],
         marks: { [sol]: { priceUsd: "100", freshness: "LIVE" } },
-        concurrentEntryAllowlist: new Set([sol]),
-        concurrentEntryByPair: new Map([[sol, entry]]),
+        instanceIntents: [intentFor(entry.strategyInstanceId, sol, "ENTER")],
         marketEntryEnabled: new Map([["solana:spot:universe", false]]),
       }),
     );
@@ -300,7 +315,8 @@ describe("§5 attributed concurrent intents", () => {
     const exitOk = planCycle(
       planInput({
         marketEntryEnabled: new Map([["solana:spot:universe", false]]),
-        concurrentExitByPair: new Map([[sol, "stratinst_crypto"]]),
+        instanceIntents: [intentFor("stratinst_crypto", sol, "EXIT")],
+        allocations: new Map([["stratinst_crypto::" + sol, { qty: "0.25", reservedExitQty: "0" }]]),
         positions: [
           { pairAddress: sol, baseSymbol: "SOL", baseQty: "0.25", avgCostUsd: "100", realizedPnlUsd: "0" },
         ],
@@ -318,8 +334,7 @@ describe("§5 attributed concurrent intents", () => {
     const plan = planCycle(
       planInput({
         pairs: [pair],
-        concurrentEntryAllowlist: new Set(),
-        concurrentEntryByPair: new Map(),
+        instanceIntents: [],
       }),
     );
     expect(plan.orders.filter((o) => o.side === "BUY")).toHaveLength(0);
@@ -346,11 +361,11 @@ describe("§5 attributed concurrent intents", () => {
       artifactHash: null,
       sourceHash: null,
     };
-    const a = allocateOpportunities({ signals: [signal, signal], maxNewEntries: 1 });
-    expect(a.accepted.filter((s) => s.intent === "ENTER_LONG")).toHaveLength(1);
-    const gates = buildInstancePlanGates(a.accepted);
-    expect(gates.entryByPair.size).toBe(1);
-    const canonical = toCanonicalIntents(a.accepted, { tradingEnvironment: "MARKET_DATA_PAPER" });
+    const deduped = toPlanIntents([signal, signal], { cycleId: "cyc_attr", accountId: "primary" });
+    expect(deduped).toHaveLength(1);
+    const a = allocateOpportunities({ signals: deduped, maxNewEntries: 1 });
+    expect(a.accepted.filter((s) => s.action === "ENTER")).toHaveLength(1);
+    const canonical = toCanonicalIntents([signal], { tradingEnvironment: "MARKET_DATA_PAPER" });
     expect(canonical[0]).toMatchObject({
       action: "ENTER",
       strategyInstanceId: "i1",
