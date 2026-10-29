@@ -1,8 +1,9 @@
 # QUANT Launch — Findings Matrix (D01–D30)
 
-**Baseline:** `be0923305193cfbf5ccfbf6336663e0b002ca5bf`  
-**Branch:** `cursor/quant-gate-a-correctness-95f1`  
-**Verification levels:** implementation ≠ verification. VERIFIED_* only when evidence recorded.
+**Baseline:** `4adca801e4592ddb5cdcce107b2751b33bc5ba0c` (main tip after PR #4)  
+**Branch:** `cursor/quant-paper-mvp-gate1-7ed8`  
+**Verification levels:** implementation ≠ verification. VERIFIED_* only when evidence recorded.  
+See also `docs/launch/IMPLEMENTATION_STATUS.md` for Gate 1 programme status.
 
 | ID | Severity | Status | Package / call-site paths | Regression command | Verification |
 | --- | --- | --- | --- | --- | --- |
@@ -16,7 +17,7 @@
 | D08 | P1 | IMPLEMENTED | `held-refresh.ts` route/fairness/deadline; worker observe starts mandatory before awaiting discovery | `pnpm exec vitest run packages/market-data/src/held-refresh.test.ts` | VERIFIED_UNIT |
 | D09 | P1 | IMPLEMENTED | `execution-gateway.ts` + worker SANDBOX refuses local PAPER booking (stub NOT_IMPLEMENTED / MISSING_CREDENTIALS) | `pnpm exec vitest run packages/market-data/src/execution-gateway.test.ts` | VERIFIED_UNIT (stub; full demo lifecycle still open) |
 | D10 | P1 | IMPLEMENTED | `practice-url.ts` exact HTTPS allowlists; alpaca/oanda readiness + quote completeness | `pnpm exec vitest run packages/market-data/src/practice-url.test.ts` | VERIFIED_UNIT |
-| D11 | P1 | IMPLEMENTED | `strategy-instances.ts` buildInstancePlanGates; empty ENTER allowlist (no null fallback); EXIT→pulse; order `strategyInstanceId` stamp; `mean-revert-fade-v1` ENTER on M5 oversold fade (`ENTRY_MEAN_REVERT`) | `pnpm exec vitest run packages/agent-core/src/strategy-instances.test.ts packages/agent-core/src/pulse-exits.test.ts packages/agent-core/src/active-strategy.test.ts packages/agent-core/src/strategy-library.test.ts` | VERIFIED_UNIT |
+| D11 | P1 | IMPLEMENTED | Attributed ENTER/EXIT maps (`concurrentEntryByPair`); empty gating ≠ ungated PULSE; moduleRef binding; pause-preserving init; Order/Fill/Position `strategyInstanceId` + StrategyAllocation | `pnpm exec vitest run packages/agent-core/src/attributed-intents.test.ts packages/agent-core/src/strategy-binding.test.ts packages/agent-core/src/strategy-instances.test.ts packages/agent-core/src/pulse-exits.test.ts` | VERIFIED_UNIT |
 | D12 | P1 | IMPLEMENTED | `pulse.ts` promoted HOLD falls through to stop/target/time exits when held | `pnpm exec vitest run packages/agent-core/src/pulse-exits.test.ts` | VERIFIED_UNIT (exits; product accounting still OPEN) |
 | D13 | P1 | IMPLEMENTED | `promotion.ts` evidenceFromExperimentReport; `evolution.service` promote resolves reportId server-side, refuses missing | `pnpm exec vitest run packages/evolution/src/promotion.test.ts apps/api/src/promote-paper.test.ts` | VERIFIED_UNIT |
 | D14 | P1 | IMPLEMENTED | `terminal.service` portfolio.analyticsWindows labels (sample scopes explicit; not single calendar) | snapshot payload | VERIFIED_UNIT (labels; full ledger redesign OPEN) |
@@ -33,8 +34,8 @@
 | D25 | P1 | IMPLEMENTED | Single-operator scope docs; logout+JWT revoke (memory/Redis); socket origin from env; JWT revalidate on socket; proxy rate-limit note | `pnpm exec vitest run apps/api/src/token-revocation.test.ts` | VERIFIED_UNIT (partial; account rooms / multi-user still OPEN) |
 | D26 | P1 | IMPLEMENTED | compose Postgres/Redis bind `127.0.0.1`; RUNBOOKS production bind + ADMIN_PASSWORD rotation limitation | compose + `docs/launch/RUNBOOKS.md` | — (restore drill still OPEN) |
 | D27 | P1 | IMPLEMENTED | CI `pnpm build` + `build-packages` job; soak comments helper≠full engine | `.github/workflows/ci.yml` / `scripts/soak-capacity.mjs` | — (full-engine/browser soak still OPEN) |
-| D28 | P2 | DESIGN | Research spend/lineage | evolution / lab | — |
-| D29 | P2 | OPEN | Snapshot/query cost | api | — |
+| D28 | P2 | IMPLEMENTED (partial) | `packages/evolution/src/lineage.ts` distinct hashes + approval binding + partitions (spend budgets still prior autonomy path) | `pnpm exec vitest run packages/evolution/src/lineage.test.ts` | VERIFIED_UNIT (lineage helpers; full lab UX open) |
+| D29 | P2 | OPEN | Snapshot/query cost | api | — | profile before optimising; not claimed fixed |
 | D30 | P2 | IMPLEMENTED | Global `:focus-visible`; history Open buttons; positions `aria-live` mutation status; non-colour status words on readiness/protection (Radix kept) | web globals + history/positions | — |
 
 ### Status counts (from rows)
