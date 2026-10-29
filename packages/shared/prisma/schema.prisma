@@ -369,6 +369,7 @@ model Order {
   @@index([status, eligibleAt])
   @@index([executionMode, venue])
   @@index([strategyInstanceId])
+  @@index([accountId, createdAt])
 }
 
 model Fill {

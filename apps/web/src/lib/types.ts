@@ -276,6 +276,20 @@ export type Snapshot = {
       createdAt: string;
     }>;
   };
+  whyNoTrades?: {
+    ordered: number;
+    filled: number;
+    rejected: number;
+    dropped: number;
+    decisiveBlocks: Array<{ agent: string; pairAddress: string; reasonCodes: string[] }>;
+    note: string;
+  };
+  snapshotCost?: {
+    totalMs: number;
+    allBounded: boolean;
+    phases: Array<{ name: string; elapsedMs: number; rows?: number; bounded: boolean }>;
+    recommendations: string[];
+  };
   alerts?: Array<{
     id: string;
     severity: string;

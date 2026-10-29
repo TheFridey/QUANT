@@ -2,11 +2,14 @@
 /**
  * Non-prod backup/restore drill helper (§33).
  * Operates only on DATABASE_URL_TEST / explicit NONPROD_BACKUP_URL.
- * Refuses production-looking URLs and MARKET_DATA_PAPER primary accounts.
+ * Refuses production-looking URLs.
  *
  * Usage:
  *   DATABASE_URL_TEST=postgresql://… node scripts/backup-restore-nonprod.mjs backup /tmp/odin-nonprod.sql
  *   DATABASE_URL_TEST=postgresql://… node scripts/backup-restore-nonprod.mjs restore /tmp/odin-nonprod.sql
+ *
+ * Restore drops and recreates the public schema on the *test* database only
+ * (never MARKET_DATA_PAPER primary production).
  */
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -20,19 +23,53 @@ function refuse(reason) {
 }
 
 if (!url) refuse("Set DATABASE_URL_TEST or NONPROD_BACKUP_URL");
-if (/production|prod-primary|live/i.test(url)) refuse("Refusing production-looking connection string");
+if (/production|prod-primary|live-money/i.test(url)) refuse("Refusing production-looking connection string");
 if (!cmd || !file) refuse("Usage: backup|restore <file>");
 if (!["backup", "restore"].includes(cmd)) refuse("cmd must be backup or restore");
 
-const args =
-  cmd === "backup"
-    ? ["pg_dump", "--no-owner", "--no-acl", "--dbname", url, "-f", file]
-    : ["psql", url, "-v", "ON_ERROR_STOP=1", "-f", file];
+// Extra guard: restore only against databases whose name contains test/fixture/nonprod.
+try {
+  const dbName = new URL(url).pathname.replace(/^\//, "");
+  if (cmd === "restore" && !/(test|fixture|nonprod|soak)/i.test(dbName)) {
+    refuse(`Refuse restore to database name '${dbName}' — must match test|fixture|nonprod|soak`);
+  }
+} catch {
+  refuse("Invalid connection URL");
+}
 
 if (cmd === "restore" && !existsSync(file)) refuse(`Missing backup file ${file}`);
 
-const bin = args[0];
-const result = spawnSync(bin, args.slice(1), { encoding: "utf8" });
+let result;
+if (cmd === "backup") {
+  result = spawnSync("pg_dump", ["--no-owner", "--no-acl", "--dbname", url, "-f", file], {
+    encoding: "utf8",
+  });
+} else {
+  const drop = spawnSync(
+    "psql",
+    [url, "-v", "ON_ERROR_STOP=1", "-c", "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO CURRENT_USER; GRANT ALL ON SCHEMA public TO public;"],
+    { encoding: "utf8" },
+  );
+  if (drop.status !== 0) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: false,
+          cmd: "restore",
+          file,
+          status: drop.status,
+          stderr: (drop.stderr || "").slice(0, 500),
+          note: "Failed while resetting public schema on nonprod DB",
+        },
+        null,
+        2,
+      ),
+    );
+    process.exit(1);
+  }
+  result = spawnSync("psql", [url, "-v", "ON_ERROR_STOP=1", "-f", file], { encoding: "utf8" });
+}
+
 console.log(
   JSON.stringify(
     {

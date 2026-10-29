@@ -111,7 +111,9 @@ describe.runIf(hasDb)("strategy instances worker call-site path", () => {
     expect(again.every((row) => row.id !== pausedId)).toBe(true);
     const row = await prisma.strategyInstance.findUniqueOrThrow({ where: { id: pausedId } });
     expect(row.status).toBe("PAUSED");
-    expect(row.budgetUsd.toString()).toBe("4242.00000000");
+    // Prisma Decimal may stringify without trailing zeros — compare numerically.
+    expect(Number(row.budgetUsd.toString())).toBe(4242);
+    expect(row.params).toMatchObject({ custom: true });
     const concurrent = await Promise.all([
       ensureDefaultStrategyInstances(prisma, accountId),
       ensureDefaultStrategyInstances(prisma, accountId),

@@ -119,6 +119,27 @@ export function OverviewSection() {
               {snapshot.funnel?.summary?.REJECTED ?? 0}
             </dd>
           </div>
+          <div className="sm:col-span-2 lg:col-span-4">
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Why no trades</dt>
+            <dd className="text-[11px] text-muted">
+              {snapshot.whyNoTrades?.note ??
+                "Funnel sample explains quiet days — no mandatory trade quota."}
+              {snapshot.whyNoTrades?.decisiveBlocks?.[0] ? (
+                <span className="mono ml-2 text-[10px]">
+                  top block: {snapshot.whyNoTrades.decisiveBlocks[0].reasonCodes?.join(",") ?? "—"}
+                </span>
+              ) : null}
+            </dd>
+          </div>
+          {snapshot.snapshotCost ? (
+            <div className="sm:col-span-2 lg:col-span-4">
+              <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Snapshot cost (D29)</dt>
+              <dd className="mono text-[10px]">
+                {snapshot.snapshotCost.totalMs}ms · bounded={String(snapshot.snapshotCost.allBounded)} · phases=
+                {snapshot.snapshotCost.phases?.length ?? 0}
+              </dd>
+            </div>
+          ) : null}
         </dl>
       </Panel>
       <PortfolioSection />
