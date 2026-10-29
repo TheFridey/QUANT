@@ -49,6 +49,8 @@ export type ProposedOrder = {
   /** When set, worker may defer fill until eligibleAt. */
   eligibleAt?: string;
   expiresAt?: string;
+  /** Concurrent StrategyInstance owner when allocation attributed this order. */
+  strategyInstanceId?: string | null;
 };
 
 export type PlanInput = {
@@ -77,12 +79,25 @@ export type PlanInput = {
   activeStrategyId?: string | null;
   /**
    * When concurrent StrategyInstances are active, ENTRY is allowed only for
-   * pairs present in this set (from allocateOpportunities). Exits always pass.
-   * Undefined = no instance gating (legacy single-pulse path).
+   * pairs present in this set (from allocateOpportunities). An empty set means
+   * zero automatic entries — never treat emptiness as "ungated".
+   * Undefined/null = no instance gating (legacy single-pulse path).
+   * Exits always pass this gate.
    */
   concurrentEntryAllowlist?: ReadonlySet<string> | null;
+  /**
+   * Instance EXIT_LONG intents that must reach planning as risk-reducing sells
+   * even when the global/promoted PULSE path would HOLD.
+   */
+  concurrentExitByPair?: ReadonlyMap<string, string> | null;
   /** Attribution map pairAddress → strategyInstanceId for stamps/funnel. */
   concurrentInstanceByPair?: ReadonlyMap<string, string> | null;
+  /**
+   * Effective MarketSelection: instrumentId → enabled.
+   * When present, automatic ENTRY is refused for disabled markets.
+   * Open holdings continue to monitor/exit regardless.
+   */
+  marketEntryEnabled?: ReadonlyMap<string, boolean> | null;
   now?: Date;
 };
 

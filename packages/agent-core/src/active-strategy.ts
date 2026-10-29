@@ -34,12 +34,15 @@ export function parseActiveStrategyIdentity(value: unknown): ActiveStrategyIdent
 export function strategyVersionStamp(
   identity: ActiveStrategyIdentity | null,
   fallbackConfigEntryM5?: string | number | null,
+  strategyInstanceId?: string | null,
 ): string {
-  if (identity) {
-    return `${identity.strategyId}@${identity.strategyVersion}+src:${identity.sourceHash}+art:${identity.artifactHash}`;
-  }
-  if (fallbackConfigEntryM5 !== undefined && fallbackConfigEntryM5 !== null && `${fallbackConfigEntryM5}` !== "") {
-    return `pulse:${fallbackConfigEntryM5}`;
-  }
-  return "pulse:default";
+  const base = identity
+    ? `${identity.strategyId}@${identity.strategyVersion}+src:${identity.sourceHash}+art:${identity.artifactHash}`
+    : fallbackConfigEntryM5 !== undefined &&
+        fallbackConfigEntryM5 !== null &&
+        `${fallbackConfigEntryM5}` !== ""
+      ? `pulse:${fallbackConfigEntryM5}`
+      : "pulse:default";
+  const instance = strategyInstanceId?.trim();
+  return instance ? `inst:${instance}+${base}` : base;
 }

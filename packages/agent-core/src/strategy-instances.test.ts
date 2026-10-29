@@ -2,6 +2,7 @@ import { DEFAULT_STRATEGY } from "@odin/shared";
 import { describe, expect, it } from "vitest";
 import {
   allocateOpportunities,
+  buildInstancePlanGates,
   evaluateConcurrentInstances,
   type DurableStrategyInstance,
 } from "./strategy-instances.js";
@@ -69,6 +70,39 @@ describe("concurrent strategy instances", () => {
     expect(allocated.accepted.some((s) => s.intent === "EXIT_LONG")).toBe(true);
     expect(allocated.accepted.filter((s) => s.intent === "ENTER_LONG")).toHaveLength(2);
     expect(allocated.deferred.filter((s) => s.intent === "ENTER_LONG")).toHaveLength(1);
+
+    const gates = buildInstancePlanGates(allocated.accepted);
+    expect(gates.exitByPair.get("fx:EURUSD")).toBe("i2");
+    expect(gates.entryAllowlist.has("fx:EURUSD")).toBe(true);
+    expect(gates.instanceByPair.get("fx:EURUSD")).toBeTruthy();
+  });
+
+  it("empty ENTER intents produce an empty allowlist (never null-fallback semantics)", () => {
+    const gates = buildInstancePlanGates([
+      {
+        intent: "EXIT_LONG",
+        reasonCodes: ["EXIT_MOMENTUM"],
+        instrumentId: "fx:EURUSD",
+        pairAddress: "fx:EURUSD",
+        strategyInstanceId: "i2",
+        strategyVersion: "pulse@1",
+        artifactHash: null,
+        sourceHash: null,
+      },
+      {
+        intent: "HOLD",
+        reasonCodes: ["NO_EDGE"],
+        instrumentId: "etf:SPY",
+        pairAddress: "etf:SPY",
+        strategyInstanceId: "i3",
+        strategyVersion: "mean@1",
+        artifactHash: null,
+        sourceHash: null,
+      },
+    ]);
+    expect(gates.entryAllowlist.size).toBe(0);
+    expect(gates.exitByPair.get("fx:EURUSD")).toBe("i2");
+    expect(gates.instanceByPair.get("fx:EURUSD")).toBe("i2");
   });
 
   it("runs ≥3 instances across crypto/FX/ETF and attributes signals", () => {

@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_AUTONOMY, DEFAULT_STRATEGY, autonomyPolicySchema, parseStrategyConfig, type StrategyConfig } from "@odin/shared";
+import { buildExperimentReport } from "./validate.js";
 import {
   createPaperSlot,
   engineControlDataFromSlot,
+  evidenceFromExperimentReport,
   promoteToPaperEngine,
   promotionBodySchema,
   recordStrategyReview,
@@ -226,5 +228,75 @@ describe("operator promotion", () => {
     const source = readFileSync(new URL("./promotion.ts", import.meta.url), "utf8");
     expect(source).not.toMatch(/submitOrder|placeOrder|api\.binance|jup\.ag\/swap|realMoney/);
     expect(autonomyPolicySchema.safeParse({ ...DEFAULT_AUTONOMY, realMoneyExecutionEnabled: true }).success).toBe(false);
+  });
+
+  it("resolves promotion evidence from a persisted experiment report (D13)", () => {
+    const report = buildExperimentReport({
+      reportId: "rpt_promote",
+      hypothesisId: "hyp1",
+      strategyModuleId: "strat_reviewed",
+      strategyVersion: "1.0.0",
+      models: [],
+      datasetManifest: {
+        observationCount: 100,
+        startAt: "2026-01-01T00:00:00.000Z",
+        endAt: "2026-01-02T00:00:00.000Z",
+        sources: ["fixture"],
+        contentHash: "a".repeat(64),
+      },
+      periods: { train: "t", validation: "v", test: "s" },
+      results: {
+        sampleSize: 40,
+        returnPct: "1.50",
+        maxDrawdownPct: "4",
+        releaseGateLabel: "PROMOTION_REVIEW",
+      },
+      uncertainty: [],
+      weaknesses: [],
+      challenge: { passed: true, summary: "ok", findings: [], reviewer: "CHALLENGE", independent: true },
+      approval: { status: "APPROVED", approvedBy: "operator@odin.local", approvedAt: "2026-10-28T19:00:00.000Z" },
+      reproducibility: { codeHash: sourceHash, configHash: "c".repeat(64), seed: 1 },
+      outcomes: {
+        PIPELINE_COMPLETED: { met: true, detail: "ok" },
+        EXPERIMENT_EXECUTED: { met: true, detail: "ok" },
+        RESULTS_MEASURABLE: { met: true, detail: "ok" },
+        STATISTICALLY_EVALUATED: { met: true, detail: "ok" },
+        OUT_OF_SAMPLE_VALIDATED: { met: true, detail: "ok" },
+        FORWARD_PAPER_VALIDATED: { met: true, detail: "ok" },
+        DEPLOYMENT_ELIGIBLE: { met: true, detail: "ok" },
+      },
+    });
+    const resolved = evidenceFromExperimentReport(report);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.evidence.strategyId).toBe("strat_reviewed");
+    expect(resolved.evidence.sourceHash).toBe(sourceHash);
+    expect(resolved.evidence.artifactHash).toBe(report.contentHash);
+    expect(resolved.evidence.approvalStatus).toBe("APPROVED");
+    expect(resolved.evidence.forwardPaperValidated).toBe(true);
+
+    const paper = slot();
+    const result = promoteToPaperEngine(paper, {
+      operatorId: "operator@odin.local",
+      authorised: true,
+      caller: "OPERATOR",
+      evidence: resolved.evidence,
+      config: config("3"),
+    });
+    expect(result.appliedToPaperEngine).toBe(true);
+    expect(paper.strategyId).toBe("strat_reviewed");
+    expect(paper.artifactHash).toBe(report.contentHash);
+  });
+
+  it("accepts reportId on the promotion body schema without client evidence", () => {
+    const parsed = promotionBodySchema.safeParse({
+      authorised: true,
+      reportId: "rpt_promote",
+      config: config("3"),
+    });
+    expect(parsed.success).toBe(true);
+    expect(
+      promotionBodySchema.safeParse({ authorised: true, config: config("3") }).success,
+    ).toBe(false);
   });
 });

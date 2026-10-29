@@ -119,4 +119,116 @@ describe("paper engine promotion write", () => {
     expect(controller).toMatch(/@Post\("promote"\)/);
     expect(controller).not.toMatch(/submitOrder|api\.binance|jup\.ag\/swap/);
   });
+
+  it("refuses promotion when reportId is present but the report is missing (D13)", async () => {
+    const prisma = {
+      engineControl: {
+        findUnique: async () => ({
+          id: "primary",
+          config: { ...DEFAULT_STRATEGY },
+          activeStrategy: null,
+        }),
+        update: async () => {
+          throw new Error("engine should not be written");
+        },
+      },
+      experimentReport: {
+        findUnique: async () => null,
+      },
+    } as unknown as PrismaClient;
+    const service = new EvolutionService(prisma);
+    await expect(
+      service.promotePaperStrategy(
+        {
+          authorised: true,
+          reportId: "rpt_missing",
+          evidence: evidence(),
+          config: { ...DEFAULT_STRATEGY, entryM5ChangePct: "3" },
+        },
+        "operator@odin.local",
+      ),
+    ).rejects.toThrow(/rpt_missing|not a persisted ExperimentReport/i);
+  });
+
+  it("resolves persisted report evidence server-side and ignores forged client hashes (D13)", async () => {
+    const { buildExperimentReport } = await import("@odin/evolution");
+    const report = buildExperimentReport({
+      reportId: "rpt_bound",
+      hypothesisId: "hyp1",
+      strategyModuleId: "strat_from_report",
+      strategyVersion: "2.0.0",
+      models: [],
+      datasetManifest: {
+        observationCount: 50,
+        startAt: null,
+        endAt: null,
+        sources: ["fixture"],
+        contentHash: "d".repeat(64),
+      },
+      periods: { train: null, validation: null, test: null },
+      results: {
+        sampleSize: 40,
+        returnPct: "1.50",
+        maxDrawdownPct: "3",
+        releaseGateLabel: "PROMOTION_REVIEW",
+      },
+      uncertainty: [],
+      weaknesses: [],
+      challenge: { passed: true, summary: "ok", findings: [], reviewer: "CHALLENGE", independent: true },
+      approval: { status: "APPROVED", approvedBy: "operator@odin.local", approvedAt: "2026-10-28T19:00:00.000Z" },
+      reproducibility: { codeHash: sourceHash, configHash: "e".repeat(64), seed: null },
+      outcomes: {
+        PIPELINE_COMPLETED: { met: true, detail: "ok" },
+        EXPERIMENT_EXECUTED: { met: true, detail: "ok" },
+        RESULTS_MEASURABLE: { met: true, detail: "ok" },
+        STATISTICALLY_EVALUATED: { met: true, detail: "ok" },
+        OUT_OF_SAMPLE_VALIDATED: { met: true, detail: "ok" },
+        FORWARD_PAPER_VALIDATED: { met: true, detail: "ok" },
+        DEPLOYMENT_ELIGIBLE: { met: true, detail: "ok" },
+      },
+    });
+    let row: { id: string; config: unknown; activeStrategy: unknown } = {
+      id: "primary",
+      config: { ...DEFAULT_STRATEGY },
+      activeStrategy: null,
+    };
+    const prisma = {
+      engineControl: {
+        findUnique: async () => row,
+        update: async (input: { data: { config: unknown; activeStrategy: unknown } }) => {
+          row = { id: "primary", config: input.data.config, activeStrategy: input.data.activeStrategy };
+          return row;
+        },
+      },
+      experimentReport: {
+        findUnique: async ({ where }: { where: { id: string } }) =>
+          where.id === "rpt_bound"
+            ? {
+                id: "rpt_bound",
+                payload: report,
+                contentHash: report.contentHash,
+                signature: report.signature,
+              }
+            : null,
+      },
+    } as unknown as PrismaClient;
+    const service = new EvolutionService(prisma);
+    const applied = await service.promotePaperStrategy(
+      {
+        authorised: true,
+        reportId: "rpt_bound",
+        // Forged client identity — must be ignored in favour of the persisted report.
+        evidence: evidence({ strategyId: "forged_client", strategyVersion: "9.9.9", artifactHash: "f".repeat(64) }),
+        config: { ...DEFAULT_STRATEGY, entryM5ChangePct: "4" },
+      },
+      "operator@odin.local",
+    );
+    expect(applied.appliedToPaperEngine).toBe(true);
+    expect(row.activeStrategy).toMatchObject({
+      strategyId: "strat_from_report",
+      strategyVersion: "2.0.0",
+      sourceHash,
+      artifactHash: report.contentHash,
+    });
+  });
 });

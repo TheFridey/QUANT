@@ -2,12 +2,14 @@ import {
   ALERT_CODES,
   allocateOpportunities,
   assessSecurity,
+  buildInstancePlanGates,
   ensureDefaultStrategyInstances,
   entriesSuspendedAlert,
   evaluateConcurrentInstances,
   funnelEventsFromPlan,
   uniqueFunnelEvents,
   liveGateAlert,
+  marketSelectionMap,
   parseActiveStrategyIdentity,
   planCycle,
   reconcileIssueAlert,
@@ -394,7 +396,11 @@ export class StageRunner {
               executionMode: liveGate.mode === "SANDBOX" ? "SANDBOX" : "PAPER",
               venue: "PAPER",
               instrumentId: order.pairAddress.includes(":") ? order.pairAddress : null,
-              strategyVersion: strategyVersionStamp(loaded.activeStrategy, loaded.config.entryM5ChangePct),
+              strategyVersion: strategyVersionStamp(
+                loaded.activeStrategy,
+                loaded.config.entryM5ChangePct,
+                order.strategyInstanceId,
+              ),
             },
             config: loaded.config,
             mode: this.dataMode,
@@ -875,19 +881,11 @@ export class StageRunner {
       signals: concurrentSignals,
       maxNewEntries: Math.max(1, config.maxPositions - positionViews.filter((p) => d(p.baseQty).gt(0)).length),
     });
-    const concurrentEntryAllowlist = new Set(
-      allocated.accepted
-        .filter((s) => s.intent === "ENTER_LONG")
-        .map((s) => s.pairAddress || s.instrumentId)
-        .filter((id): id is string => Boolean(id)),
-    );
-    // Always allow pulse path when no ENTER signals produced (cold start / insufficient bars).
-    const gateEntries = concurrentEntryAllowlist.size > 0 ? concurrentEntryAllowlist : null;
-    const concurrentInstanceByPair = new Map<string, string>();
-    for (const signal of allocated.accepted) {
-      const key = signal.pairAddress || signal.instrumentId;
-      if (key) concurrentInstanceByPair.set(key, signal.strategyInstanceId);
-    }
+    // D11: empty ENTER allowlist means zero automatic entries — never null-fallback to global PULSE.
+    const instanceGates = buildInstancePlanGates(allocated.accepted);
+    // D15: MarketSelection governs new automatic ENTRY; open holdings still refresh/monitor.
+    const selectionRows = await db.marketSelection.findMany();
+    const marketEntryEnabled = marketSelectionMap(selectionRows);
     return {
       config,
       ctx,
@@ -914,8 +912,10 @@ export class StageRunner {
         aggregateExposureUsd,
         entriesSuspended: suspensionActive,
         activeStrategyId: activeStrategy?.strategyId ?? null,
-        concurrentEntryAllowlist: gateEntries,
-        concurrentInstanceByPair,
+        concurrentEntryAllowlist: instanceGates.entryAllowlist,
+        concurrentExitByPair: instanceGates.exitByPair,
+        concurrentInstanceByPair: instanceGates.instanceByPair,
+        marketEntryEnabled,
         now,
       }),
     };

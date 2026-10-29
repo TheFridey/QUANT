@@ -221,6 +221,33 @@ export function allocateOpportunities(input: {
   return { accepted, deferred };
 }
 
+/**
+ * Build plan gates from allocated instance signals.
+ * Empty entryAllowlist is intentional: zero ENTER intents ⇒ zero automatic entries
+ * (never coerce to null / ungated fallback).
+ */
+export function buildInstancePlanGates(accepted: AttributedSignal[]): {
+  entryAllowlist: Set<string>;
+  exitByPair: Map<string, string>;
+  instanceByPair: Map<string, string>;
+} {
+  const entryAllowlist = new Set<string>();
+  const exitByPair = new Map<string, string>();
+  const instanceByPair = new Map<string, string>();
+  for (const signal of accepted) {
+    const key = signal.pairAddress || signal.instrumentId;
+    if (!key) continue;
+    instanceByPair.set(key, signal.strategyInstanceId);
+    if (signal.intent === "ENTER_LONG") {
+      entryAllowlist.add(key);
+    }
+    if (signal.intent === "EXIT_LONG") {
+      exitByPair.set(key, signal.strategyInstanceId);
+    }
+  }
+  return { entryAllowlist, exitByPair, instanceByPair };
+}
+
 function mapRow(row: {
   id: string;
   name: string;

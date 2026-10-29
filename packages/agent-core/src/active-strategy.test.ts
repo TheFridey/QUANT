@@ -72,6 +72,9 @@ describe("active strategy identity + runtime decisions", () => {
       `pulse-momentum-v1@1.0.0+src:${hashA}+art:${hashB}`,
     );
     expect(strategyVersionStamp(null, "2")).toBe("pulse:2");
+    expect(strategyVersionStamp(identity, null, "stratinst_fx")).toBe(
+      `inst:stratinst_fx+pulse-momentum-v1@1.0.0+src:${hashA}+art:${hashB}`,
+    );
   });
 
   it("two approved strategies yield different decisions on identical market input", () => {

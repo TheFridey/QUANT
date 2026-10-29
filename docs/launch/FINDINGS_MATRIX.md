@@ -16,11 +16,11 @@
 | D08 | P1 | OPEN | Mandatory refresh Solana-specific / discovery await | market-data / worker | — |
 | D09 | P1 | OPEN | Named demo execution incomplete | market-data / gateway | — |
 | D10 | P1 | OPEN | Practice host substring / readiness | market-data providers | — |
-| D11 | P1 | OPEN | Strategy instances allowlist-only | agent-core | — |
-| D12 | P1 | OPEN | HOLD bypass / product accounting | agent-core / trading-engine | — |
-| D13 | P1 | OPEN | Promotion client evidence | apps/api evolution | — |
+| D11 | P1 | IMPLEMENTED | `strategy-instances.ts` buildInstancePlanGates; empty ENTER allowlist (no null fallback); EXIT→pulse; order `strategyInstanceId` stamp | `pnpm exec vitest run packages/agent-core/src/strategy-instances.test.ts packages/agent-core/src/pulse-exits.test.ts packages/agent-core/src/active-strategy.test.ts` | VERIFIED_UNIT |
+| D12 | P1 | IMPLEMENTED | `pulse.ts` promoted HOLD falls through to stop/target/time exits when held | `pnpm exec vitest run packages/agent-core/src/pulse-exits.test.ts` | VERIFIED_UNIT (exits; product accounting still OPEN) |
+| D13 | P1 | IMPLEMENTED | `promotion.ts` evidenceFromExperimentReport; `evolution.service` promote resolves reportId server-side, refuses missing | `pnpm exec vitest run packages/evolution/src/promotion.test.ts apps/api/src/promote-paper.test.ts` | VERIFIED_UNIT |
 | D14 | P1 | OPEN | Analytics window mix | analytics / terminal | — |
-| D15 | P1 | OPEN | MarketSelection not enforced | worker / web | — |
+| D15 | P1 | IMPLEMENTED | `market-admission.ts` + stage-runner loadPlan MarketSelection map; plan blocks ENTRY, exits/monitoring remain | `pnpm exec vitest run packages/agent-core/src/market-admission.test.ts packages/agent-core/src/pulse-exits.test.ts` | VERIFIED_UNIT |
 | D16 | P1 | OPEN | Ops controls vs config immutability | api / web | — |
 | D17 | P1 | OPEN | Polling overwrites drafts | web | — |
 | D18 | P1 | OPEN | Socket≠market-live | web | — |
@@ -41,12 +41,13 @@
 
 | Status | Count |
 | --- | --- |
-| IMPLEMENTED | 8 (D01–D07, D21) |
-| OPEN | 18 |
+| IMPLEMENTED | 12 (D01–D07, D11–D13, D15, D21) |
+| OPEN | 14 |
 | DESIGN | 4 |
 | **Total** | **30** |
 
 ### Notes
 
 - Gate A code paths updated on this branch; full worker/DB verification still pending for D01/D02/D07.
+- Gate B (local): D11 instance ownership gates, D12 HOLD≠bypass exits, D13 server-side promotion evidence, D15 MarketSelection admission.
 - Live money remains disabled.

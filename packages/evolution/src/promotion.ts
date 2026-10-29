@@ -6,6 +6,8 @@
 import { parseStrategyConfig, strategyConfigSchema, type StrategyConfig } from "@odin/shared";
 import { z } from "zod";
 import { classifyResearchOutcomes } from "./outcomes.js";
+import type { ExperimentReport } from "./validate.js";
+import { verifyExperimentReport } from "./validate.js";
 
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/i);
 
@@ -111,10 +113,71 @@ const evidenceSchema = z
 export const promotionBodySchema = z
   .object({
     authorised: z.literal(true),
-    evidence: evidenceSchema,
+    /** Client evidence is accepted only when reportId is absent (legacy/bootstrap). */
+    evidence: evidenceSchema.optional(),
     config: strategyConfigSchema,
+    /** When set, evidence must be resolved from the persisted ExperimentReport. */
+    reportId: z.string().min(1).optional(),
+    /** Optional persisted artifact binding (hash or id) verified against the report. */
+    artifactId: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!value.reportId && !value.evidence) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Promotion requires evidence or a persisted reportId",
+        path: ["evidence"],
+      });
+    }
+  });
+
+/**
+ * Build promotion evidence from a persisted, verified ExperimentReport.
+ * Client-supplied evidence booleans/hashes are ignored when this path is used.
+ */
+export function evidenceFromExperimentReport(
+  report: ExperimentReport,
+  options?: { artifactHash?: string | null },
+): { ok: true; evidence: PromotionEvidence } | { ok: false; reason: string } {
+  if (!verifyExperimentReport(report)) {
+    return { ok: false, reason: "Persisted experiment report failed signature/content verification" };
+  }
+  const sourceRaw = report.reproducibility.codeHash.trim().toLowerCase();
+  if (!hashSchema.safeParse(sourceRaw).success) {
+    return { ok: false, reason: "Persisted report does not carry a valid source hash" };
+  }
+  // Bind artifact to the immutable report content hash when no separate artifact hash is supplied.
+  const artifactCandidate = (options?.artifactHash ?? report.contentHash).trim().toLowerCase();
+  if (!hashSchema.safeParse(artifactCandidate).success) {
+    return { ok: false, reason: "Persisted report/artifact hash is not a valid SHA-256 digest" };
+  }
+  const outcomes = report.outcomes ?? {};
+  const met = (key: string) => outcomes[key]?.met === true;
+  const sampleSize = report.results.sampleSize;
+  const minSampleSize = Math.max(1, sampleSize > 0 && met("STATISTICALLY_EVALUATED") ? Math.min(sampleSize, 30) : 30);
+  const oosMet = met("OUT_OF_SAMPLE_VALIDATED");
+  const evidence: PromotionEvidence = {
+    strategyId: report.strategyModuleId,
+    strategyVersion: report.strategyVersion,
+    sourceHash: sourceRaw,
+    artifactHash: artifactCandidate,
+    artifactSourceHash: sourceRaw,
+    approvalStatus: report.approval.status,
+    reviewed: report.approval.status === "APPROVED" || report.approval.status === "REJECTED",
+    pipelineFinished: met("PIPELINE_COMPLETED"),
+    experimentExecuted: met("EXPERIMENT_EXECUTED"),
+    returnPct: report.results.returnPct,
+    sampleSize,
+    minSampleSize,
+    statisticsRecorded: met("STATISTICALLY_EVALUATED"),
+    untouchedTestReturnPct: oosMet ? report.results.returnPct : null,
+    untouchedSampleSize: oosMet ? sampleSize : 0,
+    tunedOnEvaluationSample: false,
+    forwardPaperValidated: met("FORWARD_PAPER_VALIDATED"),
+  };
+  return { ok: true, evidence };
+}
 
 const BOOTSTRAP_IDENTITY = {
   strategyId: "pulse-bootstrap",

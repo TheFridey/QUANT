@@ -20,6 +20,7 @@ import {
 } from "@odin/trading-engine";
 import { runAegis } from "./aegis.js";
 import { computeResearchMetrics } from "./archivist.js";
+import { isAutomaticEntryEnabled, resolveMarketInstrumentId } from "./market-admission.js";
 import { runPulse } from "./pulse.js";
 import { rankWatchlist, runSentinel } from "./sentinel.js";
 import {
@@ -209,10 +210,11 @@ export function planCycle(input: PlanInput): {
     }
 
     // Concurrent StrategyInstance allocation gates new entries only.
+    // Empty allowlist means zero automatic entries (D11) — never null-fallback here.
     if (
       side === "BUY" &&
       intent === "ENTRY" &&
-      input.concurrentEntryAllowlist &&
+      input.concurrentEntryAllowlist != null &&
       !input.concurrentEntryAllowlist.has(pair.pairAddress)
     ) {
       decisions.push(
@@ -231,6 +233,24 @@ export function planCycle(input: PlanInput): {
       continue;
     }
 
+    // MarketSelection: block new automatic ENTRY for disabled markets; exits still flow (D15).
+    if (side === "BUY" && intent === "ENTRY" && !isAutomaticEntryEnabled(pair, input.marketEntryEnabled)) {
+      decisions.push(
+        row(
+          "ATLAS",
+          pair.pairAddress,
+          "HOLD",
+          ["MARKET_ENTRY_DISABLED"],
+          "1.000000",
+          { blockedBy: "MARKET_SELECTION" },
+          { instrumentId: resolveMarketInstrumentId(pair) },
+          "market-selection:admission",
+        ),
+      );
+      decisions.push(row("EXECUTOR", pair.pairAddress, "HOLD", ["NO_ORDER"], "1.000000", { blockedBy: "MARKET_SELECTION" }));
+      continue;
+    }
+
     const sized = sizeOrder(pair, book, input, side, intent, valued.equityUsd, aggregateExposure);
     decisions.push({
       ...sized.decision,
@@ -241,7 +261,21 @@ export function planCycle(input: PlanInput): {
       decisions.push(row("EXECUTOR", pair.pairAddress, "HOLD", ["NO_ORDER"], "1.000000"));
       continue;
     }
-    const executed = executeOrder(input.cycleId, pair, side, intent, sized.qty, book, input.config, now);
+    const strategyInstanceId =
+      (typeof pulse.output.strategyInstanceId === "string" ? pulse.output.strategyInstanceId : null) ??
+      input.concurrentInstanceByPair?.get(pair.pairAddress) ??
+      null;
+    const executed = executeOrder(
+      input.cycleId,
+      pair,
+      side,
+      intent,
+      sized.qty,
+      book,
+      input.config,
+      now,
+      strategyInstanceId,
+    );
     decisions.push(executed.decision);
     if (executed.order) {
       orders.push(executed.order);
@@ -426,6 +460,7 @@ function executeOrder(
   book: BookState,
   config: PlanInput["config"],
   now: Date,
+  strategyInstanceId: string | null = null,
 ): { decision: DecisionDraft; order?: ProposedOrder; book?: BookState; realizedPnlUsd?: string } {
   const started = Date.now();
   if (pair.priceUsd === null || pair.liquidityUsd === null) {
@@ -490,6 +525,7 @@ function executeOrder(
       reasonCodes,
       eligibleAt: eligibleAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
+      strategyInstanceId,
     },
     decision: row(
       "EXECUTOR",
@@ -511,6 +547,7 @@ function executeOrder(
         eligibleAt: eligibleAt.toISOString(),
         expiresAt: expiresAt.toISOString(),
         deferred: deferFill,
+        strategyInstanceId,
       },
       {},
       "quote",

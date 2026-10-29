@@ -30,6 +30,7 @@ import {
   transitionLifecycle,
   verifyExperimentReport,
   engineControlDataFromSlot,
+  evidenceFromExperimentReport,
   promoteToPaperEngine,
   promotionBodySchema,
   slotFromEngineControl,
@@ -930,12 +931,40 @@ export class EvolutionService {
     const parsed = promotionBodySchema.parse(body);
     const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     if (!engine) throw new NotFoundException("Engine is not initialised");
+
+    // D13: when reportId is provided, resolve immutable evidence server-side — never trust client forgeries.
+    let evidence = parsed.evidence;
+    if (parsed.reportId) {
+      const row = await this.prisma.experimentReport.findUnique({ where: { id: parsed.reportId } });
+      if (!row) {
+        throw new NotFoundException(
+          `Promotion refused: reportId ${parsed.reportId} is not a persisted ExperimentReport`,
+        );
+      }
+      const payload = row.payload as ExperimentReport;
+      const report: ExperimentReport = {
+        ...payload,
+        reportId: payload.reportId ?? row.id,
+      };
+      const artifactHash =
+        parsed.artifactId && /^[a-f0-9]{64}$/i.test(parsed.artifactId) ? parsed.artifactId : null;
+      const resolved = evidenceFromExperimentReport(report, { artifactHash });
+      if (!resolved.ok) {
+        throw new BadRequestException(resolved.reason);
+      }
+      // Ignore client evidence fields entirely once a reportId is bound.
+      evidence = resolved.evidence;
+    }
+    if (!evidence) {
+      throw new BadRequestException("Promotion requires evidence or a persisted reportId");
+    }
+
     const slot = slotFromEngineControl({ config: engine.config, activeStrategy: engine.activeStrategy });
     const result = promoteToPaperEngine(slot, {
       operatorId: operator,
       authorised: true,
       caller: "OPERATOR",
-      evidence: parsed.evidence,
+      evidence,
       config: parsed.config,
     });
     if (!result.appliedToPaperEngine) return result;
@@ -948,7 +977,7 @@ export class EvolutionService {
         updatedBy: operator,
       },
     });
-    return result;
+    return { ...result, reportId: parsed.reportId ?? null };
   }
 
   async getReport(id: string) {

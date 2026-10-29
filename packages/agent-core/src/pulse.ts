@@ -125,6 +125,21 @@ export function runPulse(
     return draft(pair, "ACT", ["FULL_POSITION_EXIT"], "1.000000", { side: "SELL", intent: "FLATTEN" }, signal, started, baseMeta.inputSource);
   }
 
+  // Concurrent StrategyInstance EXIT intents reach planning even when PULSE/promoted would HOLD.
+  const instanceExitId = input.concurrentExitByPair?.get(pair.pairAddress);
+  if (instanceExitId && held) {
+    return draft(
+      pair,
+      "ACT",
+      ["FULL_POSITION_EXIT", "STRATEGY_INSTANCE_EXIT"],
+      "1.000000",
+      { side: "SELL", intent: "EXIT", strategyInstanceId: instanceExitId, signal },
+      signal,
+      started,
+      `strategy-instance:${instanceExitId}`,
+    );
+  }
+
   // Promoted strategy modules can drive intents when an activeStrategyId is set.
   const promoted = evaluatePromotedStrategy({
     strategyId: input.activeStrategyId,
@@ -170,7 +185,9 @@ export function runPulse(
         `strategy:${input.activeStrategyId}`,
       );
     }
-    if (promoted.intent === "HOLD" || promoted.intent === "RESEARCH_NOTE") {
+    // D12: promoted HOLD must not bypass invariant stop/target/time exits.
+    // Fall through to held-position checks when a position is open.
+    if ((promoted.intent === "HOLD" || promoted.intent === "RESEARCH_NOTE") && !held) {
       return draft(
         pair,
         "HOLD",

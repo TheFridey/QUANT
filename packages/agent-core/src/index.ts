@@ -9,6 +9,7 @@ export * from "./research.js";
 export * from "./oracle.js";
 export * from "./strategy-library.js";
 export * from "./strategy-instances.js";
+export * from "./market-admission.js";
 export * from "./funnel.js";
 export * from "./active-strategy.js";
 export * from "./alerts.js";
