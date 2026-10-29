@@ -53,6 +53,19 @@ export function summarizeFunnel(events: FunnelEvent[]): Record<FunnelStage, numb
 }
 
 /**
+ * Dedupe funnel rows by cycleId|pairAddress|stage (last write wins).
+ * Prevents double-counting when workers retry persistFunnel for the same cycle.
+ */
+export function uniqueFunnelEvents(events: FunnelEvent[]): FunnelEvent[] {
+  const byKey = new Map<string, FunnelEvent>();
+  for (const event of events) {
+    const key = `${event.cycleId}|${event.pairAddress}|${event.stage}`;
+    byKey.set(key, event);
+  }
+  return [...byKey.values()];
+}
+
+/**
  * Derive durable funnel rows from a completed planCycle result.
  * Reason codes stay attached so operators can see why a stage advanced or blocked.
  */

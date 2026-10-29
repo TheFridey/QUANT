@@ -6,6 +6,7 @@ import {
   entriesSuspendedAlert,
   evaluateConcurrentInstances,
   funnelEventsFromPlan,
+  uniqueFunnelEvents,
   liveGateAlert,
   parseActiveStrategyIdentity,
   planCycle,
@@ -20,8 +21,10 @@ import {
   buildFixturePairsAtStep,
   fetchSolanaUniverse,
   FrankfurterFxProvider,
+  MarketDataGateway,
   type ProviderResult,
 } from "@odin/market-data";
+import { ObservabilityRegistry } from "@odin/analytics";
 import type { ReservationBudget } from "@odin/risk-engine";
 import { releaseInTx, reserveInTx } from "@odin/risk-engine";
 import type { NormalizedPair, ObservationPoint, SecurityAssessment } from "@odin/shared";
@@ -36,6 +39,7 @@ import {
   newId,
   operatorOrderSchema,
   parseStrategyConfig,
+  rollSessionEquity,
   usd,
   type CyclePair,
   type DataMode,
@@ -51,10 +55,13 @@ import {
   commitProposedOrder,
   lockAccount,
   persistOcoGroup,
+  enrichReconcileReport,
   reconcileOrders,
+  reconcilePositionQty,
   recoverProtectionAfterRestart,
   retryUnresolvedProtectionIntents,
   settlePendingOrder,
+  updateTrailing,
 } from "@odin/trading-engine";
 
 export type MarketFeed = {
@@ -68,6 +75,8 @@ export type AgentBus = {
 export const silentBus: AgentBus = { async publish() {} };
 
 export class StageRunner {
+  private readonly observability = new ObservabilityRegistry();
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly feed: MarketFeed,
@@ -404,6 +413,7 @@ export class StageRunner {
       await this.persistEquitySnapshot(cycleId, loaded);
     }
     await this.persistTradeReconstruction(cycleId);
+    await this.persistObservability(cycleId);
     await this.prisma.cycleRun.update({
       where: { id: cycleId },
       data: { stage: "complete", status: "COMPLETE", finishedAt: this.now(), orderCount: orders },
@@ -592,14 +602,32 @@ export class StageRunner {
       }),
     );
     const valuation = valuePortfolio({ cashUsd: account.cashUsd.toString(), positions: positionViews, marks });
-    const sessionStart =
-      account.sessionStartEquityUsd?.toString() ?? account.startingBalanceUsd.toString();
+    // UTC midnight session roll + HWM ratchet — must persist so daily PnL resets honestly.
+    const sessionRoll = rollSessionEquity({
+      now,
+      sessionStartedAt: account.sessionStartedAt,
+      sessionStartEquityUsd: account.sessionStartEquityUsd?.toString() ?? null,
+      currentEquityUsd: valuation.equityUsd,
+      highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,
+      startingBalanceUsd: account.startingBalanceUsd.toString(),
+    });
+    if (
+      sessionRoll.rolled ||
+      sessionRoll.highWaterMarkUsd !== (account.highWaterMarkUsd?.toString() ?? null)
+    ) {
+      await db.paperAccount.update({
+        where: { id: account.id },
+        data: {
+          sessionStartedAt: sessionRoll.sessionStartedAt,
+          sessionStartEquityUsd: sessionRoll.sessionStartEquityUsd,
+          highWaterMarkUsd: sessionRoll.highWaterMarkUsd,
+        },
+      });
+    }
     const dailyPnlUsd =
       valuation.valuation !== "CASH_ONLY" && valuation.valuation !== "LIVE"
         ? null
-        : valuation.equityUsd === null
-          ? null
-          : usd(d(valuation.equityUsd).minus(d(sessionStart)));
+        : sessionRoll.dailyPnlUsd;
     const operator = parseOperator(cycle.operator);
     const historyAddresses = [
       ...new Set([
@@ -613,11 +641,7 @@ export class StageRunner {
       valuation.equityUsd === null
         ? "0"
         : usd(d(valuation.equityUsd).minus(d(account.cashUsd.toString())));
-    const highWaterMarkUsd =
-      account.highWaterMarkUsd?.toString() ??
-      (valuation.equityUsd !== null
-        ? usd(DecimalMax(d(account.startingBalanceUsd.toString()), d(valuation.equityUsd)))
-        : account.startingBalanceUsd.toString());
+    const highWaterMarkUsd = sessionRoll.highWaterMarkUsd;
     const activeStrategy = parseActiveStrategyIdentity(engine.activeStrategy);
     const suspension = await db.durableAlert.findFirst({
       where: { acked: false, code: ALERT_CODES.ENTRIES_SUSPENDED },
@@ -732,17 +756,27 @@ export class StageRunner {
     filledClientOrderIds: string[],
     now: Date,
   ): Promise<void> {
-    const events = funnelEventsFromPlan({
-      cycleId,
-      decisions: loaded.plan.decisions,
-      orders: loaded.plan.orders,
-      filledClientOrderIds,
-      at: now.toISOString(),
-    });
+    const events = uniqueFunnelEvents(
+      funnelEventsFromPlan({
+        cycleId,
+        decisions: loaded.plan.decisions,
+        orders: loaded.plan.orders,
+        filledClientOrderIds,
+        at: now.toISOString(),
+      }),
+    );
     if (events.length === 0) return;
     const accountId = metricsAccountIdFor(loaded.config.tradingEnvironment ?? "MARKET_DATA_PAPER");
+    // Skip stages already persisted for this cycle (idempotent retry).
+    const existing = await db.opportunityFunnelEvent.findMany({
+      where: { cycleId, accountId },
+      select: { pairAddress: true, stage: true },
+    });
+    const seen = new Set(existing.map((row) => `${row.pairAddress}|${row.stage}`));
+    const fresh = events.filter((event) => !seen.has(`${event.pairAddress}|${event.stage}`));
+    if (fresh.length === 0) return;
     await db.opportunityFunnelEvent.createMany({
-      data: events.map((event) => ({
+      data: fresh.map((event) => ({
         accountId,
         cycleId: event.cycleId,
         pairAddress: event.pairAddress,
@@ -824,7 +858,40 @@ export class StageRunner {
         venue: "EXTERNAL",
       });
     }
-    const report = reconcileOrders({ broker, ledger });
+    const baseReport = reconcileOrders({ broker, ledger });
+    const positions = await db.position.findMany({ where: { accountId: "primary" } });
+    const positionDrifts: Array<{ pairAddress: string; driftQty: string }> = [];
+    for (const position of positions) {
+      const filledOrders = await db.order.findMany({
+        where: { accountId: "primary", pairAddress: position.pairAddress, status: "FILLED" },
+        include: { fills: true },
+      });
+      const buys: string[] = [];
+      const sells: string[] = [];
+      for (const order of filledOrders) {
+        for (const fill of order.fills) {
+          if (order.side === "BUY") buys.push(fill.qty.toString());
+          else sells.push(fill.qty.toString());
+        }
+      }
+      const qtyCheck = reconcilePositionQty({
+        pairAddress: position.pairAddress,
+        positionQty: position.baseQty.toString(),
+        buyFillQtys: buys,
+        sellFillQtys: sells,
+      });
+      if (!qtyCheck.ok) {
+        positionDrifts.push({ pairAddress: position.pairAddress, driftQty: qtyCheck.driftQty });
+      }
+    }
+    const report = enrichReconcileReport(baseReport, { positionDrifts });
+    this.observability.record({
+      category: "portfolio_reconciliation",
+      name: report.ok ? "reconcile_clean" : "reconcile_dirty",
+      value: report.issues.length,
+      unit: "issues",
+      meta: { suspendEntries: report.suspendEntries },
+    });
     if (report.suspendEntries) {
       await this.persistAlert(
         db,
@@ -1091,6 +1158,30 @@ export class StageRunner {
     }
   }
 
+  /** Flush in-cycle observability counters into durable ObservabilityEvent rows. */
+  private async persistObservability(cycleId: string): Promise<void> {
+    this.observability.record({
+      category: "simulation_uptime",
+      name: "cycle_complete",
+      value: 1,
+      unit: "cycle",
+      meta: { cycleId },
+    });
+    const rows = this.observability.snapshot();
+    if (rows.length === 0) return;
+    await this.prisma.observabilityEvent.createMany({
+      data: rows.map((row) => ({
+        category: row.category,
+        name: row.name,
+        value: row.value,
+        unit: row.unit,
+        meta: toJson({ ...row.meta, cycleId }),
+        createdAt: new Date(row.at),
+      })),
+    });
+    this.observability.clear();
+  }
+
   private async copyReplay(cycleId: string, config: StrategyConfig, now: Date): Promise<number> {
     const latest = await this.prisma.marketObservation.findMany({
       orderBy: { receivedAt: "desc" },
@@ -1159,12 +1250,25 @@ export class StageRunner {
     return parseStrategyConfig(engine.config);
   }
 
-  /** Delayed FX marks for MARKET_DATA_PAPER — never fixtures, never EXTERNAL_DEMO. */
+  /**
+   * Delayed FX (+ optional ETF when READY) marks for MARKET_DATA_PAPER via MarketDataGateway.
+   * Never fixtures, never invents levels when provider not READY.
+   */
   private async fetchFrankfurterPaperPairs(now: Date): Promise<NormalizedPair[]> {
     try {
-      const provider = new FrankfurterFxProvider({ now: () => now });
+      const gateway = new MarketDataGateway({
+        frankfurter: new FrankfurterFxProvider({ now: () => now }),
+      });
+      this.observability.record({
+        category: "provider_api",
+        name: "gateway_fx_fetch",
+        value: 1,
+        unit: "call",
+        meta: { readiness: gateway.readiness() },
+        at: now.toISOString(),
+      });
       const ids = ["fx:EURUSD", "fx:GBPUSD"];
-      const quotes = await provider.getQuotes(ids);
+      const quotes = await gateway.getQuotes(ids);
       if (!quotes.ok) return [];
       return quotes.data
         .filter((q) => q.level !== null)
@@ -1259,6 +1363,32 @@ export class StageRunner {
         : row.positionKey;
       const mark = loaded.marks?.[pair]?.priceUsd;
       if (!mark) continue;
+      // Persist trailing peak/trough; amend STOP/TRAILING triggers only (never TP).
+      const trailPct = row.trailPct?.toString() ?? loaded.config.trailingStopPct;
+      if (trailPct != null) {
+        const direction = (row.direction as "LONG" | "SHORT") || "LONG";
+        const trail = updateTrailing({
+          direction,
+          markUsd: mark,
+          extremePriceUsd: row.extremePriceUsd?.toString() ?? null,
+          trailPct: String(trailPct),
+        });
+        await tx.protectionOrder.updateMany({
+          where: { ocoGroupId: row.ocoGroupId, status: "ARMED" },
+          data: { extremePriceUsd: trail.extremePriceUsd },
+        });
+        await tx.protectionOrder.updateMany({
+          where: {
+            ocoGroupId: row.ocoGroupId,
+            status: "ARMED",
+            kind: { in: ["STOP", "TRAILING"] },
+          },
+          data: {
+            triggerPriceUsd: trail.stopPriceUsd,
+            confirmedTriggerPriceUsd: trail.stopPriceUsd,
+          },
+        });
+      }
       const claim = await claimOcoTriggerInTx(tx, {
         ocoGroupId: row.ocoGroupId,
         markUsd: mark,

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { reconcileOrders } from "./reconcile.js";
+import {
+  enrichReconcileReport,
+  reconcileOrders,
+  reconcilePositionQty,
+} from "./reconcile.js";
 import { armOco, evaluateOco } from "./protection.js";
 
 describe("fault injection regressions", () => {
@@ -49,5 +53,25 @@ describe("fault injection regressions", () => {
     const second = evaluateOco(first.group, "130");
     expect(second.triggered).toBeNull();
     expect(second.raceSuppressed).toBe(true);
+  });
+
+  it("position qty drift vs fills suspends without inventing corrective fills", () => {
+    const qty = reconcilePositionQty({
+      pairAddress: "etf:SPY",
+      positionQty: "10",
+      buyFillQtys: ["10"],
+      sellFillQtys: ["2"],
+    });
+    expect(qty.ok).toBe(false);
+    const clean = reconcileOrders({
+      broker: [{ clientOrderId: "p1", status: "FILLED", filledQty: "1", venue: "PAPER" }],
+      ledger: [{ clientOrderId: "p1", status: "FILLED", filledQty: "1", venue: "PAPER" }],
+    });
+    const enriched = enrichReconcileReport(clean, {
+      positionDrifts: [{ pairAddress: "etf:SPY", driftQty: qty.driftQty }],
+    });
+    expect(enriched.ok).toBe(false);
+    expect(enriched.suspendEntries).toBe(true);
+    expect(enriched.issues.some((i) => i.kind === "QTY_MISMATCH")).toBe(true);
   });
 });

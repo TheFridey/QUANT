@@ -214,8 +214,20 @@ export type Snapshot = {
     decision: string;
     reasonCodes: string[];
     reasonText: string[];
+    hardBlocks?: string[];
+    advisories?: string[];
     createdAt: string;
   }>;
+  observability?: {
+    recent: Array<{
+      id: string;
+      category: string;
+      name: string;
+      value: string | null;
+      unit: string | null;
+      createdAt: string;
+    }>;
+  };
   engine: {
     status: "STOPPED" | "RUNNING" | "PAUSED" | "EMERGENCY_STOP";
     flattenRequested: boolean;

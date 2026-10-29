@@ -14,6 +14,7 @@ import {
   REASON_TEXT,
   assertPaperOrSandboxOnly,
   classifyFreshness,
+  classifyReasonCodes,
   d,
   emergencyStopSchema,
   isReasonCode,
@@ -228,16 +229,25 @@ export class TerminalService {
       oanda_practice: new OandaPracticeProvider(oandaCreds).readiness(),
     };
     const whyBlocked = decisions
-      .filter((decision) => decision.decision === "REJECT" || decision.reasonCodes.some((code) => /BLOCK|REJECT|PAUSE|SUSPEND|BREAKER|STALE|DEMO/.test(code)))
+      .filter((decision) => decision.decision === "REJECT" || decision.reasonCodes.some((code) => /BLOCK|REJECT|PAUSE|SUSPEND|BREAKER|STALE|DEMO|UNKNOWN/.test(code)))
       .slice(0, 24)
-      .map((decision) => ({
-        agent: decision.agent,
-        pairAddress: decision.pairAddress,
-        decision: decision.decision,
-        reasonCodes: decision.reasonCodes,
-        reasonText: decision.reasonCodes.map((code) => (isReasonCode(code) ? REASON_TEXT[code] : code)),
-        createdAt: decision.createdAt.toISOString(),
-      }));
+      .map((decision) => {
+        const classified = classifyReasonCodes(decision.reasonCodes);
+        return {
+          agent: decision.agent,
+          pairAddress: decision.pairAddress,
+          decision: decision.decision,
+          reasonCodes: decision.reasonCodes,
+          reasonText: decision.reasonCodes.map((code) => (isReasonCode(code) ? REASON_TEXT[code] : code)),
+          hardBlocks: classified.hardBlocks,
+          advisories: classified.advisories,
+          createdAt: decision.createdAt.toISOString(),
+        };
+      });
+    const observabilityRows = await this.prisma.observabilityEvent.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 40,
+    });
     return {
       serverTime: now.toISOString(),
       venue: "PAPER",
@@ -286,6 +296,16 @@ export class TerminalService {
         createdAt: alert.createdAt.toISOString(),
       })),
       whyBlocked,
+      observability: {
+        recent: observabilityRows.map((row) => ({
+          id: row.id,
+          category: row.category,
+          name: row.name,
+          value: row.value?.toString() ?? null,
+          unit: row.unit,
+          createdAt: row.createdAt.toISOString(),
+        })),
+      },
       engine: {
         status: engineRow.status,
         flattenRequested: engineRow.flattenRequested,

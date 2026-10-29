@@ -16,17 +16,21 @@ export function rollSessionEquity(input: {
   sessionStartEquityUsd: string;
   highWaterMarkUsd: string;
   rolled: boolean;
+  /** Daily PnL vs session-start equity; null when equity incomplete. */
+  dailyPnlUsd: string | null;
 } {
   const equity = input.currentEquityUsd ?? input.startingBalanceUsd;
   const hwmBase = input.highWaterMarkUsd ?? equity;
   const hwm = usd(d(hwmBase).gte(equity) ? d(hwmBase) : d(equity));
 
   if (!input.sessionStartedAt || !input.sessionStartEquityUsd) {
+    const start = startOfUtcDay(input.now);
     return {
-      sessionStartedAt: startOfUtcDay(input.now),
+      sessionStartedAt: start,
       sessionStartEquityUsd: usd(d(equity)),
       highWaterMarkUsd: hwm,
       rolled: true,
+      dailyPnlUsd: input.currentEquityUsd == null ? null : "0.00000000",
     };
   }
 
@@ -38,17 +42,36 @@ export function rollSessionEquity(input: {
       sessionStartEquityUsd: usd(d(equity)),
       highWaterMarkUsd: hwm,
       rolled: true,
+      dailyPnlUsd: input.currentEquityUsd == null ? null : "0.00000000",
     };
   }
+
+  const dailyPnlUsd =
+    input.currentEquityUsd == null
+      ? null
+      : usd(d(input.currentEquityUsd).minus(d(input.sessionStartEquityUsd)));
 
   return {
     sessionStartedAt: input.sessionStartedAt,
     sessionStartEquityUsd: input.sessionStartEquityUsd,
     highWaterMarkUsd: hwm,
     rolled: false,
+    dailyPnlUsd,
   };
 }
 
-function startOfUtcDay(value: Date): Date {
+/** Same-day HWM ratchet without rolling the session window. */
+export function ratchetHighWaterMark(currentHwmUsd: string | null, equityUsd: string | null): string | null {
+  if (equityUsd == null) return currentHwmUsd;
+  if (currentHwmUsd == null) return usd(d(equityUsd));
+  return usd(d(currentHwmUsd).gte(equityUsd) ? d(currentHwmUsd) : d(equityUsd));
+}
+
+export function startOfUtcDay(value: Date): Date {
   return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
+}
+
+/** True when `now` is on a later UTC calendar day than `sessionStartedAt`. */
+export function isUtcMidnightRollover(sessionStartedAt: Date, now: Date): boolean {
+  return startOfUtcDay(now).getTime() > startOfUtcDay(sessionStartedAt).getTime();
 }

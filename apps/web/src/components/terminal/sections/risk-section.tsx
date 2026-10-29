@@ -128,11 +128,38 @@ export function RiskSection() {
         ) : (
           <ul className="divide-y divide-border/70 text-xs">
             {(snapshot.whyBlocked ?? []).slice(0, 12).map((row, index) => (
-              <li key={`${row.agent}-${row.pairAddress}-${index}`} className="flex flex-wrap items-start justify-between gap-2 px-3 py-2">
+              <li key={`${row.agent}-${row.pairAddress}-${index}`} className="flex flex-col gap-1 px-3 py-2">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <span>
+                    <span className="text-muted">{row.agent}</span> · {row.pairAddress || "(account)"} · {row.decision}
+                  </span>
+                  <span className="mono text-muted">{row.reasonCodes.join(", ")}</span>
+                </div>
+                {(row.hardBlocks?.length ?? 0) > 0 ? (
+                  <div className="text-[10px] text-loss">Hard: {(row.hardBlocks ?? []).join(", ")}</div>
+                ) : null}
+                {(row.advisories?.length ?? 0) > 0 ? (
+                  <div className="text-[10px] text-muted">Advisory: {(row.advisories ?? []).join(", ")}</div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+      <Panel title="Observability" className="lg:col-span-2">
+        {(snapshot.observability?.recent ?? []).length === 0 ? (
+          <p className="p-4 text-xs text-muted">No durable ObservabilityEvent rows yet.</p>
+        ) : (
+          <ul className="divide-y divide-border/70 text-xs">
+            {(snapshot.observability?.recent ?? []).slice(0, 10).map((row) => (
+              <li key={row.id} className="flex flex-wrap items-start justify-between gap-2 px-3 py-2">
                 <span>
-                  <span className="text-muted">{row.agent}</span> · {row.pairAddress || "(account)"} · {row.decision}
+                  <span className="text-muted">{row.category}</span> · {row.name}
                 </span>
-                <span className="mono text-muted">{row.reasonCodes.join(", ")}</span>
+                <span className="mono">
+                  {row.value ?? "—"}
+                  {row.unit ? ` ${row.unit}` : ""}
+                </span>
               </li>
             ))}
           </ul>

@@ -6,9 +6,9 @@ Mechanical roll-up from ACCEPTANCE_SCENARIOS (implementation ≠ verification):
 
 | Status | Count | Notes |
 | --- | --- | --- |
-| VERIFIED_OFFLINE | 25 | Gate A core + PG admission + protection crash/OCO + exit parity + REPLAY metrics + costs |
-| PARTIAL | 29 | Implemented depth incomplete or UX/ops unfinished |
-| IMPLEMENTED_UNVERIFIED | 3 | Gateway + concurrent instances/allocation pending richer harness |
+| VERIFIED_OFFLINE | 36 | Includes discovery/gateway/session equity/controls/instances/reconcile/observability |
+| PARTIAL | 21 | Depth incomplete or UX/ops unfinished |
+| IMPLEMENTED_UNVERIFIED | 0 | — |
 | BLOCKED_EXTERNAL_TEST | 1 | C40 named external demo (credentialed) |
 | VERIFIED_EXTERNAL | 0 | none |
 | NOT_STARTED | 0 | — |
@@ -19,13 +19,15 @@ Mechanical roll-up from ACCEPTANCE_SCENARIOS (implementation ≠ verification):
 
 | Area | Status | Evidence |
 | --- | --- | --- |
-| Fixture isolation | VERIFIED_OFFLINE | `paper-multimarket.test`, default `multiMarketPaperIngest=false`, FIXTURE banner |
-| Named providers | IMPLEMENTED_UNVERIFIED + BLOCKED_EXTERNAL_TEST | Alpaca/OANDA adapters + offline contracts; credentialed script exit 2 without keys |
-| PG reservations in admission | VERIFIED_OFFLINE | `reserveInTx` in worker executor + `pg-reservations.test` race |
-| Long/short protection | VERIFIED_OFFLINE | worker arm/evaluate/retry + crash restart + amendment keep-confirmed + 2-worker OCO race |
-| Concurrent strategies | IMPLEMENTED_UNVERIFIED | durable StrategyInstance seeded + evaluate/allocate in `loadPlan` |
-| Capacity 50 slots | PARTIAL | PG soak script production-shaped path; fixture-shaped without live feeds — not a live SLO |
-| External demo C40 | BLOCKED_EXTERNAL_TEST | adapter READY only with named practice credentials |
+| Fixture isolation | VERIFIED_OFFLINE | default off; FIXTURE banner; isolation tests |
+| Named providers / gateway | VERIFIED_OFFLINE + BLOCKED_EXTERNAL_TEST | MarketDataGateway call site; credentialed script exit 2 |
+| Organic crypto discovery | VERIFIED_OFFLINE | profiles+search primary; boosts optional |
+| PG reservations in admission | VERIFIED_OFFLINE | worker `reserveInTx` + race test |
+| Long/short protection | VERIFIED_OFFLINE | crash/restart + OCO race + amendment keep-confirmed |
+| Concurrent strategies | VERIFIED_OFFLINE | worker loadPlan + integration test (≥3 instances) |
+| Session equity / HWM | VERIFIED_OFFLINE | `rollSessionEquity` persisted in loadPlan |
+| Capacity 50 slots | PARTIAL | PG soak fixture-shaped without live feeds |
+| External demo C40 | BLOCKED_EXTERNAL_TEST | READY only with practice keys |
 
 ## External blockers
 

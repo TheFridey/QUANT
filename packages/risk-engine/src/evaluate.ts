@@ -55,8 +55,11 @@ export function evaluateRisk(input: RiskContext): RiskGate {
   if (freshness) return freshness;
 
   if (input.side === "BUY") {
-    if (input.pauseNewEntries || input.entriesSuspended) {
-      return gate("REJECT", ["ENGINE_HALTED"], 1);
+    if (input.pauseNewEntries) {
+      return gate("REJECT", ["PAUSE_NEW_ENTRIES"], 1);
+    }
+    if (input.entriesSuspended) {
+      return gate("REJECT", ["ENTRIES_SUSPENDED"], 1);
     }
     if (input.valuation === "INCOMPLETE") return gate("REJECT", ["MARK_UNAVAILABLE"], 0);
     const demoOk = input.allowDemoPaperEntries === true && (input.valuation === "DEMO" || input.freshness === "DEMO");

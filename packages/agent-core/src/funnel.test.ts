@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { funnelEventsFromPlan, recordFunnelEvent, summarizeFunnel } from "./funnel.js";
+import {
+  funnelEventsFromPlan,
+  recordFunnelEvent,
+  summarizeFunnel,
+  uniqueFunnelEvents,
+} from "./funnel.js";
 
 describe("opportunity funnel", () => {
   it("persists stage transitions with reason codes", () => {
@@ -69,5 +74,35 @@ describe("opportunity funnel", () => {
     expect(summary.SIGNALLED).toBe(1);
     expect(summary.REJECTED).toBe(1);
     expect(events.every((event) => event.reasonCodes.length > 0)).toBe(true);
+  });
+
+  it("uniqueFunnelEvents collapses duplicate cycle|pair|stage rows", () => {
+    const duped = [
+      {
+        cycleId: "c1",
+        pairAddress: "fx:EURUSD",
+        stage: "DISCOVERED" as const,
+        reasonCodes: ["DISCOVERY_RANKED"],
+        at: "2026-10-28T12:00:00.000Z",
+      },
+      {
+        cycleId: "c1",
+        pairAddress: "fx:EURUSD",
+        stage: "DISCOVERED" as const,
+        reasonCodes: ["DISCOVERY_FILTERED"],
+        at: "2026-10-28T12:00:01.000Z",
+      },
+      {
+        cycleId: "c1",
+        pairAddress: "fx:EURUSD",
+        stage: "SIGNALLED" as const,
+        reasonCodes: ["ENTRY_MOMENTUM"],
+        at: "2026-10-28T12:00:02.000Z",
+      },
+    ];
+    const unique = uniqueFunnelEvents(duped);
+    expect(unique).toHaveLength(2);
+    expect(unique.find((e) => e.stage === "DISCOVERED")?.reasonCodes).toContain("DISCOVERY_FILTERED");
+    expect(summarizeFunnel(unique).DISCOVERED).toBe(1);
   });
 });

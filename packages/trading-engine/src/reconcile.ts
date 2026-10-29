@@ -107,3 +107,52 @@ export function cashMatchesLedger(input: {
   const sum = input.cashAffectingLines.reduce((total, line) => total.plus(d(line)), d("0"));
   return { ok: d(input.accountCashUsd).eq(sum), sumUsd: usd(sum) };
 }
+
+/**
+ * Position qty must equal net fills (buys − sells) for the pair.
+ * Surfaces UNKNOWN_EXPOSURE-style drift without inventing corrective fills.
+ */
+export function reconcilePositionQty(input: {
+  pairAddress: string;
+  positionQty: string;
+  buyFillQtys: string[];
+  sellFillQtys: string[];
+}): { ok: boolean; expectedQty: string; driftQty: string } {
+  const bought = input.buyFillQtys.reduce((total, qty) => total.plus(d(qty)), d("0"));
+  const sold = input.sellFillQtys.reduce((total, qty) => total.plus(d(qty)), d("0"));
+  const expected = bought.minus(sold);
+  const drift = d(input.positionQty).minus(expected);
+  return {
+    ok: drift.abs().lte("0.00000001"),
+    expectedQty: usd(expected),
+    driftQty: usd(drift),
+  };
+}
+
+/** Extend reconcile report with position/cash integrity without inventing fills. */
+export function enrichReconcileReport(
+  report: ReconcileReport,
+  extras: {
+    positionDrifts?: Array<{ pairAddress: string; driftQty: string }>;
+    cashOk?: boolean;
+  },
+): ReconcileReport {
+  const issues = [...report.issues];
+  for (const drift of extras.positionDrifts ?? []) {
+    if (!d(drift.driftQty).eq(0)) {
+      issues.push({
+        kind: "QTY_MISMATCH",
+        clientOrderId: `position:${drift.pairAddress}`,
+        brokerQty: "0",
+        ledgerQty: drift.driftQty,
+      });
+    }
+  }
+  if (extras.cashOk === false) {
+    issues.push({ kind: "UNKNOWN_EXPOSURE", clientOrderId: "cash:ledger" });
+  }
+  const suspendEntries = issues.some(
+    (issue) => issue.kind === "UNKNOWN_EXPOSURE" || issue.kind === "QTY_MISMATCH",
+  );
+  return { ok: issues.length === 0, issues, suspendEntries };
+}

@@ -113,3 +113,23 @@
 
 **Decision:** Alpaca bracket and OANDA STOP_LOSS/TAKE_PROFIT helpers track desired vs ack. Missing credentials or missing venue order id → REJECTED; never invent ACK success. Credentialed ACK remains BLOCKED_EXTERNAL_TEST.
 **Date:** 2026-10-29
+
+## D022 — Organic discovery primary; boosts optional
+
+**Decision:** DexScreener universe uses token-profiles + public search as primary sources. Paid `token-boosts` is an optional supplement that must not be required for discovery success.
+**Date:** 2026-10-29
+
+## D023 — Session equity rolls at UTC midnight in the worker
+
+**Decision:** `rollSessionEquity` runs inside worker `loadPlan`, persists sessionStart*/HWM on PaperAccount, and resets daily PnL at UTC day boundary without lowering HWM.
+**Date:** 2026-10-29
+
+## D024 — Pause/suspend are distinct hard blocks; exits survive
+
+**Decision:** `PAUSE_NEW_ENTRIES` and `ENTRIES_SUSPENDED` are first-class reason codes (not collapsed into ENGINE_HALTED). Buys reject; EXIT/FLATTEN remain allowed when RUNNING.
+**Date:** 2026-10-29
+
+## D025 — MarketDataGateway owns named-provider routing
+
+**Decision:** Worker MARKET_DATA_PAPER FX ingest and readiness UX go through `MarketDataGateway`. Missing credentials never invent quote levels.
+**Date:** 2026-10-29
