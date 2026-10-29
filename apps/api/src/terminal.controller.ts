@@ -34,6 +34,26 @@ export class TerminalController {
     return this.terminal.equityHistory(range);
   }
 
+  /** Paginated order/trade ledger beyond the snapshot's recent-40 window (D22). */
+  @Get("terminal/history")
+  history(
+    @Query("kind") kind = "orders",
+    @Query("limit") limit = "40",
+    @Query("offset") offset = "0",
+    @Query("side") side?: string,
+    @Query("symbol") symbol?: string,
+    @Query("status") status?: string,
+  ) {
+    return this.terminal.orderHistory({
+      kind: kind === "trades" ? "trades" : kind === "all" ? "all" : "orders",
+      limit: Number(limit) || 40,
+      offset: Number(offset) || 0,
+      side: side || undefined,
+      symbol: symbol || undefined,
+      status: status || undefined,
+    });
+  }
+
   @Get("terminal/activity")
   activity(@Query("limit") limit = "80") {
     return this.terminal.activityFeed(Number(limit) || 80);

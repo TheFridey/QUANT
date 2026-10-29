@@ -85,16 +85,37 @@ export function createMeanRevertFadeStrategy(input: {
 }): StrategyModule {
   return {
     id: input.id ?? "mean-revert-fade-v1",
-    version: "1.0.0",
+    version: "1.1.0",
     instrumentIds: input.instrumentIds,
     onBar(bar, context) {
       const held = context.openPositions.some(
         (position) => position.pairAddress === (bar.pairAddress ?? bar.instrumentId),
       );
-      if (held && bar.priceChangeM5Pct !== null && d(bar.priceChangeM5Pct).lte(context.config.exitM5ChangePct)) {
-        return signal(bar, "EXIT_LONG", ["EXIT_MOMENTUM"]);
+      if (held) {
+        // Take-profit when the oversold bounce recovers by |exitM5ChangePct|.
+        if (
+          bar.priceChangeM5Pct !== null &&
+          d(bar.priceChangeM5Pct).gte(d(context.config.exitM5ChangePct).abs())
+        ) {
+          return signal(bar, "EXIT_LONG", ["EXIT_MEAN_REVERT"]);
+        }
+        // Stop / continued dump: further M5 selloff beyond 2× entry threshold.
+        if (
+          bar.priceChangeM5Pct !== null &&
+          d(bar.priceChangeM5Pct).lte(d(context.config.entryM5ChangePct).neg().mul(2))
+        ) {
+          return signal(bar, "EXIT_LONG", ["EXIT_MEAN_REVERT_STOP"]);
+        }
+        return signal(bar, "HOLD", ["HOLD_POSITION"]);
       }
-      if (held) return signal(bar, "HOLD", ["HOLD_POSITION"]);
+      if (bar.priceChangeM5Pct === null || bar.priceChangeH1Pct === null) {
+        return signal(bar, "HOLD", ["INSUFFICIENT_DATA"]);
+      }
+      // Fade a sharp M5 selloff when H1 has not collapsed by the same amount (D11/D25 remnant).
+      const oversold = d(context.config.entryM5ChangePct).neg();
+      if (d(bar.priceChangeM5Pct).lte(oversold) && d(bar.priceChangeH1Pct).gt(oversold)) {
+        return signal(bar, "ENTER_LONG", ["ENTRY_MEAN_REVERT", "FADE_OVERSOLD"]);
+      }
       return signal(bar, "HOLD", ["NO_EDGE"]);
     },
   };

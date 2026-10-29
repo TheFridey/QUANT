@@ -337,7 +337,11 @@ export function StrategySection() {
           <Field id="relvol" label="Relative volume min (empty = off)" value={activeDraft.relVol} onChange={(v) => updateField("relVol", v)} />
           <Field id="minsamples" label="Min sample trades (release gate)" value={activeDraft.minSamples} onChange={(v) => updateField("minSamples", v)} />
           {message ? (
-            <p className={`text-sm ${message.includes("saved") || message.includes("stored") || message.includes("applied") || message.includes("reset") ? "text-profit" : "text-loss"}`}>
+            <p
+              role="status"
+              aria-live="polite"
+              className={`text-sm ${message.includes("saved") || message.includes("stored") || message.includes("applied") || message.includes("reset") ? "text-profit" : "text-loss"}`}
+            >
               {message}
             </p>
           ) : null}

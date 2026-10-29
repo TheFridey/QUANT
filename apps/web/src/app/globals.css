@@ -35,6 +35,28 @@ body {
 
 button, input, select, textarea { font: inherit; }
 
+/* D30 — keyboard focus without replacing Radix primitives */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
 .mono {
   font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;

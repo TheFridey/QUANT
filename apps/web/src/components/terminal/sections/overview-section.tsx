@@ -7,6 +7,7 @@ import { PerformanceSection } from "@/components/terminal/sections/performance-s
 import { PortfolioSection } from "@/components/terminal/sections/portfolio-section";
 import { PositionsSection } from "@/components/terminal/sections/positions-section";
 import { EmptyState, Panel } from "@/components/terminal/panel";
+import { ReadinessChecklist } from "@/components/terminal/readiness-checklist";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { AGENT_PIPELINE } from "@/lib/agents";
 import { formatLondon, formatLondonDateTime } from "@/lib/format";
@@ -75,6 +76,7 @@ export function OverviewSection() {
           </span>
         </div>
       ) : null}
+      <ReadinessChecklist compact />
       <PortfolioSection />
       <Panel title="Agent pipeline" extra="Click a card for inputs / outputs">
         <div className="grid gap-2 p-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">

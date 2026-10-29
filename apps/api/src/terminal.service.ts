@@ -226,6 +226,10 @@ export class TerminalService {
       take: 40,
       include: { fills: true },
     });
+    const [orderTotal, fillTotal] = await Promise.all([
+      this.prisma.order.count(),
+      this.prisma.fill.count(),
+    ]);
     const fillStats = await this.fillsStats();
     const closedPnls = closed.map((entry) => entry.amountUsd.toString());
     const largestGainUsd = closedPnls.length === 0 ? null : usd(closedPnls.reduce((best, value) => (d(value).gt(best) ? d(value) : best), d(closedPnls[0]!)));
@@ -696,28 +700,132 @@ export class TerminalService {
           }
         : null,
       decisions: decisions.map((decision) => this.presentDecision(decision)),
-      orders: orders.map((order) => ({
-        id: order.id,
-        clientOrderId: order.clientOrderId,
-        pairAddress: order.pairAddress,
-        baseSymbol: order.baseSymbol,
-        side: order.side,
-        intent: order.intent,
-        status: order.status,
-        qty: order.qty.toString(),
-        rejectReason: order.rejectReason,
-        executionMode: order.executionMode,
-        strategyVersion: order.strategyVersion,
-        createdAt: order.createdAt.toISOString(),
-        fills: order.fills.map((fill) => ({
-          id: fill.id,
-          qty: fill.qty.toString(),
-          priceUsd: fill.priceUsd.toString(),
-          notionalUsd: fill.notionalUsd.toString(),
-          feeUsd: fill.feeUsd.toString(),
-          slippageBps: fill.slippageBps.toString(),
-          observationId: fill.observationId,
-        })),
+      historyMeta: {
+        orderTotal,
+        fillTotal,
+        snapshotLimit: 40,
+        truncated: orderTotal > 40,
+        endpoint: "/api/terminal/history",
+      },
+      orders: orders.map((order) => this.presentHistoryOrder(order)),
+    };
+  }
+
+  /**
+   * Paginated ledger query for History (D22). Snapshot still embeds the latest 40;
+   * this endpoint pages beyond that with order vs trade (fill) views.
+   */
+  async orderHistory(input: {
+    kind: "orders" | "trades" | "all";
+    limit: number;
+    offset: number;
+    side?: string;
+    symbol?: string;
+    status?: string;
+  }) {
+    const limit = Math.min(Math.max(input.limit || 40, 1), 100);
+    const offset = Math.max(input.offset || 0, 0);
+    const where: {
+      side?: string;
+      baseSymbol?: { contains: string; mode: "insensitive" };
+      status?: string;
+      fills?: { some: Record<string, never> };
+    } = {};
+    if (input.side === "BUY" || input.side === "SELL") where.side = input.side;
+    if (input.symbol?.trim()) {
+      where.baseSymbol = { contains: input.symbol.trim(), mode: "insensitive" };
+    }
+    if (input.status?.trim()) where.status = input.status.trim().toUpperCase();
+    if (input.kind === "trades") where.fills = { some: {} };
+
+    const [total, rows] = await Promise.all([
+      this.prisma.order.count({ where }),
+      this.prisma.order.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: offset,
+        take: limit,
+        include: { fills: true },
+      }),
+    ]);
+
+    const items = rows.map((order) => {
+      const presented = this.presentHistoryOrder(order);
+      const fillQty = order.fills.reduce((sum, fill) => sum.plus(d(fill.qty.toString())), d("0"));
+      const fillNotional = order.fills.reduce((sum, fill) => sum.plus(d(fill.notionalUsd.toString())), d("0"));
+      const fillFees = order.fills.reduce((sum, fill) => sum.plus(d(fill.feeUsd.toString())), d("0"));
+      const avgFillPx =
+        fillQty.gt(0) && fillNotional.gt(0) ? usd(fillNotional.div(fillQty)) : null;
+      return {
+        ...presented,
+        recordKind: order.fills.length > 0 ? ("trade" as const) : ("order" as const),
+        fillCount: order.fills.length,
+        avgFillPx,
+        fillQty: fillQty.toFixed(8),
+        fillNotionalUsd: usd(fillNotional),
+        fillFeesUsd: usd(fillFees),
+      };
+    });
+
+    return {
+      kind: input.kind,
+      limit,
+      offset,
+      total,
+      hasMore: offset + items.length < total,
+      nextOffset: offset + items.length < total ? offset + items.length : null,
+      items,
+      note:
+        input.kind === "trades"
+          ? "Trades are orders with at least one fill (weighted avg fill shown)."
+          : "Orders include rejects and unfilled intents; use kind=trades for fills only.",
+    };
+  }
+
+  private presentHistoryOrder(order: {
+    id: string;
+    clientOrderId: string;
+    pairAddress: string;
+    baseSymbol: string;
+    side: string;
+    intent: string;
+    status: string;
+    qty: { toString(): string };
+    rejectReason: string | null;
+    executionMode: string;
+    strategyVersion: string | null;
+    createdAt: Date;
+    fills: Array<{
+      id: string;
+      qty: { toString(): string };
+      priceUsd: { toString(): string };
+      notionalUsd: { toString(): string };
+      feeUsd: { toString(): string };
+      slippageBps: { toString(): string };
+      observationId: string;
+    }>;
+  }) {
+    return {
+      id: order.id,
+      clientOrderId: order.clientOrderId,
+      pairAddress: order.pairAddress,
+      baseSymbol: order.baseSymbol,
+      side: order.side,
+      intent: order.intent,
+      status: order.status,
+      qty: order.qty.toString(),
+      rejectReason: order.rejectReason,
+      executionMode: order.executionMode,
+      strategyVersion: order.strategyVersion,
+      createdAt: order.createdAt.toISOString(),
+      fills: order.fills.map((fill) => ({
+        id: fill.id,
+        qty: fill.qty.toString(),
+        priceUsd: fill.priceUsd.toString(),
+        notionalUsd: fill.notionalUsd.toString(),
+        feeUsd: fill.feeUsd.toString(),
+        slippageBps: fill.slippageBps.toString(),
+        observationId: fill.observationId,
       })),
     };
   }

@@ -46,7 +46,9 @@ export function CommandShell({ section }: { section: TerminalSection }) {
 
 function ShellFrame({ section }: { section: TerminalSection }) {
   const { loading, snapshot, refresh, error } = useSnapshot();
-  const label = SECTIONS.find((item) => item.id === section)?.label ?? "Overview";
+  const sectionDef = SECTIONS.find((item) => item.id === section);
+  const label = sectionDef?.label ?? "Overview";
+  const group = sectionDef?.group ?? "Desk";
 
   if (loading) {
     return (
@@ -86,7 +88,9 @@ function ShellFrame({ section }: { section: TerminalSection }) {
           <MobileNav active={section} />
           <div className="flex items-center justify-between border-b border-border px-3 py-2">
             <div>
-              <div className="text-[10px] uppercase tracking-[0.16em] text-muted">Module</div>
+              <div className="text-[10px] uppercase tracking-[0.16em] text-muted">
+                {group} · Module
+              </div>
               <h1 className="text-sm font-medium">{label}</h1>
             </div>
             <Button size="xs" variant="outline" onClick={() => void refresh()}>

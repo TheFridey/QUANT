@@ -1,6 +1,7 @@
 "use client";
 
 import { Panel } from "@/components/terminal/panel";
+import { ReadinessChecklist } from "@/components/terminal/readiness-checklist";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { Label } from "@/components/ui/label";
 
@@ -16,6 +17,7 @@ export function SettingsSection() {
 
   return (
     <div className="grid gap-3 lg:grid-cols-2 animate-odin-fade">
+      <ReadinessChecklist />
       <Panel title="Refresh interval">
         <div className="space-y-3 p-4">
           <Label>Snapshot polling</Label>

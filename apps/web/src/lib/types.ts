@@ -369,6 +369,14 @@ export type Snapshot = {
     finishedAt: string | null;
   } | null;
   decisions: Decision[];
+  /** D22 — snapshot embeds recent orders; totals hint when ledger exceeds that window. */
+  historyMeta?: {
+    orderTotal: number;
+    fillTotal: number;
+    snapshotLimit: number;
+    truncated: boolean;
+    endpoint: string;
+  };
   orders: Array<{
     id: string;
     clientOrderId?: string;

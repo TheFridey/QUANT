@@ -89,7 +89,14 @@ export function PositionsSection() {
       ) : null}
 
       <Panel title="Open positions" extra={`${positions.length} open`}>
-        {message ? <p className="border-b border-border px-3 py-2 text-xs text-muted">{message}</p> : null}
+        <div aria-live="polite" aria-atomic="true" className="sr-only">
+          {message ?? ""}
+        </div>
+        {message ? (
+          <p role="status" className="border-b border-border px-3 py-2 text-xs text-muted">
+            {message}
+          </p>
+        ) : null}
         {positions.length === 0 ? (
           <EmptyState title="No open paper positions" detail="Positions appear after filled BUY orders on the paper ledger." />
         ) : (

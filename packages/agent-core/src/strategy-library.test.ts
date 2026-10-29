@@ -47,6 +47,74 @@ describe("strategy library + promotion mapping", () => {
     expect(signal?.reasonCodes).toContain("ENTRY_MOMENTUM");
   });
 
+  it("lets mean-revert-fade ENTER_LONG on a sharp M5 selloff (not on momentum up)", () => {
+    const oversold = evaluatePromotedStrategy({
+      strategyId: "mean-revert-fade-v1",
+      pair: {
+        source: "dexscreener",
+        chainId: "solana",
+        pairAddress: "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+        dexId: "orca",
+        url: null,
+        baseAddress: "So11111111111111111111111111111111111111112",
+        baseSymbol: "SOL",
+        baseName: "Wrapped SOL",
+        quoteAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        quoteSymbol: "USDC",
+        priceUsd: "100",
+        liquidityUsd: "1000000",
+        volume24hUsd: "5000000",
+        volume5mUsd: "10000",
+        priceChangeM5Pct: "-2.5",
+        priceChangeH1Pct: "-0.5",
+        priceChangeH24Pct: "1",
+        txnsM5Buys: 20,
+        txnsM5Sells: 80,
+        observationId: "obs_fade",
+        freshness: "LIVE",
+        receivedAt: "2026-10-28T16:00:00.000Z",
+      },
+      config: DEFAULT_STRATEGY,
+      heldQty: "0",
+      history: [],
+    });
+    expect(oversold?.intent).toBe("ENTER_LONG");
+    expect(oversold?.reasonCodes).toContain("ENTRY_MEAN_REVERT");
+
+    const momentumUp = evaluatePromotedStrategy({
+      strategyId: "mean-revert-fade-v1",
+      pair: {
+        source: "dexscreener",
+        chainId: "solana",
+        pairAddress: "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+        dexId: "orca",
+        url: null,
+        baseAddress: "So11111111111111111111111111111111111111112",
+        baseSymbol: "SOL",
+        baseName: "Wrapped SOL",
+        quoteAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        quoteSymbol: "USDC",
+        priceUsd: "100",
+        liquidityUsd: "1000000",
+        volume24hUsd: "5000000",
+        volume5mUsd: "10000",
+        priceChangeM5Pct: "3.5",
+        priceChangeH1Pct: "1.2",
+        priceChangeH24Pct: "4",
+        txnsM5Buys: 80,
+        txnsM5Sells: 20,
+        observationId: "obs_up",
+        freshness: "LIVE",
+        receivedAt: "2026-10-28T16:00:00.000Z",
+      },
+      config: DEFAULT_STRATEGY,
+      heldQty: "0",
+      history: [],
+    });
+    expect(momentumUp?.intent).toBe("HOLD");
+    expect(momentumUp?.reasonCodes).toContain("NO_EDGE");
+  });
+
   it("returns null when no promoted strategy id is set (PULSE remains default)", () => {
     expect(
       evaluatePromotedStrategy({
