@@ -8,9 +8,9 @@
 import { DEFAULT_STRATEGY } from "../packages/shared/dist/index.js";
 import {
   allocateOpportunities,
-  buildInstancePlanGates,
   evaluateConcurrentInstances,
   planCycle,
+  toPlanIntents,
 } from "../packages/agent-core/dist/index.js";
 
 const fx = "fx:EURUSD";
@@ -77,10 +77,11 @@ const evaluated = evaluateConcurrentInstances({
   context: { config: DEFAULT_STRATEGY, openPositions: [], history: [] },
 });
 
-const allocated = allocateOpportunities({ signals: evaluated.signals, maxNewEntries: 2 });
-const gates = buildInstancePlanGates(allocated.accepted);
+const intents = toPlanIntents(evaluated.signals, { cycleId: "cyc_harness", accountId: "primary" });
+const allocated = allocateOpportunities({ signals: intents, maxNewEntries: 2 });
 const plan = planCycle({
   cycleId: "cyc_harness",
+  accountId: "primary",
   engineStatus: "RUNNING",
   config: DEFAULT_STRATEGY,
   cashUsd: DEFAULT_STRATEGY.startingBalanceUsd,
@@ -93,10 +94,8 @@ const plan = planCycle({
   operator: null,
   highWaterMarkUsd: DEFAULT_STRATEGY.startingBalanceUsd,
   aggregateExposureUsd: "0",
-  concurrentEntryAllowlist: gates.entryAllowlist,
-  concurrentEntryByPair: gates.entryByPair,
-  concurrentExitByPair: gates.exitByPair,
-  concurrentInstanceByPair: gates.instanceByPair,
+  instanceIntents: allocated.ordered,
+  maxNewEntries: 2,
   now: new Date("2026-10-28T16:00:00.000Z"),
 });
 
@@ -108,12 +107,14 @@ console.log(
       ok,
       label: "local_paper_plan_harness",
       evaluationErrors: evaluated.errors,
-      acceptedEnters: allocated.accepted.filter((s) => s.intent === "ENTER_LONG").length,
+      acceptedEnters: allocated.accepted.filter((s) => s.action === "ENTER").length,
       orders: plan.orders.map((o) => ({
         side: o.side,
         intent: o.intent,
         strategyInstanceId: o.strategyInstanceId,
         clientOrderId: o.clientOrderId,
+        ownerScope: o.ownerScope,
+        intentId: o.intentId,
       })),
       note: "Plan-level paper lifecycle only — not worker/DB/browser E2E",
     },

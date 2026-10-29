@@ -28,7 +28,7 @@ describe.skipIf(!enabled)("paper lifecycle worker+DB (no mocks)", () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
     await prisma.$executeRaw`SELECT pg_advisory_lock(${INTEGRATION_TEST_ADVISORY_LOCK})`;
     await prisma.$executeRawUnsafe(
-      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "ResearchProposal", "CycleRun", "PaperAccount", "EngineControl", "User", "RiskReservationEvent", "RiskReservation", "ProtectionIntent", "ProtectionOrder", "StrategyInstance", "StrategyAllocation", "OpportunityFunnelEvent", "DurableAlert", "AccountSafetyState", "TradeMemory" RESTART IDENTITY CASCADE`,
+      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "ResearchProposal", "CycleRun", "PaperAccount", "EngineControl", "User", "RiskReservationEvent", "RiskReservation", "ProtectionIntent", "ProtectionOrder", "StrategyInstance", "StrategyAllocation", "TradeIntent", "RecoveryCase", "ReconciliationRun", "StrategyAllocation", "OpportunityFunnelEvent", "DurableAlert", "AccountSafetyState", "TradeMemory" RESTART IDENTITY CASCADE`,
     );
     await ensureFoundation(prisma, {
       email: process.env.ADMIN_EMAIL ?? "admin@odin.local",

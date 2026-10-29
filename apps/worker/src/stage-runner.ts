@@ -2,12 +2,12 @@ import {
   ALERT_CODES,
   allocateOpportunities,
   assessSecurity,
-  buildInstancePlanGates,
   ensureDefaultStrategyInstances,
   entriesSuspendedAlert,
   evaluateConcurrentInstances,
-  filterSignalsByInstanceBudget,
+  fairnessCursorAfterAdmission,
   funnelEventsFromPlan,
+  instanceAvailableUsd,
   uniqueFunnelEvents,
   liveGateAlert,
   marketSelectionMap,
@@ -15,6 +15,7 @@ import {
   planCycle,
   reconcileIssueAlert,
   strategyVersionStamp,
+  toPlanIntents,
   unknownAssessment,
   type DecisionDraft,
 } from "@odin/agent-core";
@@ -42,10 +43,13 @@ import {
   buildPositionKey,
   checkRowEnvironmentIsolation,
   classifyFreshness,
+  clientOrderIdFor,
   d,
   freshnessFromProvenance,
   inferObservationProvenance,
   instrumentIdFromPositionKey,
+  intentIdFor,
+  intentIdempotencyKey,
   loadPinnedExecutionContext,
   newId,
   operatorOrderSchema,
@@ -78,12 +82,14 @@ import {
   enrichReconcileReport,
   reconcileOrders,
   reconcilePositionQty,
+  releasePendingExitReservation,
   recoverProtectionAfterRestart,
   resolveSafetyState,
   retryUnresolvedProtectionIntents,
   settlePendingOrder,
   updateTrailing,
 } from "@odin/trading-engine";
+import { processSandboxOutbox } from "./sandbox-execution.js";
 
 export type MarketFeed = {
   fetchUniverse(limit: number): Promise<ProviderResult<NormalizedPair[]>>;
@@ -230,8 +236,9 @@ export class StageRunner {
       // R05: settle/cancel pending under explicit policy FIRST, then refresh book/caps, then admit.
       const engine = await tx.engineControl.findUnique({ where: { id: "primary" } });
       const config = parseStrategyConfig(engine?.config ?? {});
+      // Local settle loop must only touch PAPER — never locally fill SANDBOX pending orders (F01).
       const pending = await tx.order.findMany({
-        where: { accountId: ctx.accountId, status: "PENDING" },
+        where: { accountId: ctx.accountId, status: "PENDING", executionMode: "PAPER" },
         orderBy: { submittedAt: "asc" },
       });
       let filled = 0;
@@ -260,6 +267,7 @@ export class StageRunner {
               reasonCodes: [...row.reasonCodes, "ENGINE_HALTED"],
             },
           });
+          await releasePendingExitReservation(tx, row);
           await releaseInTx(
             tx,
             { accountId: ctx.accountId, mode: "PAPER", clientOrderId: row.clientOrderId },
@@ -287,6 +295,9 @@ export class StageRunner {
               markUsd: null,
             });
           }
+        }
+        if (settled.status === "REJECTED" || settled.status === "EXPIRED") {
+          await releasePendingExitReservation(tx, row);
         }
         if (settled.status === "FILLED" || settled.status === "REJECTED" || settled.status === "EXPIRED") {
           await releaseInTx(
@@ -319,8 +330,11 @@ export class StageRunner {
       const stillPending = await tx.order.findMany({
         where: { accountId: ctx.accountId, status: "PENDING" },
       });
+      // Key by owner+pair so two instances can both have pending entries on the same symbol.
       const pendingPairSuppress = new Set(
-        stillPending.filter((o) => o.side === "BUY").map((o) => o.pairAddress),
+        stillPending
+          .filter((o) => o.side === "BUY")
+          .map((o) => (o.strategyInstanceId ? `${o.strategyInstanceId}::${o.pairAddress}` : o.pairAddress)),
       );
 
       const executionGateway = createExecutionGateway(liveGate.ok ? liveGate.mode : "PAPER", process.env);
@@ -340,45 +354,124 @@ export class StageRunner {
           durationMs: 0,
         });
       } else if (!allowsLocalPaperBooking(executionGateway)) {
-        // D09: SANDBOX must not silently book local PAPER as if it were external demo.
+        // SANDBOX: admit durable PRE_SUBMIT orders under account lock; outbox submits outside tx.
+        // Never book a local PAPER fill as if it were the external demo (D09 / F01).
         const gatewayReady = executionGateway.readiness();
         await upsertDecision(tx, cycleId, {
           agent: "EXECUTOR",
           modelVersion: "executor-sandbox-1.0.0",
           pairAddress: "",
-          decision: "REJECT",
+          decision: gatewayReady === "READY" ? "ACT" : "HOLD",
           confidence: "1.000000",
-          reasonCodes: ["REJECTED"],
+          reasonCodes: gatewayReady === "READY" ? ["ORDER_PENDING"] : ["REJECTED"],
           input: { gatewayId: executionGateway.id, mode: executionGateway.mode },
           output: {
-            sandboxBlocked: true,
+            sandboxOutbox: true,
             readiness: gatewayReady,
             note:
-              gatewayReady === "MISSING_CREDENTIALS"
-                ? "SANDBOX verification blocked without credentials; local PAPER booking refused"
-                : "SANDBOX execution gateway not implemented; refusing local PAPER fill masquerade",
+              gatewayReady === "READY"
+                ? "SANDBOX orders admitted as PRE_SUBMIT; outbox submits externally"
+                : gatewayReady === "MISSING_CREDENTIALS"
+                  ? "SANDBOX credentials missing; orders held PRE_SUBMIT without local PAPER fill"
+                  : "SANDBOX gateway not ready; refusing local PAPER fill masquerade",
           },
           inputSource: "execution-gateway",
           durationMs: 0,
         });
         for (const order of loaded.plan.orders) {
-          await upsertDecision(tx, cycleId, {
-            agent: "EXECUTOR",
-            modelVersion: "executor-sandbox-1.0.0",
-            pairAddress: order.pairAddress,
-            decision: "REJECT",
-            confidence: "1.000000",
-            reasonCodes: ["REJECTED"],
-            input: { clientOrderId: order.clientOrderId, gatewayId: executionGateway.id },
-            output: { readiness: gatewayReady, venueRefused: "SANDBOX_NO_LOCAL_PAPER" },
-            inputSource: "execution-gateway",
-            durationMs: 0,
+          const needsReservation =
+            order.side === "BUY" && (order.intent === "ENTRY" || order.intent === "OPERATOR");
+          if (needsReservation) {
+            const cashUsd = order.estimatedCostUsd ?? order.estimatedNotionalUsd ?? order.qty;
+            const instanceBudget =
+              order.strategyInstanceId && "instanceAvailable" in loaded
+                ? d(
+                    (loaded as { instanceAvailable?: Map<string, string> }).instanceAvailable?.get(
+                      order.strategyInstanceId,
+                    ) ?? "0",
+                  )
+                    .plus(d(cashUsd))
+                    .toFixed(8)
+                : null;
+            const budgetRow =
+              order.strategyInstanceId && "instances" in loaded
+                ? (
+                    loaded as {
+                      instances?: Array<{ id: string; budgetUsd: string }>;
+                    }
+                  ).instances?.find((i) => i.id === order.strategyInstanceId)
+                : null;
+            const admitted = await reserveInTx(
+              tx,
+              {
+                id: newId("rsv"),
+                accountId: ctx.accountId,
+                mode: "SANDBOX",
+                clientOrderId: order.clientOrderId,
+                cashUsd,
+                exposureUsd: order.estimatedNotionalUsd ?? cashUsd,
+                slots: 1,
+                riskUsd: usd(d(cashUsd).mul(d(loaded.config.stopLossPct)).div(100)),
+                strategyInstanceId: order.strategyInstanceId ?? null,
+                intentId: order.intentId ?? null,
+                instanceBudgetUsd: budgetRow?.budgetUsd ?? instanceBudget,
+              },
+              reservationBudget,
+              now,
+            );
+            if (!admitted.ok) {
+              await upsertDecision(tx, cycleId, {
+                agent: "EXECUTOR",
+                modelVersion: "executor-sandbox-1.0.0",
+                pairAddress: order.pairAddress,
+                decision: "REJECT",
+                confidence: "1.000000",
+                reasonCodes: ["REJECTED"],
+                input: { clientOrderId: order.clientOrderId },
+                output: { reservationDenied: admitted.reason },
+                inputSource: "pg-reservations",
+                durationMs: 0,
+              });
+              continue;
+            }
+          }
+          await commitProposedOrder(tx, {
+            accountId: ctx.accountId,
+            cycleId,
+            order: {
+              ...order,
+              // Force pending so we never locally fill; submissionState marks the outbox.
+              eligibleAt: new Date(now.getTime() + 365 * 24 * 3600 * 1000).toISOString(),
+              expiresAt: order.expiresAt,
+              executionMode: "SANDBOX",
+              venue: executionGateway.id,
+              instrumentId: order.pairAddress.includes(":") ? order.pairAddress : null,
+              strategyVersion: strategyVersionStamp(
+                loaded.activeStrategy,
+                loaded.config.entryM5ChangePct,
+                order.strategyInstanceId,
+              ),
+              strategyInstanceId: order.strategyInstanceId ?? null,
+              intentId: order.intentId ?? null,
+              ownerScope: order.ownerScope ?? (order.strategyInstanceId ? "STRATEGY" : "LEGACY"),
+              submissionState: "PRE_SUBMIT",
+            },
+            config: loaded.config,
+            mode: this.dataMode,
+            now,
+          });
+          await tx.order.updateMany({
+            where: { clientOrderId: order.clientOrderId },
+            data: { submissionState: "PRE_SUBMIT", executionMode: "SANDBOX", venue: executionGateway.id },
           });
         }
       } else {
         for (const order of loaded.plan.orders) {
-          // Suppress duplicate pending intent for same instrument (R05).
-          if (order.side === "BUY" && pendingPairSuppress.has(order.pairAddress)) {
+          // Suppress duplicate pending BUY for same owner+pair (R05) — same-symbol other owners still flow.
+          const pendingKey = order.strategyInstanceId
+            ? `${order.strategyInstanceId}::${order.pairAddress}`
+            : order.pairAddress;
+          if (order.side === "BUY" && pendingPairSuppress.has(pendingKey)) {
             await upsertDecision(tx, cycleId, {
               agent: "EXECUTOR",
               modelVersion: "executor-paper-1.2.0",
@@ -396,9 +489,18 @@ export class StageRunner {
           const needsReservation =
             order.side === "BUY" && (order.intent === "ENTRY" || order.intent === "OPERATOR");
           if (needsReservation) {
-            const mark = loaded.marks?.[order.pairAddress]?.priceUsd;
-            const exposureUsd =
-              mark && d(mark).gt(0) ? usd(d(order.qty).mul(d(mark))) : order.qty;
+            const cashUsd = order.estimatedCostUsd ?? order.estimatedNotionalUsd ?? (() => {
+              const mark = loaded.marks?.[order.pairAddress]?.priceUsd;
+              return mark && d(mark).gt(0) ? usd(d(order.qty).mul(d(mark))) : order.qty;
+            })();
+            const budgetRow =
+              order.strategyInstanceId && "instances" in loaded
+                ? (
+                    loaded as {
+                      instances?: Array<{ id: string; budgetUsd: string }>;
+                    }
+                  ).instances?.find((i) => i.id === order.strategyInstanceId)
+                : null;
             const admitted = await reserveInTx(
               tx,
               {
@@ -406,10 +508,13 @@ export class StageRunner {
                 accountId: ctx.accountId,
                 mode: "PAPER",
                 clientOrderId: order.clientOrderId,
-                cashUsd: exposureUsd,
-                exposureUsd,
+                cashUsd,
+                exposureUsd: order.estimatedNotionalUsd ?? cashUsd,
                 slots: 1,
-                riskUsd: usd(d(exposureUsd).mul(d(loaded.config.stopLossPct)).div(100)),
+                riskUsd: usd(d(cashUsd).mul(d(loaded.config.stopLossPct)).div(100)),
+                strategyInstanceId: order.strategyInstanceId ?? null,
+                intentId: order.intentId ?? null,
+                instanceBudgetUsd: budgetRow?.budgetUsd ?? null,
               },
               reservationBudget,
               now,
@@ -446,6 +551,9 @@ export class StageRunner {
                 order.strategyInstanceId,
               ),
               strategyInstanceId: order.strategyInstanceId ?? null,
+              intentId: order.intentId ?? null,
+              ownerScope: order.ownerScope ?? (order.strategyInstanceId ? "STRATEGY" : "LEGACY"),
+              submissionState: "LOCAL",
             },
             config: loaded.config,
             mode: this.dataMode,
@@ -462,7 +570,7 @@ export class StageRunner {
             }
           }
           if (result.status === "PENDING" && order.side === "BUY") {
-            pendingPairSuppress.add(order.pairAddress);
+            pendingPairSuppress.add(pendingKey);
           }
           if (result.status === "FILLED") {
             filled += 1;
@@ -504,6 +612,8 @@ export class StageRunner {
       }
       await tx.cycleRun.update({ where: { id: cycleId }, data: { orderCount: filled } });
     });
+    // SANDBOX outbox: submit / sync / book external fills outside the account lock (Stage Q).
+    await processSandboxOutbox(this.prisma, { accountId: ctx.accountId, now });
     // Retry unresolved protection exits — account-scoped, lifecycle-fenced (D07).
     await retryUnresolvedProtectionIntents(this.prisma, {
       now,
@@ -538,11 +648,19 @@ export class StageRunner {
           const parsed = parseStrategyConfig(config?.config ?? {});
           const result = await this.prisma.$transaction(async (tx) => {
             await lockAccount(tx, intent.accountId);
+            const protKey = intentIdempotencyKey({
+              cycleId: `prot_retry_${intent.id}`,
+              accountId: intent.accountId,
+              source: "PROTECTION",
+              ownerRef: intent.legId,
+              pairAddress: pair,
+              action: "CLOSE_NET",
+            });
             return commitProposedOrder(tx, {
               accountId: intent.accountId,
               cycleId: `prot_retry_${intent.id}`,
               order: {
-                clientOrderId: `prot_retry_${intent.legId}_${intent.id}`,
+                clientOrderId: clientOrderIdFor(protKey),
                 pairAddress: pair,
                 baseSymbol: position.baseSymbol,
                 side: "SELL",
@@ -553,6 +671,8 @@ export class StageRunner {
                 executionMode: "PAPER",
                 venue: "PAPER",
                 instrumentId: pair.includes(":") ? pair : null,
+                intentId: intentIdFor(protKey),
+                ownerScope: "PROTECTION",
               },
               config: parsed,
               mode: ctx.dataMode,
@@ -944,6 +1064,26 @@ export class StageRunner {
       txnsM5Sells: pair.txnsM5Sells,
       dataState: pair.freshness,
     }));
+    // Per-instance owned views: B must not see A's holding as "held" (that suppressed B's entries).
+    const allocationRows = await db.strategyAllocation.findMany({
+      where: { accountId: ctx.accountId, qty: { gt: 0 } },
+    });
+    const ownedByInstance = new Map<string, Array<{ instrumentId: string; pairAddress: string; qty: string }>>();
+    const allocations = new Map<string, { qty: string; reservedExitQty: string }>();
+    for (const row of allocationRows) {
+      const key = `${row.strategyInstanceId}::${row.pairAddress}`;
+      allocations.set(key, {
+        qty: row.qty.toString(),
+        reservedExitQty: row.reservedExitQty.toString(),
+      });
+      const list = ownedByInstance.get(row.strategyInstanceId) ?? [];
+      list.push({
+        instrumentId: row.instrumentId || row.pairAddress,
+        pairAddress: row.pairAddress,
+        qty: row.qty.toString(),
+      });
+      ownedByInstance.set(row.strategyInstanceId, list);
+    }
     const evaluated = evaluateConcurrentInstances({
       instances,
       bars,
@@ -957,6 +1097,7 @@ export class StageRunner {
         history: [],
       },
       tradingEnvironment: ctx.tradingEnvironment,
+      ownedByInstance,
     });
     // §16: Persist strategy failure diagnostics without aborting healthy instances or flooding alerts.
     if (evaluated.errors.length > 0) {
@@ -976,38 +1117,141 @@ export class StageRunner {
       });
     }
     const runtimeState = (engine.runtimeState as { fairnessCursor?: string | null } | null) ?? {};
-    const budgetFiltered = await filterSignalsByInstanceBudget(db, ctx.accountId, instances, evaluated.signals);
+    const maxNewEntries = Math.max(
+      0,
+      config.maxPositions - positionViews.filter((p) => d(p.baseQty).gt(0)).length,
+    );
+    // Fair order of ALL entries (planner admits from front; rejected candidates do not consume turns).
+    const plannedIntents = toPlanIntents(evaluated.signals, { cycleId, accountId: ctx.accountId });
     const allocated = allocateOpportunities({
-      signals: budgetFiltered,
-      maxNewEntries: Math.max(1, config.maxPositions - positionViews.filter((p) => d(p.baseQty).gt(0)).length),
+      signals: plannedIntents,
+      maxNewEntries,
       fairnessCursor: runtimeState.fairnessCursor ?? null,
     });
-    if (allocated.nextFairnessCursor !== (runtimeState.fairnessCursor ?? null)) {
+    const instanceAvailable = new Map<string, string>();
+    for (const instance of instances) {
+      instanceAvailable.set(
+        instance.id,
+        await instanceAvailableUsd(db, { accountId: ctx.accountId, strategyInstanceId: instance.id }),
+      );
+    }
+    const pendingOrders = await db.order.findMany({
+      where: { accountId: ctx.accountId, status: { in: ["PENDING"] } },
+      select: {
+        side: true,
+        intent: true,
+        pairAddress: true,
+        strategyInstanceId: true,
+        ownerScope: true,
+        submissionState: true,
+      },
+    });
+    const pendingEntryKeys = new Set<string>();
+    const pendingNetCloseByPair = new Set<string>();
+    for (const row of pendingOrders) {
+      if (row.side === "BUY" && row.strategyInstanceId) {
+        pendingEntryKeys.add(`${row.strategyInstanceId}::${row.pairAddress}`);
+      }
+      if (
+        row.side === "SELL" &&
+        (row.ownerScope === "NET_CLOSE" ||
+          row.ownerScope === "ACCOUNT_FLATTEN" ||
+          row.ownerScope === "PROTECTION" ||
+          row.ownerScope === "OPERATOR" ||
+          row.intent === "FLATTEN")
+      ) {
+        pendingNetCloseByPair.add(row.pairAddress);
+      }
+    }
+    // D15: MarketSelection governs new automatic ENTRY; open holdings still refresh/monitor.
+    const selectionRows = await db.marketSelection.findMany();
+    const marketEntryEnabled = marketSelectionMap(selectionRows);
+    const plan = planCycle({
+      cycleId,
+      accountId: ctx.accountId,
+      engineStatus: engine.status as PlanStatus,
+      config,
+      cashUsd: account.cashUsd.toString(),
+      startingBalanceUsd: account.startingBalanceUsd.toString(),
+      positions: positionViews,
+      pairs,
+      marks,
+      dailyPnlUsd,
+      flatten: engine.flattenRequested,
+      operator,
+      observationHistory,
+      securityByMint,
+      highWaterMarkUsd,
+      aggregateExposureUsd,
+      entriesSuspended: suspensionActive,
+      activeStrategyId: activeStrategy?.strategyId ?? null,
+      instanceIntents: allocated.ordered,
+      maxNewEntries,
+      allocations,
+      instanceAvailableUsd: instanceAvailable,
+      pendingEntryKeys,
+      pendingNetCloseByPair,
+      marketEntryEnabled,
+      now,
+    });
+    // Fairness cursor advances only on actually admitted entries (not rejected/deferred).
+    const admittedEntryIds = plan.intentOutcomes
+      .filter((o) => o.status === "ADMITTED" && o.action === "ENTER" && o.strategyInstanceId)
+      .map((o) => o.strategyInstanceId!);
+    const nextCursor = fairnessCursorAfterAdmission(admittedEntryIds, runtimeState.fairnessCursor ?? null);
+    if (nextCursor !== (runtimeState.fairnessCursor ?? null)) {
       await db.engineControl.update({
         where: { id: engine.id },
         data: {
           runtimeState: {
             ...runtimeState,
-            fairnessCursor: allocated.nextFairnessCursor,
+            fairnessCursor: nextCursor,
             fairnessUpdatedAt: now.toISOString(),
           },
         },
       });
     }
-    // §5/D11: attributed ENTER map reaches planning directly; empty ≠ ungated global PULSE.
-    const instanceGates = buildInstancePlanGates(allocated.accepted);
-    // D15: MarketSelection governs new automatic ENTRY; open holdings still refresh/monitor.
-    const selectionRows = await db.marketSelection.findMany();
-    const marketEntryEnabled = marketSelectionMap(selectionRows);
-    const allocationRows = await db.strategyAllocation.findMany({
-      where: { accountId: ctx.accountId, qty: { gt: 0 } },
-    });
-    const allocationQtyByKey = new Map(
-      allocationRows.map((row) => [
-        `${row.strategyInstanceId}::${row.pairAddress}`,
-        row.qty.toString(),
-      ] as const),
-    );
+    // Persist every intent outcome (admitted/deferred/rejected) for audit + operator why-no-trades.
+    for (const outcome of plan.intentOutcomes) {
+      const planned = allocated.ordered.find((i) => i.intentId === outcome.intentId);
+      await db.tradeIntent.upsert({
+        where: { idempotencyKey: outcome.idempotencyKey },
+        create: {
+          id: outcome.intentId,
+          idempotencyKey: outcome.idempotencyKey,
+          cycleId,
+          accountId: ctx.accountId,
+          tradingEnvironment: ctx.tradingEnvironment,
+          executionMode: ctx.dataMode === "demo" ? "PAPER" : "PAPER",
+          venue: "PAPER",
+          source: planned?.source ?? (outcome.strategyInstanceId ? "STRATEGY" : "NET_CLOSE"),
+          strategyInstanceId: outcome.strategyInstanceId,
+          moduleRef: planned?.moduleRef ?? null,
+          strategyVersion: planned?.strategyVersion ?? null,
+          configHash: planned?.configHash ?? null,
+          artifactHash: planned?.artifactHash ?? null,
+          sourceHash: planned?.sourceHash ?? null,
+          instrumentId: planned?.instrumentId ?? outcome.pairAddress,
+          pairAddress: outcome.pairAddress,
+          action: outcome.action,
+          side: outcome.action === "ENTER" ? "BUY" : "SELL",
+          requestedQty: planned?.requestedQty ?? null,
+          sizedQty: outcome.sizedQty,
+          sizedNotionalUsd: outcome.sizedNotionalUsd,
+          reasonCodes: planned?.reasonCodes ?? [outcome.reason],
+          status: outcome.status === "ADMITTED" ? "ADMITTED" : outcome.status,
+          statusReason: outcome.reason,
+          clientOrderId: outcome.status === "ADMITTED" ? outcome.clientOrderId : null,
+        },
+        update: {
+          status: outcome.status === "ADMITTED" ? "ADMITTED" : outcome.status,
+          statusReason: outcome.reason,
+          sizedQty: outcome.sizedQty,
+          sizedNotionalUsd: outcome.sizedNotionalUsd,
+          clientOrderId: outcome.status === "ADMITTED" ? outcome.clientOrderId : undefined,
+        },
+      });
+    }
     return {
       config,
       ctx,
@@ -1016,32 +1260,9 @@ export class StageRunner {
       highWaterMarkUsd,
       activeStrategy,
       marks,
-      plan: planCycle({
-        cycleId,
-        engineStatus: engine.status as PlanStatus,
-        config,
-        cashUsd: account.cashUsd.toString(),
-        startingBalanceUsd: account.startingBalanceUsd.toString(),
-        positions: positionViews,
-        pairs,
-        marks,
-        dailyPnlUsd,
-        flatten: engine.flattenRequested,
-        operator,
-        observationHistory,
-        securityByMint,
-        highWaterMarkUsd,
-        aggregateExposureUsd,
-        entriesSuspended: suspensionActive,
-        activeStrategyId: activeStrategy?.strategyId ?? null,
-        allocationQtyByKey,
-        concurrentEntryAllowlist: instanceGates.entryAllowlist,
-        concurrentEntryByPair: instanceGates.entryByPair,
-        concurrentExitByPair: instanceGates.exitByPair,
-        concurrentInstanceByPair: instanceGates.instanceByPair,
-        marketEntryEnabled,
-        now,
-      }),
+      plan,
+      instances,
+      instanceAvailable,
     };
   }
 
@@ -1909,11 +2130,19 @@ export class StageRunner {
         continue;
       }
       try {
+        const protKey = intentIdempotencyKey({
+          cycleId: `prot_${row.ocoGroupId}`,
+          accountId: ctx.accountId,
+          source: "PROTECTION",
+          ownerRef: claim.claimedLegId,
+          pairAddress: pair,
+          action: "CLOSE_NET",
+        });
         const result = await commitProposedOrder(tx, {
           accountId: ctx.accountId,
           cycleId: `prot_${row.ocoGroupId}`,
           order: {
-            clientOrderId: `prot_exit_${claim.claimedLegId}_${_now.getTime()}`,
+            clientOrderId: clientOrderIdFor(protKey),
             pairAddress: pair,
             baseSymbol: position.baseSymbol,
             side: "SELL",
@@ -1926,6 +2155,8 @@ export class StageRunner {
             executionMode: "PAPER",
             venue: "PAPER",
             instrumentId: pair.includes(":") ? pair : null,
+            intentId: intentIdFor(protKey),
+            ownerScope: "PROTECTION",
           },
           config: loaded.config,
           mode: this.dataMode,

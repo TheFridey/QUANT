@@ -16,7 +16,7 @@ describe.skipIf(!enabled)("paper cycle persistence", () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
     await prisma.$executeRaw`SELECT pg_advisory_lock(641099)`;
     await prisma.$executeRawUnsafe(
-      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "ResearchProposal", "CycleRun", "PaperAccount", "EngineControl", "User", "RiskReservationEvent", "RiskReservation", "ProtectionIntent", "ProtectionOrder", "StrategyInstance", "OpportunityFunnelEvent", "DurableAlert" RESTART IDENTITY CASCADE`,
+      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "ResearchProposal", "CycleRun", "PaperAccount", "EngineControl", "User", "RiskReservationEvent", "RiskReservation", "ProtectionIntent", "ProtectionOrder", "StrategyInstance", "StrategyAllocation", "TradeIntent", "RecoveryCase", "ReconciliationRun", "OpportunityFunnelEvent", "DurableAlert" RESTART IDENTITY CASCADE`,
     );
     await ensureFoundation(prisma, {
       email: process.env.ADMIN_EMAIL ?? "admin@odin.local",
