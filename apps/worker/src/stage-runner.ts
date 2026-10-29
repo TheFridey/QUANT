@@ -33,14 +33,18 @@ import {
   AGENT_BUS_CHANNEL,
   TERMINAL_CHANNEL,
   assertPaperOrSandboxOnly,
+  buildPositionKey,
   checkRowEnvironmentIsolation,
   classifyFreshness,
   d,
   freshnessFromProvenance,
   inferObservationProvenance,
+  instrumentIdFromPositionKey,
+  loadPinnedExecutionContext,
   newId,
   operatorOrderSchema,
   parseStrategyConfig,
+  pinExecutionContext,
   resolveExecutionContext,
   rollSessionEquity,
   SAFETY_CODES,
@@ -106,6 +110,20 @@ export class StageRunner {
       const active = await this.prisma.cycleRun.findFirst({ where: { status: "RUNNING" } });
       if (active) return { cycleId: active.id, skipped: true };
       const cycleId = newId("cyc");
+      // D01: pin account/environment/config revision at creation — stages must load this, not live config.
+      const bootConfig = await this.config();
+      const engineMeta = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
+      const pinned = pinExecutionContext(
+        resolveExecutionContext({
+          config: bootConfig,
+          dataMode: this.dataMode,
+          configRevision: engineMeta?.updatedAt?.toISOString() ?? null,
+          strategyRevision: engineMeta?.activeStrategy
+            ? JSON.stringify(engineMeta.activeStrategy).slice(0, 120)
+            : null,
+        }),
+        now,
+      );
       await this.prisma.cycleRun.create({
         data: {
           id: cycleId,
@@ -114,6 +132,13 @@ export class StageRunner {
           stage: "created",
           dataState: "PENDING",
           startedAt: now,
+          accountId: pinned.accountId,
+          tradingEnvironment: pinned.tradingEnvironment,
+          dataMode: pinned.dataMode,
+          configRevision: pinned.configRevision ?? null,
+          strategyRevision: pinned.strategyRevision ?? null,
+          riskRevision: pinned.riskRevision ?? null,
+          pinnedContext: pinned as object,
         },
       });
       await this.observe(cycleId, now);
@@ -186,8 +211,8 @@ export class StageRunner {
   async executor(cycleId: string): Promise<void> {
     if (!(await this.ready(cycleId, "atlas"))) return;
     const now = this.now();
-    const bootConfig = await this.config();
-    const ctx = resolveExecutionContext({ config: bootConfig, dataMode: this.dataMode });
+    const ctx = await this.contextForCycle(cycleId);
+    if (!ctx) return;
     await this.ensureAccount(ctx);
     // Crash/restart: restore confirmed protection + durable unresolved exit intents before admission.
     await recoverProtectionAfterRestart(this.prisma, { accountId: ctx.accountId });
@@ -428,18 +453,23 @@ export class StageRunner {
       }
       await tx.cycleRun.update({ where: { id: cycleId }, data: { orderCount: filled } });
     });
-    // Retry unresolved protection exits outside the admission transaction.
+    // Retry unresolved protection exits — account-scoped, lifecycle-fenced (D07).
     await retryUnresolvedProtectionIntents(this.prisma, {
       now,
+      accountId: ctx.accountId,
       attemptExit: async (intent) => {
         try {
           const leg = await this.prisma.protectionOrder.findUnique({ where: { id: intent.legId } });
           if (!leg) return { ok: false, error: "LEG_MISSING" };
-          const pair = leg.positionKey.includes(":")
-            ? leg.positionKey.slice(leg.positionKey.indexOf(":") + 1)
-            : leg.positionKey;
+          if (leg.accountId !== intent.accountId) return { ok: false, error: "ACCOUNT_MISMATCH" };
+          const pair = instrumentIdFromPositionKey(leg.positionKey, intent.accountId);
+          if (!pair) return { ok: false, error: "POSITION_KEY_DECODE" };
           const observation = await this.prisma.marketObservation.findFirst({
-            where: { pairAddress: pair, priceUsd: { not: null } },
+            where: {
+              pairAddress: pair,
+              priceUsd: { not: null },
+              tradingEnvironment: ctx.tradingEnvironment,
+            },
             orderBy: { receivedAt: "desc" },
           });
           if (!observation) return { ok: false, error: "MISSING_PRICE" };
@@ -449,14 +479,19 @@ export class StageRunner {
           if (!position || d(position.baseQty.toString()).lte(0)) {
             return { ok: true };
           }
+          // Fence: do not reduce a reopened lot with an old unresolved intent.
+          if (leg.lifecycleId && position.lifecycleId && leg.lifecycleId !== position.lifecycleId) {
+            return { ok: true };
+          }
           const config = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
           const parsed = parseStrategyConfig(config?.config ?? {});
-          const result = await this.prisma.$transaction(async (tx) =>
-            commitProposedOrder(tx, {
+          const result = await this.prisma.$transaction(async (tx) => {
+            await lockAccount(tx, intent.accountId);
+            return commitProposedOrder(tx, {
               accountId: intent.accountId,
               cycleId: `prot_retry_${intent.id}`,
               order: {
-                clientOrderId: `prot_retry_${intent.legId}_${now.getTime()}`,
+                clientOrderId: `prot_retry_${intent.legId}_${intent.id}`,
                 pairAddress: pair,
                 baseSymbol: position.baseSymbol,
                 side: "SELL",
@@ -469,10 +504,10 @@ export class StageRunner {
                 instrumentId: pair.includes(":") ? pair : null,
               },
               config: parsed,
-              mode: this.dataMode,
+              mode: ctx.dataMode,
               now,
-            }),
-          );
+            });
+          });
           return result.status === "FILLED"
             ? { ok: true }
             : { ok: false, error: result.reason ?? result.status };
@@ -541,7 +576,9 @@ export class StageRunner {
       return;
     }
     const result = await this.feed.fetchUniverse(config.universeLimit);
-    const tradingEnvironment: TradingEnvironment = config.tradingEnvironment ?? "MARKET_DATA_PAPER";
+    const pinnedCtx = await this.contextForCycle(cycleId);
+    const tradingEnvironment: TradingEnvironment =
+      pinnedCtx?.tradingEnvironment ?? config.tradingEnvironment ?? "MARKET_DATA_PAPER";
     // Fixtures only when explicitly in FIXTURE environment.
     // Never inject fixture pairs into MARKET_DATA_PAPER / EXTERNAL_DEMO / REPLAY accounts.
     let paperExtras: NormalizedPair[] =
@@ -554,7 +591,8 @@ export class StageRunner {
       paperExtras = [...paperExtras, ...fxPairs];
     }
 
-    const ctx = resolveExecutionContext({ config, dataMode: this.dataMode });
+    const ctx =
+      pinnedCtx ?? resolveExecutionContext({ config, dataMode: this.dataMode });
     await this.ensureAccount(ctx);
 
     // R02: mandatory independent refresh for open holdings / pending / protected — prioritise over discovery.
@@ -707,16 +745,17 @@ export class StageRunner {
       await upsertDecision(db, cycleId, emptyDecision("CONFIG_INVALID", "Strategy configuration failed validation"));
       return null;
     }
-    const ctx = ctxOverride ?? resolveExecutionContext({ config, dataMode: this.dataMode });
+    const ctx =
+      ctxOverride ??
+      (await this.contextForCycle(cycleId, db)) ??
+      resolveExecutionContext({ config, dataMode: this.dataMode });
     const account = await db.paperAccount.findUnique({ where: { id: ctx.accountId } });
     if (!account) return null;
+    // D02: exact environment match only — null provenance is quarantined, not trusted.
     const rows = await db.marketObservation.findMany({
       where: {
         ingestJobId: cycleId,
-        OR: [
-          { tradingEnvironment: ctx.tradingEnvironment },
-          { tradingEnvironment: null },
-        ],
+        tradingEnvironment: ctx.tradingEnvironment,
       },
     });
     const pairsByAddress = new Map<string, CyclePair>();
@@ -790,7 +829,11 @@ export class StageRunner {
         ...positions.filter((p) => d(p.baseQty.toString()).gt(0)).map((p) => p.pairAddress),
       ]),
     ];
-    const observationHistory = await this.loadObservationHistory(db, historyAddresses);
+    const observationHistory = await this.loadObservationHistory(
+      db,
+      historyAddresses,
+      ctx.tradingEnvironment,
+    );
     const securityByMint = await this.loadSecurity(pairs);
     const aggregateExposureUsd =
       valuation.equityUsd === null
@@ -847,6 +890,7 @@ export class StageRunner {
     }
     return {
       config,
+      ctx,
       flattenRequested: engine.flattenRequested,
       valuation,
       highWaterMarkUsd,
@@ -877,6 +921,39 @@ export class StageRunner {
     };
   }
 
+  /** Load durable pinned cycle context; refuse economic work when pin is missing/corrupt (D01). */
+  private async contextForCycle(
+    cycleId: string,
+    db: PrismaClient | Prisma.TransactionClient = this.prisma,
+  ): Promise<ExecutionContext | null> {
+    const cycle = await db.cycleRun.findUnique({ where: { id: cycleId } });
+    if (!cycle) return null;
+    if (cycle.pinnedContext) {
+      const loaded = loadPinnedExecutionContext(cycle.pinnedContext);
+      if (loaded.ok) return loaded.ctx;
+    }
+    // Legacy cycles created before pinning: resolve once and backfill for subsequent stages.
+    const config = await this.config();
+    const ctx = resolveExecutionContext({
+      config,
+      dataMode: (cycle.dataMode as DataMode | null) ?? this.dataMode,
+    });
+    if (!cycle.pinnedContext) {
+      const pinned = pinExecutionContext(ctx);
+      await db.cycleRun.update({
+        where: { id: cycleId },
+        data: {
+          accountId: pinned.accountId,
+          tradingEnvironment: pinned.tradingEnvironment,
+          dataMode: pinned.dataMode,
+          configRevision: pinned.configRevision ?? null,
+          pinnedContext: pinned as object,
+        },
+      });
+    }
+    return ctx;
+  }
+
   private async buildReservationBudget(
     tx: Prisma.TransactionClient,
     loaded: {
@@ -889,41 +966,30 @@ export class StageRunner {
     const openPositions = await tx.position.findMany({
       where: { accountId: loaded.accountId, baseQty: { gt: 0 } },
     });
-    const pendingBuys = await tx.order.findMany({
-      where: {
-        accountId: loaded.accountId,
-        status: "PENDING",
-        side: "BUY",
-        intent: { in: ["ENTRY", "OPERATOR"] },
-      },
-    });
+    // D04: open-book baseline only. Pending HELD reservations are added in reconstructBudget.
+    // Never treat base quantity as dollar exposure.
     const openSlots = openPositions.length;
-    const pendingSlots = pendingBuys.length;
     const equity = loaded.valuation.equityUsd ?? account.cashUsd.toString();
     const exposureCap = usd(d(equity).mul(d(loaded.config.maxAggregateExposurePct)).div(100));
-    // Open exposure: sum mark*qty when marks available; else avgCost*qty.
     let openExposure = d("0");
     for (const position of openPositions) {
-      openExposure = openExposure.plus(d(position.baseQty.toString()).mul(d(position.avgCostUsd.toString())));
-    }
-    let pendingExposure = d("0");
-    for (const order of pendingBuys) {
-      // Conservative: treat pending BUY qty as already reserved exposure units when no mark.
-      pendingExposure = pendingExposure.plus(d(order.qty.toString()));
+      openExposure = openExposure.plus(
+        d(position.baseQty.toString()).mul(d(position.avgCostUsd.toString())),
+      );
     }
     const openRisk = openExposure.mul(d(loaded.config.stopLossPct)).div(100);
-    const pendingRisk = pendingExposure.mul(d(loaded.config.stopLossPct)).div(100);
     const riskBudget = usd(
       d(equity).mul(d(loaded.config.maxRiskPerTradePct)).mul(loaded.config.maxPositions).div(100),
     );
     return {
       cashAvailableUsd: account.cashUsd.toString(),
       exposureCapUsd: exposureCap,
-      exposureUsedUsd: usd(openExposure.plus(pendingExposure)),
-      slotsAvailable: Math.max(0, loaded.config.maxPositions - openSlots - pendingSlots),
-      slotsUsed: openSlots + pendingSlots,
+      exposureUsedUsd: usd(openExposure),
+      // Total capacity — reconstructBudget adds HELD slot remainders to slotsUsed.
+      slotsAvailable: loaded.config.maxPositions,
+      slotsUsed: openSlots,
       riskBudgetUsd: riskBudget,
-      riskUsedUsd: usd(openRisk.plus(pendingRisk)),
+      riskUsedUsd: usd(openRisk),
     };
   }
 
@@ -944,8 +1010,8 @@ export class StageRunner {
       }),
     );
     if (events.length === 0) return;
-    const funnelCtx = resolveExecutionContext({ config: loaded.config, dataMode: this.dataMode });
-    const accountId = funnelCtx.metricsAccountId;
+    const accountId = loaded.ctx?.metricsAccountId
+      ?? resolveExecutionContext({ config: loaded.config, dataMode: this.dataMode }).metricsAccountId;
     // Skip stages already persisted for this cycle (idempotent retry).
     const existing = await db.opportunityFunnelEvent.findMany({
       where: { cycleId, accountId },
@@ -1118,12 +1184,13 @@ export class StageRunner {
   private async loadObservationHistory(
     db: PrismaClient | Prisma.TransactionClient,
     pairAddresses: string[],
+    tradingEnvironment: TradingEnvironment,
   ): Promise<Record<string, ObservationPoint[]>> {
     const history: Record<string, ObservationPoint[]> = {};
     for (const pairAddress of pairAddresses) {
-      // Latest window: desc take N, then reverse to ascending for indicators.
+      // D02: latest window scoped to trading environment — never mix fixture into paper.
       const rows = await db.marketObservation.findMany({
-        where: { pairAddress },
+        where: { pairAddress, tradingEnvironment },
         orderBy: { receivedAt: "desc" },
         take: 40,
       });
@@ -1283,7 +1350,10 @@ export class StageRunner {
     cycleId: string,
     loaded: NonNullable<Awaited<ReturnType<StageRunner["loadPlan"]>>>,
   ): Promise<void> {
-    const ctx = resolveExecutionContext({ config: loaded.config, dataMode: this.dataMode });
+    const ctx =
+      loaded.ctx ??
+      (await this.contextForCycle(cycleId)) ??
+      resolveExecutionContext({ config: loaded.config, dataMode: this.dataMode });
     const account = await this.prisma.paperAccount.findUnique({ where: { id: ctx.accountId } });
     if (!account) return;
     const fees = await this.prisma.ledgerEntry.aggregate({
@@ -1542,11 +1612,8 @@ export class StageRunner {
     for (const p of positions) addresses.add(p.pairAddress);
     for (const p of pending) addresses.add(p.pairAddress);
     for (const row of protectedRows) {
-      const pair = row.positionKey.includes(":")
-        ? row.positionKey.slice(row.positionKey.indexOf(":") + 1)
-        : row.positionKey;
-      // Strip trailing lifecycle if present in key — positionKey is account:pair.
-      addresses.add(pair);
+      const pair = instrumentIdFromPositionKey(row.positionKey, accountId);
+      if (pair) addresses.add(pair);
     }
     const targets: Array<{ pairAddress: string; baseAddress?: string | null }> = [];
     for (const pairAddress of addresses) {
@@ -1617,7 +1684,7 @@ export class StageRunner {
     }
     const group = armLongShortOco({
       groupId,
-      positionKey: `${input.accountId}:${input.pairAddress}`,
+      positionKey: buildPositionKey(input.accountId, input.pairAddress),
       direction: "LONG",
       qty: position.baseQty.toString(),
       entryPriceUsd: entryPrice,
@@ -1646,9 +1713,8 @@ export class StageRunner {
       distinct: ["ocoGroupId"],
     });
     for (const row of armed) {
-      const pair = row.positionKey.includes(":")
-        ? row.positionKey.slice(row.positionKey.indexOf(":") + 1)
-        : row.positionKey;
+      const pair = instrumentIdFromPositionKey(row.positionKey, ctx.accountId);
+      if (!pair) continue;
       const mark = loaded.marks?.[pair]?.priceUsd;
       if (!mark) continue;
       // Persist trailing peak/trough; amend STOP/TRAILING triggers only (never TP).
@@ -1689,7 +1755,11 @@ export class StageRunner {
       });
       if (!position || d(position.baseQty.toString()).lte(0)) continue;
       const observation = await tx.marketObservation.findFirst({
-        where: { pairAddress: pair, priceUsd: { not: null } },
+        where: {
+          pairAddress: pair,
+          priceUsd: { not: null },
+          tradingEnvironment: ctx.tradingEnvironment,
+        },
         orderBy: { receivedAt: "desc" },
       });
       if (!observation) {
@@ -1705,6 +1775,9 @@ export class StageRunner {
             legId: claim.claimedLegId,
             status: "UNRESOLVED",
             reason: "MISSING_PRICE",
+            kind: "EXIT_RETRY",
+            lifecycleId: row.lifecycleId ?? position.lifecycleId,
+            instrumentId: pair,
             retryAfter: new Date(_now.getTime() + 5_000),
             attempts: 1,
           },
@@ -1752,6 +1825,9 @@ export class StageRunner {
               legId: claim.claimedLegId,
               status: "UNRESOLVED",
               reason: result.reason ?? "PROTECTION_UNRESOLVED",
+              kind: "EXIT_RETRY",
+              lifecycleId: row.lifecycleId ?? position.lifecycleId,
+              instrumentId: pair,
               retryAfter: new Date(_now.getTime() + 5_000),
               attempts: 1,
             },
@@ -1780,6 +1856,9 @@ export class StageRunner {
             legId: claim.claimedLegId,
             status: "UNRESOLVED",
             reason: error instanceof Error ? error.message : "PROTECTION_UNRESOLVED",
+            kind: "EXIT_RETRY",
+            lifecycleId: row.lifecycleId ?? position.lifecycleId,
+            instrumentId: pair,
             retryAfter: new Date(_now.getTime() + 5_000),
             attempts: 1,
           },

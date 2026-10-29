@@ -167,12 +167,23 @@ export class ReservationLedger {
     return updated;
   }
 
-  /** Consume on fill — budgets stay reserved until remainder released. */
+  /**
+   * Consume on fill — usage moves to the open book.
+   * Remainders are zeroed so reconstruct/open usage is not double-counted (D04).
+   * Release unused via releasePartial before consume when needed.
+   */
   consume(clientOrderId: string, accountId = "primary", mode = "PAPER"): ReservationRecord | null {
     const key = keyOf(accountId, mode, clientOrderId);
     const row = this.held.get(key);
     if (!row || row.status !== "HELD") return null;
-    const updated = { ...row, status: "CONSUMED" as const };
+    const updated: ReservationRecord = {
+      ...row,
+      status: "CONSUMED",
+      remainingCashUsd: "0.00000000",
+      remainingExposureUsd: "0.00000000",
+      remainingRiskUsd: "0.00000000",
+      remainingSlots: 0,
+    };
     this.held.set(key, updated);
     this.mutations.push({ type: "CONSUME", atMs: Date.now(), clientOrderId });
     return updated;
@@ -220,9 +231,11 @@ export class ReservationLedger {
       riskUsedUsd: usd(Decimal.max(d("0"), d(this.budget.riskUsedUsd).minus(risk))),
     };
 
+    // Keep HELD while unused is peeled off; consume() transitions to CONSUMED and
+    // zeros remainders when the fill moves usage onto the open book (D04).
     const updated: ReservationRecord = {
       ...row,
-      status: "CONSUMED",
+      status: row.status === "CONSUMED" ? "CONSUMED" : "HELD",
       remainingCashUsd: usd(d(row.remainingCashUsd).minus(cash)),
       remainingExposureUsd: usd(d(row.remainingExposureUsd).minus(exposure)),
       remainingRiskUsd: usd(d(row.remainingRiskUsd).minus(risk)),

@@ -234,9 +234,20 @@ export async function consumeInTx(
     },
   });
   if (!row || row.status !== "HELD") return { ok: false as const, reason: "INVALID_STATE" as const };
+  // Fill moves economic usage onto the open book (caps). Zero remainings so
+  // reconstructBudget does not double-count CONSUMED + open exposure (D04).
+  // Callers that need to return unused remainder must releasePartial before consume
+  // or use release for a full cancel.
   const updated = await tx.riskReservation.update({
     where: { id: row.id },
-    data: { status: "CONSUMED", updatedAt: now },
+    data: {
+      status: "CONSUMED",
+      remainingCashUsd: "0",
+      remainingExposureUsd: "0",
+      remainingRiskUsd: "0",
+      remainingSlots: 0,
+      updatedAt: now,
+    },
   });
   await tx.riskReservationEvent.create({
     data: {
@@ -245,7 +256,12 @@ export async function consumeInTx(
       mode: input.mode,
       clientOrderId: input.clientOrderId,
       type: "CONSUME",
-      payload: {},
+      payload: {
+        consumedCashUsd: row.remainingCashUsd.toString(),
+        consumedExposureUsd: row.remainingExposureUsd.toString(),
+        consumedRiskUsd: row.remainingRiskUsd.toString(),
+        consumedSlots: row.remainingSlots,
+      },
       createdAt: now,
     },
   });
@@ -294,10 +310,12 @@ export async function releasePartialInTx(
   ) {
     return { ok: false as const, reason: "OVER_RELEASE" as const };
   }
+  // Keep HELD while unused is peeled off; consume() marks CONSUMED and zeros remainders (D04).
+  const nextStatus = row.status === "CONSUMED" ? "CONSUMED" : "HELD";
   const updated = await tx.riskReservation.update({
     where: { id: row.id },
     data: {
-      status: "CONSUMED",
+      status: nextStatus,
       remainingCashUsd: usd(d(row.remainingCashUsd.toString()).minus(cash)),
       remainingExposureUsd: usd(d(row.remainingExposureUsd.toString()).minus(exposure)),
       remainingRiskUsd: usd(d(row.remainingRiskUsd.toString()).minus(risk)),
@@ -327,33 +345,39 @@ export async function lockAccountBudget(tx: PgReservationTx, accountId: string):
   await tx.$queryRaw`SELECT id FROM "PaperAccount" WHERE id = ${accountId} FOR UPDATE`;
 }
 
+/**
+ * Rebuild live budget under the account lock (D04).
+ *
+ * Caps carry authoritative OPEN usage (filled positions) and TOTAL slot capacity.
+ * Only HELD reservation remainings are added — CONSUMED fills already live on the
+ * open book, so counting them again would double-count exposure/slots/risk.
+ */
 export async function reconstructBudget(
   tx: PgReservationTx,
   accountId: string,
   caps: ReservationBudget,
 ): Promise<ReservationBudget> {
   const held = await tx.riskReservation.findMany({
-    where: { accountId, status: { in: ["HELD", "CONSUMED"] } },
+    where: { accountId, status: "HELD" },
   });
   let cashHeld = d("0");
-  let exposure = d("0");
-  let risk = d("0");
-  let slots = 0;
+  let reservedExposure = d("0");
+  let reservedRisk = d("0");
+  let reservedSlots = 0;
   for (const row of held) {
-    // CONSUMED still holds remaining until fully released.
     cashHeld = cashHeld.plus(row.remainingCashUsd.toString());
-    exposure = exposure.plus(row.remainingExposureUsd.toString());
-    risk = risk.plus(row.remainingRiskUsd.toString());
-    slots += row.remainingSlots;
+    reservedExposure = reservedExposure.plus(row.remainingExposureUsd.toString());
+    reservedRisk = reservedRisk.plus(row.remainingRiskUsd.toString());
+    reservedSlots += row.remainingSlots;
   }
   return {
     cashAvailableUsd: usd(Decimal.max(d("0"), d(caps.cashAvailableUsd).minus(cashHeld))),
     exposureCapUsd: caps.exposureCapUsd,
-    exposureUsedUsd: usd(exposure),
+    exposureUsedUsd: usd(d(caps.exposureUsedUsd).plus(reservedExposure)),
     slotsAvailable: caps.slotsAvailable,
-    slotsUsed: slots,
+    slotsUsed: caps.slotsUsed + reservedSlots,
     riskBudgetUsd: caps.riskBudgetUsd,
-    riskUsedUsd: usd(risk),
+    riskUsedUsd: usd(d(caps.riskUsedUsd).plus(reservedRisk)),
   };
 }
 

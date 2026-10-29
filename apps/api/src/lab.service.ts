@@ -233,10 +233,15 @@ export class LabService {
       startAt: parsed.startAt,
       endAt: parsed.endAt,
       pairAddresses: parsed.pairAddresses,
+      // D02: explicit research scope — prefer REPLAY/FIXTURE datasets, never silent cross-env mix.
+      tradingEnvironment:
+        config.tradingEnvironment === "FIXTURE" || config.tradingEnvironment === "REPLAY"
+          ? config.tradingEnvironment
+          : "REPLAY",
     });
     if (observations.length === 0) {
       throw new BadRequestException(
-        "No MarketObservation rows in range. Ingest live data or import a fixture series with provenance before replaying.",
+        "No MarketObservation rows in the selected environment/range. Ingest or import a provenance-scoped series before replaying.",
       );
     }
 
@@ -588,14 +593,20 @@ export class LabService {
     });
   }
 
+  /**
+   * D02: lab/replay loads must scope by tradingEnvironment when provided.
+   * Null-environment rows are quarantined — never treated as compatible with every account.
+   */
   private async loadObservations(input: {
     startAt?: string;
     endAt?: string;
     pairAddresses?: string[];
+    tradingEnvironment?: string;
   }): Promise<BacktestObservation[]> {
     const where: {
       receivedAt?: { gte?: Date; lte?: Date };
       pairAddress?: { in: string[] };
+      tradingEnvironment?: string;
     } = {};
     if (input.startAt || input.endAt) {
       where.receivedAt = {};
@@ -603,6 +614,8 @@ export class LabService {
       if (input.endAt) where.receivedAt.lte = new Date(input.endAt);
     }
     if (input.pairAddresses?.length) where.pairAddress = { in: input.pairAddresses };
+    // Default REPLAY scope — never silently mix FIXTURE/MARKET_DATA_PAPER into research.
+    where.tradingEnvironment = input.tradingEnvironment ?? "REPLAY";
 
     const rows = await this.prisma.marketObservation.findMany({
       where,
@@ -626,7 +639,7 @@ export class LabService {
       txnsM5Sells: row.txnsM5Sells,
       receivedAt: row.receivedAt.toISOString(),
       freshness: "REPLAY",
-      provenance: `MarketObservation:${row.id}`,
+      provenance: `MarketObservation:${row.id}:${row.tradingEnvironment ?? "unknown"}`,
     }));
   }
 

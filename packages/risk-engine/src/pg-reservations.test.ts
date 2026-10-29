@@ -71,9 +71,6 @@ describe.runIf(hasDb)("Postgres reservation authority", () => {
     await resetReservations();
     const auth = new PostgresReservationAuthority(prisma);
     expect((await auth.reserve(req("partial", "200"), budget())).ok).toBe(true);
-    expect((await auth.consume({ accountId, mode: "PAPER", clientOrderId: "partial" }, budget())).ok).toBe(
-      true,
-    );
     const over = await auth.releasePartial(
       {
         accountId,
@@ -85,6 +82,33 @@ describe.runIf(hasDb)("Postgres reservation authority", () => {
     );
     expect(over.ok).toBe(false);
     if (!over.ok) expect(over.reason).toBe("OVER_RELEASE");
+    // D04: peel unused while HELD, then consume zeros remainders onto the open book.
+    expect(
+      (
+        await auth.releasePartial(
+          {
+            accountId,
+            mode: "PAPER",
+            clientOrderId: "partial",
+            unused: { cashUsd: "50", exposureUsd: "50", riskUsd: "10", slots: 0 },
+          },
+          budget(),
+        )
+      ).ok,
+    ).toBe(true);
+    expect((await auth.consume({ accountId, mode: "PAPER", clientOrderId: "partial" }, budget())).ok).toBe(
+      true,
+    );
+    const afterConsume = await auth.releasePartial(
+      {
+        accountId,
+        mode: "PAPER",
+        clientOrderId: "partial",
+        unused: { cashUsd: "1", exposureUsd: "0", riskUsd: "0", slots: 0 },
+      },
+      budget(),
+    );
+    expect(afterConsume.ok).toBe(false);
   });
 
   it("two workers racing never over-admit slots", async () => {

@@ -14,6 +14,7 @@ export * from "./environments.js";
 export * from "./execution-context.js";
 export * from "./observation-origin.js";
 export * from "./protection-coverage.js";
+export * from "./position-key.js";
 export * from "./safety-state.js";
 export * from "./clock.js";
 export * from "./product-semantics.js";

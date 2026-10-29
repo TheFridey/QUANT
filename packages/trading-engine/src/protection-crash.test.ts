@@ -188,6 +188,7 @@ describe.runIf(hasDb)("multi-worker OCO crash/restart harness", () => {
     let attempts = 0;
     const retry = await retryUnresolvedProtectionIntents(prisma, {
       now: new Date(Date.now() + 60_000),
+      accountId,
       attemptExit: async () => {
         attempts += 1;
         return { ok: true };

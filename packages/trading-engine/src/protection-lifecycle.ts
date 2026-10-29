@@ -164,6 +164,7 @@ export async function recordFailedProtectionExit(
         legId: input.legId,
         status: "UNRESOLVED",
         reason: input.reason,
+        kind: "EXIT_RETRY",
         retryAfter: new Date(Date.now() + (input.retryAfterMs ?? 5_000)),
         attempts: 1,
       },
@@ -189,17 +190,32 @@ export async function retryUnresolvedProtectionIntents(
   prisma: PrismaClient,
   input: {
     now?: Date;
+    /** Required account scope — never scan/retry globally across accounts (D07). */
+    accountId: string;
+    /**
+     * Optional intent kinds to retry. Default: EXIT_RETRY / protection exit reasons.
+     * Amendment failures must not be dispatched as sells.
+     */
+    kinds?: string[];
     attemptExit: (intent: {
       id: string;
       ocoGroupId: string;
       legId: string;
       accountId: string;
+      reason: string;
     }) => Promise<{ ok: boolean; error?: string }>;
   },
 ): Promise<{ attempted: number; resolved: number; stillUnresolved: number }> {
   const now = input.now ?? new Date();
   const due = await prisma.protectionIntent.findMany({
-    where: { status: "UNRESOLVED", retryAfter: { lte: now } },
+    where: {
+      status: "UNRESOLVED",
+      retryAfter: { lte: now },
+      accountId: input.accountId,
+      kind: input.kinds
+        ? { in: input.kinds }
+        : { notIn: ["AMEND_RETRY", "CANCEL_RETRY", "RECONCILE_UNKNOWN"] },
+    },
     take: 50,
   });
   let resolved = 0;
@@ -210,6 +226,7 @@ export async function retryUnresolvedProtectionIntents(
       ocoGroupId: intent.ocoGroupId,
       legId: intent.legId,
       accountId: intent.accountId,
+      reason: intent.reason,
     });
     if (result.ok) {
       await prisma.protectionIntent.update({
@@ -313,6 +330,7 @@ export async function amendProtectionTriggerInTx(
         legId: input.legId,
         status: "UNRESOLVED",
         reason: `AMENDMENT_FAILED_KEEP_CONFIRMED:${input.outcome.error}`,
+        kind: "AMEND_RETRY",
         retryAfter: new Date(Date.now() + 5_000),
         attempts: 1,
       },
@@ -368,6 +386,9 @@ export async function recoverProtectionAfterRestart(
             legId: leg.id,
             status: "UNRESOLVED",
             reason: "WORKER_RESTART_UNRESOLVED",
+            kind: "EXIT_RETRY",
+            lifecycleId: leg.lifecycleId,
+            instrumentId: null,
             retryAfter: new Date(Date.now() + 1_000),
             attempts: 0,
           },

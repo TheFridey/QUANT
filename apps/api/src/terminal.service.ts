@@ -20,6 +20,7 @@ import {
   QUEUES,
   REASON_TEXT,
   assertPaperOrSandboxOnly,
+  buildPositionKey,
   classifyFreshness,
   classifyReasonCodes,
   d,
@@ -27,6 +28,9 @@ import {
   emergencyStopSchema,
   entriesSuspendedFromSafety,
   findInstrument,
+  freshnessFromProvenance,
+  inferObservationProvenance,
+  instrumentIdFromPositionKey,
   isReasonCode,
   mergeStrategy,
   newId,
@@ -105,13 +109,20 @@ export class TerminalService {
       );
     }
     const config = configEarly;
+    // D21: exact tradingEnvironment match only — null env is never compatible.
     const latestBatch = await this.prisma.cycleRun.findFirst({
-      where: { observationCount: { gt: 0 } },
+      where: {
+        observationCount: { gt: 0 },
+        tradingEnvironment: ctx.tradingEnvironment,
+      },
       orderBy: { startedAt: "desc" },
     });
     const observations = latestBatch
       ? await this.prisma.marketObservation.findMany({
-          where: { ingestJobId: latestBatch.id },
+          where: {
+            ingestJobId: latestBatch.id,
+            tradingEnvironment: ctx.tradingEnvironment,
+          },
           orderBy: { liquidityUsd: "desc" },
         })
       : [];
@@ -123,20 +134,19 @@ export class TerminalService {
     const positions = await this.prisma.position.findMany({ where: { accountId: account.id } });
     const marks: Record<string, Mark | undefined> = {};
     for (const position of positions) {
-      const row = latest.get(position.pairAddress) ?? (await this.prisma.marketObservation.findFirst({
-        where: { pairAddress: position.pairAddress },
-        orderBy: { receivedAt: "desc" },
-      }));
+      const row =
+        latest.get(position.pairAddress) ??
+        (await this.prisma.marketObservation.findFirst({
+          where: {
+            pairAddress: position.pairAddress,
+            tradingEnvironment: ctx.tradingEnvironment,
+          },
+          orderBy: { receivedAt: "desc" },
+        }));
       if (!row || !config) continue;
       marks[position.pairAddress] = {
         priceUsd: row.priceUsd?.toString() ?? null,
-        freshness: classifyFreshness({
-          mode: this.mode(),
-          receivedAt: row.receivedAt,
-          now,
-          liveMaxAgeMs: config.liveMaxAgeMs,
-          delayedMaxAgeMs: config.delayedMaxAgeMs,
-        }),
+        freshness: this.freshnessForObservation(row, now, config),
       };
     }
     const positionViews = positions.map((position) => ({
@@ -521,7 +531,7 @@ export class TerminalService {
             report.valuation.equityUsd === null || position.marketValueUsd === null
               ? null
               : d(position.marketValueUsd).div(d(report.valuation.equityUsd)).mul(100).toFixed(4);
-          const positionKey = `${account.id}:${position.pairAddress}`;
+          const positionKey = buildPositionKey(account.id, position.pairAddress);
           const posRow = positions.find((p) => p.pairAddress === position.pairAddress);
           const coverage = derivePositionProtectionCoverage({
             positionKey,
@@ -541,10 +551,10 @@ export class TerminalService {
             })),
           });
           const protectedLegs = protections.filter((row) => {
-            const pair = row.positionKey.includes(":")
-              ? row.positionKey.slice(row.positionKey.indexOf(":") + 1)
-              : row.positionKey;
-            if (pair !== position.pairAddress && row.positionKey !== positionKey) return false;
+            // Exact key match only — never first-colon split (primary:fixture:etf:SPY).
+            if (row.positionKey !== positionKey) return false;
+            const instrumentId = instrumentIdFromPositionKey(row.positionKey, account.id);
+            if (instrumentId !== position.pairAddress) return false;
             if (posRow?.lifecycleId && row.lifecycleId && row.lifecycleId !== posRow.lifecycleId) {
               return false;
             }
@@ -1091,6 +1101,35 @@ export class TerminalService {
     });
   }
 
+  private freshnessForObservation(
+    row: {
+      source: string;
+      receivedAt: Date;
+      freshness?: string | null;
+      dataOrigin?: string | null;
+      tradingEnvironment?: string | null;
+      raw?: unknown;
+    },
+    now: Date,
+    config: StrategyConfig | null,
+  ): DataState {
+    const classified = classifyFreshness({
+      mode: this.mode(),
+      receivedAt: row.receivedAt,
+      now,
+      liveMaxAgeMs: config?.liveMaxAgeMs ?? 45_000,
+      delayedMaxAgeMs: config?.delayedMaxAgeMs ?? 180_000,
+    });
+    const provenance = inferObservationProvenance({
+      source: row.source,
+      freshness: row.freshness,
+      dataOrigin: row.dataOrigin,
+      raw: row.raw,
+    });
+    // Prefer stored FIXTURE/REPLAY/DELAYED provenance over receipt-age LIVE invention.
+    return freshnessFromProvenance(provenance, classified);
+  }
+
   private presentPair(
     row: {
       id: string;
@@ -1109,17 +1148,15 @@ export class TerminalService {
       pairCreatedAt?: Date | null;
       receivedAt: Date;
       source: string;
+      freshness?: string | null;
+      dataOrigin?: string | null;
+      tradingEnvironment?: string | null;
+      raw?: unknown;
     },
     now: Date,
     config: StrategyConfig | null,
   ) {
-    const freshness = classifyFreshness({
-      mode: this.mode(),
-      receivedAt: row.receivedAt,
-      now,
-      liveMaxAgeMs: config?.liveMaxAgeMs ?? 45_000,
-      delayedMaxAgeMs: config?.delayedMaxAgeMs ?? 180_000,
-    });
+    const freshness = this.freshnessForObservation(row, now, config);
     return {
       observationId: row.id,
       pairAddress: row.pairAddress,
@@ -1129,6 +1166,8 @@ export class TerminalService {
       dexId: row.dexId,
       url: row.url,
       source: row.source,
+      dataOrigin: row.dataOrigin ?? null,
+      tradingEnvironment: row.tradingEnvironment ?? null,
       priceUsd: row.priceUsd?.toString() ?? null,
       liquidityUsd: row.liquidityUsd?.toString() ?? null,
       volume24hUsd: row.volume24hUsd?.toString() ?? null,

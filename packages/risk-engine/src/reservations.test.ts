@@ -57,10 +57,9 @@ describe("atomic risk reservations", () => {
     expect(ledger.reserve(req("y")).ok).toBe(true);
   });
 
-  it("releases partial unused after consume", () => {
+  it("releases partial unused before consume (D04 — remainders not double-counted after fill)", () => {
     const ledger = new ReservationLedger(budget());
     expect(ledger.reserve(req("partial", "200")).ok).toBe(true);
-    expect(ledger.consume("partial")?.status).toBe("CONSUMED");
     const partial = ledger.releasePartial("partial", {
       cashUsd: "50.00000000",
       exposureUsd: "50.00000000",
@@ -68,13 +67,21 @@ describe("atomic risk reservations", () => {
       slots: 0,
     });
     expect(partial.ok).toBe(true);
+    expect(ledger.consume("partial")?.status).toBe("CONSUMED");
     expect(Number(ledger.snapshot().cashAvailableUsd)).toBeCloseTo(850, 4);
+    // Post-consume remainders are zero — further releasePartial must fail.
+    const after = ledger.releasePartial("partial", {
+      cashUsd: "1.00000000",
+      exposureUsd: "0",
+      riskUsd: "0",
+      slots: 0,
+    });
+    expect(after.ok).toBe(false);
   });
 
   it("rejects double partial release / over-release / negative release", () => {
     const ledger = new ReservationLedger(budget());
     expect(ledger.reserve(req("adv", "200")).ok).toBe(true);
-    expect(ledger.consume("adv")?.status).toBe("CONSUMED");
     expect(
       ledger.releasePartial("adv", {
         cashUsd: "150.00000000",
@@ -112,6 +119,7 @@ describe("atomic risk reservations", () => {
     if (rest.ok) {
       expect(rest.reservation.remainingCashUsd).toBe("0.00000000");
     }
+    expect(ledger.consume("adv")?.status).toBe("CONSUMED");
     const again = ledger.releasePartial("adv", {
       cashUsd: "0.00000001",
       exposureUsd: "0",
@@ -127,5 +135,19 @@ describe("atomic risk reservations", () => {
     const second = ledger.reserve(req("idem", "100"));
     expect(first.ok && second.ok).toBe(true);
     expect(ledger.snapshot().slotsUsed).toBe(1);
+  });
+
+  it("preserves open-book exposure when reconstructing against HELD remainders (D04)", () => {
+    const ledger = new ReservationLedger({
+      ...budget(),
+      exposureUsedUsd: "200.00000000",
+      slotsUsed: 1,
+      slotsAvailable: 5,
+    });
+    expect(ledger.reserve(req("pend", "100")).ok).toBe(true);
+    const snap = ledger.snapshot();
+    expect(Number(snap.exposureUsedUsd)).toBeCloseTo(300, 4);
+    expect(snap.slotsUsed).toBe(2);
+    expect(snap.slotsAvailable).toBe(5);
   });
 });

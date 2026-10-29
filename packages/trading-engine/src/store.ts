@@ -121,11 +121,15 @@ export async function settlePendingOrder(
   }
 
   const eligibleAt = order.eligibleAt ?? input.now;
-  // R04: fill against same-instrument observation at/after eligibility — not the decision quote.
+  // R04/D03: fill against same-instrument observation within eligibility bounds — not the decision quote.
   const fillObservation = await findEligibleFillObservation(tx, {
     pairAddress: order.pairAddress,
     eligibleAt,
+    now: input.now,
+    expiresAt: order.expiresAt,
     tradingEnvironment: input.tradingEnvironment ?? input.config.tradingEnvironment ?? null,
+    preferIngestJobId: order.cycleId,
+    allowNullEnvironment: false,
   });
   if (!fillObservation || fillObservation.priceUsd === null) {
     // No eligible event yet — keep pending (do not fill on stale pre-eligibility quote).

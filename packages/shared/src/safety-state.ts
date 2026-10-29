@@ -1,5 +1,5 @@
 /**
- * Account-scoped safety controls independent of DurableAlert acknowledgement (R06).
+ * Account-scoped safety controls independent of DurableAlert acknowledgement (R06 / D05).
  * Alert ACK never clears ACTIVE controls — only resolveSafetyState / clean reconcile.
  */
 
@@ -25,12 +25,26 @@ export type SafetyStateRow = {
   resolvedAt?: Date | string | null;
 };
 
-/** True when an ACTIVE ENTRIES_SUSPENDED (or equivalent) blocks new buys. */
+/**
+ * Codes that block new risk expansion (ENTRY / OPERATOR buys).
+ * Exits, protection retry, and flatten remain available.
+ */
+export const ENTRY_BLOCKING_SAFETY_CODES: readonly SafetyCode[] = [
+  SAFETY_CODES.ENTRIES_SUSPENDED,
+  SAFETY_CODES.PROTECTION_RECOVERY,
+  SAFETY_CODES.RECONCILE_ISSUE,
+  SAFETY_CODES.CIRCUIT_BREAKER,
+  SAFETY_CODES.FLATTEN_INCOMPLETE,
+];
+
+/** True when an ACTIVE safety control blocks new buys / risk expansion (D05). */
 export function entriesSuspendedFromSafety(
   rows: Array<{ code: string; status: string }>,
 ): boolean {
   return rows.some(
-    (row) => row.status === "ACTIVE" && row.code === SAFETY_CODES.ENTRIES_SUSPENDED,
+    (row) =>
+      row.status === "ACTIVE" &&
+      (ENTRY_BLOCKING_SAFETY_CODES as readonly string[]).includes(row.code),
   );
 }
 

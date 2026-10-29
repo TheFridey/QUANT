@@ -1,4 +1,8 @@
-import { newId, SAFETY_CODES, type SafetyCode } from "@odin/shared";
+import {
+  ENTRY_BLOCKING_SAFETY_CODES,
+  newId,
+  type SafetyCode,
+} from "@odin/shared";
 import type { Prisma, PrismaClient } from "@odin/shared/db";
 import { toJson } from "@odin/shared/db";
 
@@ -90,7 +94,7 @@ export async function isEntriesSuspended(db: Db, accountId: string): Promise<boo
   const row = await db.accountSafetyState.findFirst({
     where: {
       accountId,
-      code: SAFETY_CODES.ENTRIES_SUSPENDED,
+      code: { in: [...ENTRY_BLOCKING_SAFETY_CODES] },
       status: "ACTIVE",
     },
   });

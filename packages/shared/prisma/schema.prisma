@@ -297,9 +297,19 @@ model CycleRun {
   orderCount       Int       @default(0)
   startedAt        DateTime
   finishedAt       DateTime?
+  /// Durable pinned ExecutionContext at cycle creation (D01) — stages must not re-resolve live config.
+  accountId           String?
+  tradingEnvironment  String?
+  dataMode            String?
+  configRevision      String?
+  strategyRevision    String?
+  riskRevision        String?
+  pinnedContext       Json?
 
   @@index([status, startedAt])
   @@index([startedAt])
+  @@index([accountId, startedAt])
+  @@index([tradingEnvironment, startedAt])
 }
 
 model AgentDecision {
@@ -647,6 +657,11 @@ model ProtectionIntent {
   legId       String
   status      String
   reason      String
+  /// EXIT_RETRY | AMEND_RETRY | CANCEL_RETRY | RECONCILE_UNKNOWN (D07)
+  kind        String    @default("EXIT_RETRY")
+  /// Immutable lifecycle fence — retries must not close a reopened lot (D07).
+  lifecycleId String?
+  instrumentId String?
   attempts    Int       @default(0)
   retryAfter  DateTime?
   resolvedAt  DateTime?
@@ -655,6 +670,8 @@ model ProtectionIntent {
 
   @@index([status, retryAfter])
   @@index([ocoGroupId])
+  @@index([accountId, status, retryAfter])
+  @@index([kind, status])
 }
 
 model StrategyInstance {

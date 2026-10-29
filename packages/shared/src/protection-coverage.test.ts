@@ -102,4 +102,52 @@ describe("protection coverage (R12)", () => {
     expect(rows.find((r) => r.positionKey === "primary:A")?.protected).toBe(true);
     expect(rows.find((r) => r.positionKey === "primary:B")?.protected).toBe(false);
   });
+
+  it("never treats desired-only venue-native stops as protected", () => {
+    const coverage = derivePositionProtectionCoverage({
+      positionKey: "primary:fixture:etf:SPY",
+      lifecycleId: "lot_spy",
+      baseQty: "10",
+      legs: [
+        {
+          positionKey: "primary:fixture:etf:SPY",
+          lifecycleId: "lot_spy",
+          kind: "STOP",
+          origin: "VENUE_NATIVE",
+          status: "ARMED",
+          remainingQty: "10",
+          protectedQty: "10",
+          ackState: "DESIRED_ONLY",
+          triggerPriceUsd: "400",
+          confirmedTriggerPriceUsd: null,
+        },
+      ],
+    });
+    expect(coverage.protected).toBe(false);
+    expect(coverage.status).not.toBe("PROTECTED");
+  });
+
+  it("does not match colon-containing keys by first-colon suffix", () => {
+    const coverage = derivePositionProtectionCoverage({
+      positionKey: "primary:fixture:etf:SPY",
+      lifecycleId: "lot_1",
+      baseQty: "5",
+      legs: [
+        {
+          // Would match if decoded as account=primary, instrument=fixture:etf:SPY via first colon.
+          positionKey: "primary:etf:SPY",
+          lifecycleId: "lot_1",
+          kind: "STOP",
+          origin: "SYNTHETIC_ENGINE",
+          status: "ARMED",
+          remainingQty: "5",
+          protectedQty: "5",
+          triggerPriceUsd: "400",
+          confirmedTriggerPriceUsd: "400",
+        },
+      ],
+    });
+    expect(coverage.protected).toBe(false);
+    expect(coverage.status).toBe("UNPROTECTED");
+  });
 });
