@@ -1,43 +1,42 @@
 # QUANT Launch — Evidence Log
 
-## Baseline
+**Baseline SHA:** `be0923305193cfbf5ccfbf6336663e0b002ca5bf` (PR #3)  
+**Working branch:** `cursor/quant-gate-a-correctness-95f1`  
+**PR:** https://github.com/TheFridey/QUANT/pull/4  
+**Date:** 29 October 2026 (Europe/London)
 
-| Field | Value |
+## Local checks (this agent)
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| `pnpm typecheck` | PASS | packages + api/worker/web |
+| `pnpm lint` | PASS | after Gate A–D |
+| `pnpm test` | 321 passed, 4 failed, 29 skipped | Failures require `bwrap` (bubblewrap); absent in this VM. CI installs bubblewrap. |
+| `pnpm build` | PASS (Gate D CI change) | exercised via CI job |
+
+## Unit regressions added/extended (VERIFIED_UNIT)
+
+- D01 execution-context pin/load helpers
+- D03 eligible-observation bounds / preferIngest / null-env
+- D04 reconstruct-budget open+HELD; reservations consume/remainder
+- D05 safety PROTECTION_RECOVERY suspends entries
+- D06 position-key `primary:fixture:etf:SPY`; desired-only coverage
+- D08 held-refresh routing/fairness
+- D09 execution-gateway SANDBOX stub
+- D10 practice-url allowlists
+- D11–D15 strategy instances, pulse exits, market admission, promotion
+- D16 ops-controls; D19 receipt/idempotency
+- D25 token-revocation
+
+## Not claimed
+
+| Level | Status |
 | --- | --- |
-| Baseline ref | `main` |
-| Baseline SHA | `be0923305193cfbf5ccfbf6336663e0b002ca5bf` |
-| Working branch | `cursor/quant-gate-a-correctness-95f1` |
-| Programme | Gate A correctness (stages 01–15; D01–D07, D21) |
+| VERIFIED_DB | Pending disposable Postgres race/protection integration |
+| VERIFIED_WORKER | Pending full stage-runner soak with fake venue |
+| VERIFIED_BROWSER | Pending Playwright against managed services |
+| VERIFIED_EXTERNAL | Blocked without owner demo credentials + explicit permission |
 
-## Reproduction status
+## Live money
 
-**Pending.** D01–D30 reproduction against baseline is not yet recorded on this branch.
-
-Planned next steps (stage 01):
-
-1. Capture dirty-tree / current checks on baseline SHA.
-2. Reproduce each finding where possible; classify fixed / confirmed / partially confirmed / design-only.
-3. Record pre-existing test/build failures accurately — do not hide unrelated reds.
-4. Document backup posture before any migration; identify contaminated paper history without deleting it.
-
-## Verification levels earned
-
-None yet.
-
-| Level | Count |
-| --- | --- |
-| VERIFIED_UNIT | 0 |
-| VERIFIED_DB | 0 |
-| VERIFIED_WORKER | 0 |
-| VERIFIED_BROWSER | 0 |
-| VERIFIED_EXTERNAL | 0 |
-
-## Runs
-
-| When | Command | Result | Notes |
-| --- | --- | --- | --- |
-| — | — | — | Reproduction pending |
-
-## Contaminated / ambiguous data
-
-Not yet inventoried. Do not delete paper history until a reconciliation report exists (`CONTRACTS.md` isolation rules).
+Disabled. No real orders. SANDBOX stub refuses local PAPER masquerade as external demo.
