@@ -27,6 +27,7 @@ import { PerformanceSection } from "@/components/terminal/sections/performance-s
 import { PortfolioSection } from "@/components/terminal/sections/portfolio-section";
 import { PositionsSection } from "@/components/terminal/sections/positions-section";
 import { RadarSection } from "@/components/terminal/sections/radar-section";
+import { CapacitySection } from "@/components/terminal/sections/capacity-section";
 import { RiskSection } from "@/components/terminal/sections/risk-section";
 import { SettingsSection } from "@/components/terminal/sections/settings-section";
 import { StrategySection } from "@/components/terminal/sections/strategy-section";
@@ -147,6 +148,8 @@ function renderSection(section: TerminalSection) {
       return <ResearchMemorySection />;
     case "risk":
       return <RiskSection />;
+    case "capacity":
+      return <CapacitySection />;
     case "models":
       return <ModelOpsSection />;
     case "autonomy":

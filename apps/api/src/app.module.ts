@@ -11,6 +11,8 @@ import { EvolutionController } from "./evolution.controller.js";
 import { EvolutionService } from "./evolution.service.js";
 import { LabController } from "./lab.controller.js";
 import { LabService } from "./lab.service.js";
+import { OperatorCapacityService } from "./operator-capacity.service.js";
+import { OperatorController } from "./operator.controller.js";
 import { TerminalController } from "./terminal.controller.js";
 import { TerminalFanout, TerminalGateway } from "./terminal.gateway.js";
 import { TerminalService } from "./terminal.service.js";
@@ -27,11 +29,12 @@ import { TerminalService } from "./terminal.service.js";
     }),
     BullModule.registerQueue({ name: QUEUES.ingest }),
   ],
-  controllers: [AuthController, TerminalController, LabController, EvolutionController],
+  controllers: [AuthController, TerminalController, OperatorController, LabController, EvolutionController],
   providers: [
     { provide: PrismaClient, useFactory: () => createPrismaClient() },
     AuthService,
     TerminalService,
+    OperatorCapacityService,
     LabService,
     EvolutionService,
     TerminalGateway,

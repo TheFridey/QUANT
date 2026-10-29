@@ -1,12 +1,30 @@
 "use client";
 
+import { useState } from "react";
 import { Metric, Panel } from "@/components/terminal/panel";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
+import { Button } from "@/components/ui/button";
+import { api } from "@/lib/api";
 import { formatPct, formatUsd } from "@/lib/format";
 
 export function RiskSection() {
-  const { snapshot } = useSnapshot();
+  const { snapshot, refresh } = useSnapshot();
+  const [ackingId, setAckingId] = useState<string | null>(null);
+  const [ackError, setAckError] = useState<string | null>(null);
   if (!snapshot) return null;
+
+  async function ackAlert(id: string) {
+    setAckingId(id);
+    setAckError(null);
+    try {
+      await api(`/terminal/alerts/${encodeURIComponent(id)}/ack`, { method: "POST", body: "{}" });
+      await refresh();
+    } catch (err) {
+      setAckError(err instanceof Error ? err.message : "ACK failed");
+    } finally {
+      setAckingId(null);
+    }
+  }
   const config = snapshot.engine.config ?? {};
   const p = snapshot.portfolio;
   const execution = snapshot.execution;
@@ -232,6 +250,7 @@ export function RiskSection() {
         )}
       </Panel>
       <Panel title="Durable alerts" className="lg:col-span-2">
+        {ackError ? <p className="border-b border-border/70 px-3 py-2 text-[11px] text-loss">{ackError}</p> : null}
         {(snapshot.alerts ?? []).length === 0 ? (
           <p className="p-4 text-xs text-muted">No open durable alerts.</p>
         ) : (
@@ -244,8 +263,25 @@ export function RiskSection() {
                     <span className="ml-2 text-[10px] text-loss">ACK≠clear safety</span>
                   ) : null}
                   <span className="mt-1 block text-muted">{alert.message}</span>
+                  <span className="mt-1 block text-[10px] text-muted">
+                    ACK is notification-only — it never clears breaker, entry suspension, or unresolved protection.
+                  </span>
                 </span>
-                <span className="mono text-muted">{alert.createdAt}</span>
+                <div className="flex flex-col items-end gap-2">
+                  <span className="mono text-muted">{alert.createdAt}</span>
+                  {!alert.acked ? (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={ackingId === alert.id}
+                      onClick={() => void ackAlert(alert.id)}
+                    >
+                      {ackingId === alert.id ? "ACKing…" : "ACK"}
+                    </Button>
+                  ) : (
+                    <span className="text-[10px] text-muted">acked</span>
+                  )}
+                </div>
               </li>
             ))}
           </ul>

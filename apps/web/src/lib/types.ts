@@ -436,6 +436,7 @@ export type TerminalSection =
   | "confidence"
   | "memory"
   | "risk"
+  | "capacity"
   | "models"
   | "autonomy"
   | "logs"

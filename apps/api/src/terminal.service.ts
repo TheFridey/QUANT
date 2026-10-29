@@ -548,6 +548,8 @@ export class TerminalService {
         message: alert.message,
         acked: alert.acked,
         createdAt: alert.createdAt.toISOString(),
+        accountId: alert.accountId,
+        scope: alertScope(alert.accountId, alert.payload),
         ackClearsSafety: !alertAckDoesNotClearSafety(alert.code),
       })),
       whyBlocked,
@@ -1383,7 +1385,15 @@ export class TerminalService {
         clientOrderId: item.clientOrderId,
         status: item.status,
         side: item.side,
+        pairAddress: item.pairAddress,
+        baseSymbol: item.baseSymbol,
         qty: item.qty.toString(),
+        filledQty: item.filledQty.toString(),
+        ownerScope: item.ownerScope,
+        strategyInstanceId: item.strategyInstanceId,
+        intentId: item.intentId,
+        submissionState: item.submissionState,
+        executionMode: item.executionMode,
         rejectReason: item.rejectReason,
         fills: item.fills.map((fill) => ({
           priceUsd: fill.priceUsd.toString(),
@@ -1773,6 +1783,21 @@ export class TerminalService {
     }
     return result;
   }
+}
+
+/** Grouping scope for repeated alerts: account plus the instrument/instance the payload names. */
+function alertScope(accountId: string | null, payload: unknown): string {
+  const parts = [accountId ?? "global"];
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const row = payload as Record<string, unknown>;
+    for (const key of ["pairAddress", "instrumentId", "strategyInstanceId"]) {
+      if (typeof row[key] === "string" && row[key]) {
+        parts.push(row[key] as string);
+        break;
+      }
+    }
+  }
+  return parts.join(":");
 }
 
 function promotedPaperStrategy(value: unknown): boolean {

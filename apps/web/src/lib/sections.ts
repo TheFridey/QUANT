@@ -36,6 +36,7 @@ export const SECTIONS: SectionDef[] = [
   { id: "strategy", label: "Strategy Laboratory", group: "Strategies", shortLabel: "Lab" },
   { id: "backtesting", label: "Backtesting", group: "Strategies", shortLabel: "Backtest" },
   { id: "risk", label: "Risk Management", group: "Strategies", shortLabel: "Risk" },
+  { id: "capacity", label: "Capacity & Allocations", group: "Strategies", shortLabel: "Capacity" },
   { id: "research", label: "AI Research Centre", group: "Research", shortLabel: "Centre" },
   { id: "operations", label: "Research Operations", group: "Research", shortLabel: "Ops" },
   { id: "forge", label: "FORGE Monitor", group: "Research", shortLabel: "FORGE" },
