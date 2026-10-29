@@ -7,6 +7,11 @@ import {
 } from "@odin/shared";
 import type { MarketDataProvider, InstrumentQuote, OrderSpec, MarketSessionStatus } from "../market-provider.js";
 import type { ProviderResult } from "../provider.js";
+import {
+  OANDA_PRACTICE_HOSTS,
+  assertAllowlistedHttpsUrl,
+  assertCompleteQuote,
+} from "../practice-url.js";
 
 export type OandaPracticeCredentials = {
   tokenPresent: boolean;
@@ -23,22 +28,48 @@ export type OandaPracticeCredentials = {
  */
 export class OandaPracticeProvider implements MarketDataProvider {
   readonly id = "oanda_practice" as const;
+  private authFailed = false;
+  private authenticatedOk = false;
 
   constructor(
     private readonly credentials: OandaPracticeCredentials,
     private readonly options: {
       fetchImpl?: typeof fetch;
       now?: () => Date;
-      pricingFixture?: Record<string, { bid: string; ask: string }>;
+      pricingFixture?: Record<string, { bid: string; ask: string; eventTime?: string }>;
+      maxEventAgeMs?: number;
     } = {},
   ) {}
+
+  noteAuthFailure(): void {
+    this.authFailed = true;
+    this.authenticatedOk = false;
+  }
+
+  noteAuthSuccess(): void {
+    this.authFailed = false;
+    this.authenticatedOk = true;
+  }
+
+  private urlValid(): boolean {
+    return assertAllowlistedHttpsUrl(this.credentials.apiUrl, OANDA_PRACTICE_HOSTS).ok;
+  }
 
   readiness(): ProviderReadiness {
     if (!this.credentials.tokenPresent || !this.credentials.accountIdPresent) {
       return "MISSING_CREDENTIALS";
     }
-    if (!this.credentials.apiUrl.includes("fxpractice") && !this.credentials.apiUrl.includes("localhost")) {
+    if (!this.urlValid()) {
       return "INVALID_CONFIGURATION";
+    }
+    if (this.authFailed) {
+      return "AUTH_FAILED";
+    }
+    if (this.options.pricingFixture) {
+      return "READY";
+    }
+    if (!this.authenticatedOk) {
+      return "CONNECTING";
     }
     return "READY";
   }
@@ -57,7 +88,7 @@ export class OandaPracticeProvider implements MarketDataProvider {
           "BLOCKED_EXTERNAL_TEST: set OANDA_API_TOKEN and OANDA_ACCOUNT_ID (fxpractice). See docs/mvp/PROVIDER_CAPABILITIES.md",
       };
     }
-    if (ready !== "READY") {
+    if (ready === "INVALID_CONFIGURATION" || ready === "AUTH_FAILED") {
       return { ok: false, code: "UNAVAILABLE", error: `OANDA practice readiness=${ready}` };
     }
 
@@ -65,44 +96,58 @@ export class OandaPracticeProvider implements MarketDataProvider {
     const instruments = (await this.listInstruments()).filter((item) => instrumentIds.includes(item.id));
 
     if (this.options.pricingFixture) {
-      return {
-        ok: true,
-        fetchedAt: now.toISOString(),
-        data: instruments.map((instrument) => {
-          const underscored = `${instrument.base}_${instrument.quote}`;
-          const fix =
-            this.options.pricingFixture![instrument.providerSymbol] ??
-            this.options.pricingFixture![underscored] ??
-            this.options.pricingFixture![instrument.symbol] ??
-            this.options.pricingFixture![instrument.id];
-          const session = evaluateSession({ session: instrument.session, now });
-          const bid = fix ? Number(fix.bid) : NaN;
-          const ask = fix ? Number(fix.ask) : NaN;
-          const mid = Number.isFinite(bid) && Number.isFinite(ask) ? ((bid + ask) / 2).toFixed(8) : null;
-          return {
-            instrumentId: instrument.id,
-            symbol: instrument.symbol,
-            level: mid,
-            currency: instrument.quote,
-            dataState: "DEMO" as const,
-            provenance: "oanda_practice:offline_fixture — sanitised contract test",
-            session: session.status === "OPEN" ? ("OPEN" as const) : session.status === "CLOSED" ? ("CLOSED" as const) : ("UNKNOWN" as const),
-            receivedAt: now.toISOString(),
-            providerId: "oanda_practice" as const,
-            bid: fix?.bid ?? null,
-            ask: fix?.ask ?? null,
-            eventTime: now.toISOString(),
-          };
-        }),
-      };
+      const data: InstrumentQuote[] = [];
+      for (const instrument of instruments) {
+        const underscored = `${instrument.base}_${instrument.quote}`;
+        const fix =
+          this.options.pricingFixture![instrument.providerSymbol] ??
+          this.options.pricingFixture![underscored] ??
+          this.options.pricingFixture![instrument.symbol] ??
+          this.options.pricingFixture![instrument.id];
+        const session = evaluateSession({ session: instrument.session, now });
+        if (!fix) {
+          data.push(empty(instrument, now, session.status, "oanda:missing_fixture"));
+          continue;
+        }
+        const complete = assertCompleteQuote({
+          bid: fix.bid,
+          ask: fix.ask,
+          eventTime: fix.eventTime ?? now.toISOString(),
+          now,
+          maxEventAgeMs: this.options.maxEventAgeMs,
+        });
+        if (!complete.ok) {
+          data.push(empty(instrument, now, session.status, `oanda:rejected_quote:${complete.reason}`));
+          continue;
+        }
+        data.push({
+          instrumentId: instrument.id,
+          symbol: instrument.symbol,
+          level: complete.mid.toFixed(8),
+          currency: instrument.quote,
+          dataState: "DEMO" as const,
+          provenance: "oanda_practice:offline_fixture — sanitised contract test",
+          session: session.status === "OPEN" ? ("OPEN" as const) : session.status === "CLOSED" ? ("CLOSED" as const) : ("UNKNOWN" as const),
+          receivedAt: now.toISOString(),
+          providerId: "oanda_practice" as const,
+          bid: complete.bid.toFixed(8),
+          ask: complete.ask.toFixed(8),
+          eventTime: fix.eventTime ?? now.toISOString(),
+        });
+      }
+      return { ok: true, fetchedAt: now.toISOString(), data };
+    }
+
+    if (ready !== "CONNECTING" && ready !== "READY") {
+      return { ok: false, code: "UNAVAILABLE", error: `OANDA practice readiness=${ready}` };
     }
 
     const fetchImpl = this.options.fetchImpl ?? fetch;
     const instrumentsParam = instruments
-      .map((i) => i.providerSymbol.includes("_") ? i.providerSymbol : `${i.base}_${i.quote}`)
+      .map((i) => (i.providerSymbol.includes("_") ? i.providerSymbol : `${i.base}_${i.quote}`))
       .join(",");
     try {
-      const url = `${this.credentials.apiUrl}/v3/accounts/${this.credentials.accountId}/pricing?instruments=${encodeURIComponent(instrumentsParam)}`;
+      const url = `${this.credentials.apiUrl.replace(/\/$/, "")}/v3/accounts/${this.credentials.accountId}/pricing?instruments=${encodeURIComponent(instrumentsParam)}`;
       const response = await fetchImpl(url, {
         headers: {
           authorization: `Bearer ${process.env.OANDA_API_TOKEN ?? ""}`,
@@ -110,11 +155,13 @@ export class OandaPracticeProvider implements MarketDataProvider {
         },
       });
       if (response.status === 401 || response.status === 403) {
+        this.noteAuthFailure();
         return { ok: false, code: "UNAVAILABLE", error: "AUTH_FAILED: OANDA rejected token" };
       }
       if (!response.ok) {
         return { ok: false, code: "UNAVAILABLE", error: `oanda:http_${response.status}` };
       }
+      this.noteAuthSuccess();
       const body = (await response.json()) as {
         prices?: Array<{
           instrument?: string;
@@ -131,24 +178,28 @@ export class OandaPracticeProvider implements MarketDataProvider {
         const row =
           byInst.get(instrument.symbol) ??
           byInst.get(`${instrument.base}${instrument.quote}`);
-        const bid = row?.bids?.[0]?.price;
-        const ask = row?.asks?.[0]?.price;
-        if (!bid || !ask) {
-          return empty(instrument, now, session.status, "oanda:missing_price");
+        const complete = assertCompleteQuote({
+          bid: row?.bids?.[0]?.price,
+          ask: row?.asks?.[0]?.price,
+          eventTime: row?.time ?? null,
+          now,
+          maxEventAgeMs: this.options.maxEventAgeMs,
+        });
+        if (!complete.ok) {
+          return empty(instrument, now, session.status, `oanda:rejected_quote:${complete.reason}`);
         }
-        const mid = ((Number(bid) + Number(ask)) / 2).toFixed(8);
         return {
           instrumentId: instrument.id,
           symbol: instrument.symbol,
-          level: mid,
+          level: complete.mid.toFixed(8),
           currency: instrument.quote,
           dataState: "DEMO",
           provenance: "oanda_practice:pricing — fxTrade Practice demo",
           session: session.status === "OPEN" ? "OPEN" : session.status === "CLOSED" ? "CLOSED" : "UNKNOWN",
           receivedAt: now.toISOString(),
           providerId: "oanda_practice",
-          bid,
-          ask,
+          bid: complete.bid.toFixed(8),
+          ask: complete.ask.toFixed(8),
           eventTime: row?.time ?? null,
         };
       });
@@ -173,13 +224,17 @@ export class OandaPracticeProvider implements MarketDataProvider {
   }
 
   buildOrderSpec(instrumentId: string, side: "BUY" | "SELL"): OrderSpec {
-    if (this.readiness() !== "READY") {
+    const ready = this.readiness();
+    if (ready === "MISSING_CREDENTIALS" || ready === "INVALID_CONFIGURATION" || ready === "AUTH_FAILED") {
       return {
         instrumentId,
         side,
         allowed: false,
-        reasonCodes: ["MISSING_CREDENTIALS", "BLOCKED_EXTERNAL"],
+        reasonCodes: [ready, "BLOCKED_EXTERNAL"],
       };
+    }
+    if (ready !== "READY" && ready !== "CONNECTING") {
+      return { instrumentId, side, allowed: false, reasonCodes: [ready, "BLOCKED_EXTERNAL"] };
     }
     const instrument = SEED_INSTRUMENTS.find((item) => item.id === instrumentId);
     if (!instrument || !canPaperExecute(instrument)) {
@@ -201,11 +256,17 @@ export class OandaPracticeProvider implements MarketDataProvider {
     | { ok: false; error: string; readiness: ProviderReadiness }
   > {
     const ready = this.readiness();
-    if (ready !== "READY") {
+    if (ready === "MISSING_CREDENTIALS" || ready === "INVALID_CONFIGURATION" || ready === "AUTH_FAILED") {
+      return { ok: false, error: `Cannot submit protective orders: readiness=${ready}`, readiness: ready };
+    }
+    if (ready !== "READY" && ready !== "CONNECTING") {
       return { ok: false, error: `Cannot submit protective orders: readiness=${ready}`, readiness: ready };
     }
     if (!input.stopLossPrice && !input.takeProfitPrice) {
       return { ok: false, error: "NO_PROTECTIVE_PRICES", readiness: ready };
+    }
+    if (!this.urlValid()) {
+      return { ok: false, error: "Cannot submit: INVALID_CONFIGURATION", readiness: "INVALID_CONFIGURATION" };
     }
     const fetchImpl = this.options.fetchImpl ?? fetch;
     const orderIds: string[] = [];
@@ -214,7 +275,7 @@ export class OandaPracticeProvider implements MarketDataProvider {
     if (input.takeProfitPrice) specs.push({ type: "TAKE_PROFIT", price: input.takeProfitPrice });
     for (const spec of specs) {
       const response = await fetchImpl(
-        `${this.credentials.apiUrl}/v3/accounts/${this.credentials.accountId}/orders`,
+        `${this.credentials.apiUrl.replace(/\/$/, "")}/v3/accounts/${this.credentials.accountId}/orders`,
         {
           method: "POST",
           headers: {
@@ -231,15 +292,20 @@ export class OandaPracticeProvider implements MarketDataProvider {
           }),
         },
       );
-      if (!response.ok) {
-        return { ok: false, error: `oanda_protect:http_${response.status}`, readiness: ready };
+      if (response.status === 401 || response.status === 403) {
+        this.noteAuthFailure();
+        return { ok: false, error: "AUTH_FAILED: OANDA rejected token", readiness: "AUTH_FAILED" };
       }
+      if (!response.ok) {
+        return { ok: false, error: `oanda_protect:http_${response.status}`, readiness: this.readiness() };
+      }
+      this.noteAuthSuccess();
       const body = (await response.json()) as {
         orderCreateTransaction?: { id?: string };
         orderFillTransaction?: { id?: string };
       };
       const id = body.orderCreateTransaction?.id ?? body.orderFillTransaction?.id;
-      if (!id) return { ok: false, error: "oanda_protect:missing_id", readiness: ready };
+      if (!id) return { ok: false, error: "oanda_protect:missing_id", readiness: this.readiness() };
       orderIds.push(id);
     }
     return { ok: true, orderIds, status: "accepted" };

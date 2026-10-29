@@ -53,7 +53,7 @@ describe("FX stub + named external providers", () => {
     expect(quotes.ok).toBe(true);
     if (quotes.ok) {
       expect(quotes.data[0]?.level).toBe("519.10000000");
-      expect(quotes.data[0]?.bid).toBe("519.00");
+      expect(quotes.data[0]?.bid).toBe("519.00000000");
       expect(quotes.data[0]?.provenance).toContain("offline_fixture");
     }
   });

@@ -39,12 +39,19 @@ export class MarketDataGateway {
 
   providerFor(instrumentId: string): MarketDataProvider | null {
     if (instrumentId.startsWith("fx:")) {
-      return this.providers.oanda?.readiness() === "READY"
-        ? this.providers.oanda
-        : this.providers.frankfurter ?? null;
+      const oandaState = this.providers.oanda?.readiness();
+      // READY or CONNECTING (keys present, auth not yet proven) may attempt quotes.
+      if (oandaState === "READY" || oandaState === "CONNECTING") {
+        return this.providers.oanda ?? null;
+      }
+      return this.providers.frankfurter ?? null;
     }
-    if (instrumentId.startsWith("etf:")) {
+    if (instrumentId.startsWith("etf:") || instrumentId.startsWith("equity:")) {
       return this.providers.alpaca ?? null;
+    }
+    if (instrumentId.startsWith("commodity:") || instrumentId.startsWith("index:")) {
+      // No dedicated live provider in this gateway yet — caller treats as missing.
+      return null;
     }
     return null;
   }

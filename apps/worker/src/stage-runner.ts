@@ -21,10 +21,13 @@ import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
 import {
   BirdeyeClient,
   buildFixturePairsAtStep,
-  fetchMandatorySolanaMarks,
+  allowsLocalPaperBooking,
+  createExecutionGateway,
+  fetchMandatoryMarks,
   fetchSolanaUniverse,
   FrankfurterFxProvider,
   MarketDataGateway,
+  type FairnessCursor,
   type ProviderResult,
 } from "@odin/market-data";
 import { ObservabilityRegistry } from "@odin/analytics";
@@ -93,6 +96,8 @@ export const silentBus: AgentBus = { async publish() {} };
 
 export class StageRunner {
   private readonly observability = new ObservabilityRegistry();
+  /** Fairness cursor for mandatory pair-address lookups across cycles (D08). */
+  private heldRefreshFairness: FairnessCursor = { pairLookupOffset: 0 };
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -317,6 +322,8 @@ export class StageRunner {
         stillPending.filter((o) => o.side === "BUY").map((o) => o.pairAddress),
       );
 
+      const executionGateway = createExecutionGateway(liveGate.ok ? liveGate.mode : "PAPER", process.env);
+
       if (!liveGate.ok) {
         await this.persistAlert(tx, liveGateAlert(liveGate.reason, liveGate.mode), ctx.accountId);
         await upsertDecision(tx, cycleId, {
@@ -331,6 +338,42 @@ export class StageRunner {
           inputSource: "execution-gate",
           durationMs: 0,
         });
+      } else if (!allowsLocalPaperBooking(executionGateway)) {
+        // D09: SANDBOX must not silently book local PAPER as if it were external demo.
+        const gatewayReady = executionGateway.readiness();
+        await upsertDecision(tx, cycleId, {
+          agent: "EXECUTOR",
+          modelVersion: "executor-sandbox-1.0.0",
+          pairAddress: "",
+          decision: "REJECT",
+          confidence: "1.000000",
+          reasonCodes: ["REJECTED"],
+          input: { gatewayId: executionGateway.id, mode: executionGateway.mode },
+          output: {
+            sandboxBlocked: true,
+            readiness: gatewayReady,
+            note:
+              gatewayReady === "MISSING_CREDENTIALS"
+                ? "SANDBOX verification blocked without credentials; local PAPER booking refused"
+                : "SANDBOX execution gateway not implemented; refusing local PAPER fill masquerade",
+          },
+          inputSource: "execution-gateway",
+          durationMs: 0,
+        });
+        for (const order of loaded.plan.orders) {
+          await upsertDecision(tx, cycleId, {
+            agent: "EXECUTOR",
+            modelVersion: "executor-sandbox-1.0.0",
+            pairAddress: order.pairAddress,
+            decision: "REJECT",
+            confidence: "1.000000",
+            reasonCodes: ["REJECTED"],
+            input: { clientOrderId: order.clientOrderId, gatewayId: executionGateway.id },
+            output: { readiness: gatewayReady, venueRefused: "SANDBOX_NO_LOCAL_PAPER" },
+            inputSource: "execution-gateway",
+            durationMs: 0,
+          });
+        }
       } else {
         for (const order of loaded.plan.orders) {
           // Suppress duplicate pending intent for same instrument (R05).
@@ -393,7 +436,7 @@ export class StageRunner {
               ...order,
               eligibleAt: order.eligibleAt,
               expiresAt: order.expiresAt,
-              executionMode: liveGate.mode === "SANDBOX" ? "SANDBOX" : "PAPER",
+              executionMode: "PAPER",
               venue: "PAPER",
               instrumentId: order.pairAddress.includes(":") ? order.pairAddress : null,
               strategyVersion: strategyVersionStamp(
@@ -581,7 +624,8 @@ export class StageRunner {
       });
       return;
     }
-    const result = await this.feed.fetchUniverse(config.universeLimit);
+    // D08: start discovery without awaiting it before held refresh — mandatory marks are priority.
+    const discoveryPromise = this.feed.fetchUniverse(config.universeLimit);
     const pinnedCtx = await this.contextForCycle(cycleId);
     const tradingEnvironment: TradingEnvironment =
       pinnedCtx?.tradingEnvironment ?? config.tradingEnvironment ?? "MARKET_DATA_PAPER";
@@ -601,12 +645,35 @@ export class StageRunner {
       pinnedCtx ?? resolveExecutionContext({ config, dataMode: this.dataMode });
     await this.ensureAccount(ctx);
 
-    // R02: mandatory independent refresh for open holdings / pending / protected — prioritise over discovery.
+    // R02/D08: mandatory independent refresh for open holdings / pending / protected.
+    // Runs without waiting for discovery to finish; routes by instrument prefix; fair rotation + deadlines.
     const mandatoryTargets = await this.collectMandatoryMarkTargets(ctx.accountId);
-    const mandatoryRefresh = await fetchMandatorySolanaMarks({
+    const marketGateway = MarketDataGateway.fromEnv(process.env, () => now);
+    const mandatoryRefresh = await fetchMandatoryMarks({
       targets: mandatoryTargets,
       now,
+      timeoutMs: 8_000,
+      pairLookupBudget: 20,
+      fairness: this.heldRefreshFairness,
+      fetchQuotes: async (instrumentIds, signal) => {
+        if (signal.aborted) {
+          return { ok: false, code: "UPSTREAM", error: "HELD_REFRESH_DEADLINE" };
+        }
+        return Promise.race([
+          marketGateway.getQuotes(instrumentIds),
+          new Promise<ProviderResult<never>>((_, reject) => {
+            const onAbort = () => reject(new Error("HELD_REFRESH_DEADLINE"));
+            if (signal.aborted) onAbort();
+            else signal.addEventListener("abort", onAbort, { once: true });
+          }),
+        ]).catch((error) => ({
+          ok: false as const,
+          code: "UPSTREAM" as const,
+          error: error instanceof Error ? error.message : "multi-market refresh failed",
+        }));
+      },
     });
+    this.heldRefreshFairness = mandatoryRefresh.fairness;
     const mandatoryByAddress = new Map(
       (mandatoryRefresh.ok ? mandatoryRefresh.data : []).map((p) => [p.pairAddress, p]),
     );
@@ -617,7 +684,18 @@ export class StageRunner {
         cycleId,
         emptyDecision("UPSTREAM_UNAVAILABLE", `Held-mark refresh failed: ${mandatoryRefresh.error}`),
       );
+    } else if (mandatoryRefresh.deferredPairLookups.length > 0 || mandatoryRefresh.missing.length > 0) {
+      await upsertDecision(
+        this.prisma,
+        cycleId,
+        emptyDecision(
+          "HELD_OFF_DISCOVERY",
+          `mandatory coverage debt missing=${mandatoryRefresh.missing.length} deferred=${mandatoryRefresh.deferredPairLookups.length}`,
+        ),
+      );
     }
+
+    const result = await discoveryPromise;
 
     if (!result.ok && paperExtras.length === 0 && mandatoryByAddress.size === 0) {
       await this.prisma.cycleRun.update({

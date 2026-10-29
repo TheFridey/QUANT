@@ -13,9 +13,9 @@
 | D05 | P0 | IMPLEMENTED | `ENTRY_BLOCKING_SAFETY_CODES` includes PROTECTION_RECOVERY; `isEntriesSuspended` uses them | `pnpm exec vitest run packages/shared/src/safety-state.test.ts` | VERIFIED_UNIT |
 | D06 | P0 | IMPLEMENTED | `position-key.ts`; exact coverage match; desired-only native not protected; worker/terminal decode | `pnpm exec vitest run packages/shared/src/position-key.test.ts packages/shared/src/protection-coverage.test.ts` | VERIFIED_UNIT |
 | D07 | P0 | IMPLEMENTED | Account-scoped retry; AMEND≠EXIT; lifecycle fence; kind/lifecycle columns; account lock on retry | protection-crash (needs DB) + lifecycle API | — (needs VERIFIED_DB) |
-| D08 | P1 | OPEN | Mandatory refresh Solana-specific / discovery await | market-data / worker | — |
-| D09 | P1 | OPEN | Named demo execution incomplete | market-data / gateway | — |
-| D10 | P1 | OPEN | Practice host substring / readiness | market-data providers | — |
+| D08 | P1 | IMPLEMENTED | `held-refresh.ts` route/fairness/deadline; worker observe starts mandatory before awaiting discovery | `pnpm exec vitest run packages/market-data/src/held-refresh.test.ts` | VERIFIED_UNIT |
+| D09 | P1 | IMPLEMENTED | `execution-gateway.ts` + worker SANDBOX refuses local PAPER booking (stub NOT_IMPLEMENTED / MISSING_CREDENTIALS) | `pnpm exec vitest run packages/market-data/src/execution-gateway.test.ts` | VERIFIED_UNIT (stub; full demo lifecycle still open) |
+| D10 | P1 | IMPLEMENTED | `practice-url.ts` exact HTTPS allowlists; alpaca/oanda readiness + quote completeness | `pnpm exec vitest run packages/market-data/src/practice-url.test.ts` | VERIFIED_UNIT |
 | D11 | P1 | IMPLEMENTED | `strategy-instances.ts` buildInstancePlanGates; empty ENTER allowlist (no null fallback); EXIT→pulse; order `strategyInstanceId` stamp | `pnpm exec vitest run packages/agent-core/src/strategy-instances.test.ts packages/agent-core/src/pulse-exits.test.ts packages/agent-core/src/active-strategy.test.ts` | VERIFIED_UNIT |
 | D12 | P1 | IMPLEMENTED | `pulse.ts` promoted HOLD falls through to stop/target/time exits when held | `pnpm exec vitest run packages/agent-core/src/pulse-exits.test.ts` | VERIFIED_UNIT (exits; product accounting still OPEN) |
 | D13 | P1 | IMPLEMENTED | `promotion.ts` evidenceFromExperimentReport; `evolution.service` promote resolves reportId server-side, refuses missing | `pnpm exec vitest run packages/evolution/src/promotion.test.ts apps/api/src/promote-paper.test.ts` | VERIFIED_UNIT |
@@ -41,13 +41,13 @@
 
 | Status | Count |
 | --- | --- |
-| IMPLEMENTED | 12 (D01–D07, D11–D13, D15, D21) |
-| OPEN | 14 |
+| IMPLEMENTED | 15 (D01–D13, D15, D21) |
+| OPEN | 11 |
 | DESIGN | 4 |
 | **Total** | **30** |
 
 ### Notes
 
 - Gate A code paths updated on this branch; full worker/DB verification still pending for D01/D02/D07.
-- Gate B (local): D11 instance ownership gates, D12 HOLD≠bypass exits, D13 server-side promotion evidence, D15 MarketSelection admission.
+- Gate B (local): D08 multi-route mandatory refresh, D09 ExecutionGateway SANDBOX stub (no local PAPER masquerade; full demo lifecycle follow-on), D10 practice URL/readiness, D11 instance ownership, D12 HOLD≠bypass exits, D13 promotion evidence, D15 MarketSelection admission.
 - Live money remains disabled.

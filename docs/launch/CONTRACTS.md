@@ -141,3 +141,30 @@ ENTRY_BLOCKING_SAFETY_CODES = [
 - Retries claim transactionally under the account mutation lock.
 - Old-lifecycle recovery must not close a reopened holding.
 - Bound attempts / `retryAfter`; escalate via alerts without treating ACK as resolution.
+
+---
+
+## 7. Mandatory held refresh (Gate B / D08)
+
+**Source:** `packages/market-data/src/held-refresh.ts`, worker `observe`
+
+- Start mandatory refresh without awaiting discovery completion.
+- Route by instrument prefix (`solana_dex` / `fx` / `etf` / `commodity` / `index`).
+- Pair-address lookups use a fair rotating budget — never silently drop permanently past 20.
+- Every fetch uses an abort deadline; hung discovery must not block held-mark progress.
+
+## 8. Practice URL + readiness (Gate B / D10)
+
+**Source:** `packages/market-data/src/practice-url.ts`, Alpaca/OANDA providers
+
+- Exact HTTPS host/port allowlists only; reject live hosts and allowlisted hostnames smuggled in path/query/userinfo.
+- Readiness: `MISSING_CREDENTIALS` | `INVALID_CONFIGURATION` | `CONNECTING` | `AUTH_FAILED` | `READY` — key presence alone is not READY.
+- Incomplete quotes (non-finite, ask&lt;bid, stale event) are rejected before execution use.
+
+## 9. ExecutionGateway (Gate B / D09)
+
+**Source:** `packages/market-data/src/execution-gateway.ts`, worker executor
+
+- `PAPER` → `LocalPaperExecutionGateway` may book local PAPER.
+- `SANDBOX` → stub returns `MISSING_CREDENTIALS` or `NOT_IMPLEMENTED`; never books local PAPER fills and does not place broker orders from the stub.
+- Missing credentials block verification only; unimplemented lifecycle must not claim READY.
