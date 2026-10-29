@@ -65,6 +65,100 @@ jobs:
       - name: Production build
         run: pnpm build
 
+  # Browser E2E against a real api+worker+web stack with the deterministic PAPER feed (no public market network).
+  browser-e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: odin
+          POSTGRES_PASSWORD: odin
+          POSTGRES_DB: odin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U odin -d odin"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://odin:odin@127.0.0.1:5432/odin_e2e
+      DATABASE_URL_TEST: postgresql://odin:odin@127.0.0.1:5432/odin_e2e
+      REDIS_URL: redis://127.0.0.1:6379
+      JWT_SECRET: ci-jwt-secret-not-for-production
+      ADMIN_EMAIL: admin@odin.local
+      ADMIN_PASSWORD: odin-paper-dev
+      WEB_ORIGIN: http://127.0.0.1:4317
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:4318
+      EXECUTION_MODE: PAPER
+      LIVE_MONEY_ENABLED: "false"
+      ODIN_MARKET_FEED: deterministic
+      ODIN_DETERMINISTIC_STEP_MS: "5000"
+      DATA_MODE: live
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Create e2e database and migrate
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD=odin psql -h 127.0.0.1 -U odin -d odin -tc "SELECT 1 FROM pg_database WHERE datname='odin_e2e'" | grep -q 1 \
+            || PGPASSWORD=odin psql -h 127.0.0.1 -U odin -d odin -c "CREATE DATABASE odin_e2e"
+          pnpm db:deploy
+      - name: Build packages and apps
+        run: pnpm build
+      - name: Install Playwright Chromium
+        run: pnpm --filter @odin/web exec playwright install --with-deps chromium
+      - name: Start api, worker, web
+        run: |
+          set -e
+          pnpm --filter @odin/api start > /tmp/odin-api.log 2>&1 &
+          echo $! > /tmp/odin-api.pid
+          pnpm --filter @odin/worker start > /tmp/odin-worker.log 2>&1 &
+          echo $! > /tmp/odin-worker.pid
+          pnpm --filter @odin/web start > /tmp/odin-web.log 2>&1 &
+          echo $! > /tmp/odin-web.pid
+          for i in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:4318/api/health >/dev/null 2>&1 \
+              && curl -sf http://127.0.0.1:4317 >/dev/null 2>&1; then
+              echo "stack ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "=== api ==="; tail -n 120 /tmp/odin-api.log || true
+          echo "=== worker ==="; tail -n 120 /tmp/odin-worker.log || true
+          echo "=== web ==="; tail -n 120 /tmp/odin-web.log || true
+          exit 1
+      - name: Playwright Gate 1 browser suite
+        run: pnpm --filter @odin/web test:e2e
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            apps/web/test-results/
+            apps/web/playwright-report/
+            /tmp/odin-*.log
+          if-no-files-found: ignore
+
   # Optional compile-only job without DB services (packages + apps). No Playwright.
   build-packages:
     runs-on: ubuntu-latest

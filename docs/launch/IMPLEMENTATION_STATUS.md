@@ -1,11 +1,11 @@
 # QUANT — Implementation Status (Release runtime connection)
 
 **Starting commit (origin/main):** `e08a5a1778c6555e324a2a62ab085352002f3bc0` (PR #5 merge)  
-**Working branch:** `cursor/quant-release-runtime-cc8a`  
+**Working branch:** `cursor/runtime-correctness-practice-a5bc` (PR #7)  
 **Runtime:** Node v22.23.4 · pnpm 10.33.4  
-**DB:** Postgres 16 (apt) · Redis 7 · migrations through `20261029190000_engine_runtime_state`  
+**DB:** Postgres 16 (apt) · Redis 7 · migrations through `20261030140000_promotion_provenance`  
 **LIVE money:** disabled  
-**Last updated:** 2026-10-29
+**Last updated:** 2026-10-29 (Europe/London)
 
 Verification labels (honest):
 
@@ -65,8 +65,8 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 | §15 Fair scheduling | persisted fairnessCursor RR | `VERIFIED_UNIT` + IT | allocateOpportunities + EngineControl.runtimeState |
 | §16 Failure diagnostics | runtimeState.instanceDiagnostics | `IMPLEMENTED_UNVERIFIED` | stage-runner persists; no alert flood |
 | §17 Module binding | moduleRef at runtime | `VERIFIED_UNIT` | strategy-binding + ensureDefault |
-| §18–§20 Promotion/lineage/hashes | server reportId; lineage gate; distinct hashes | `VERIFIED_UNIT` | evolution.service + lineage-promotion.test |
-| §21 Practice HTTP transport | AlpacaPracticeBroker real fetch | `VERIFIED_UNIT` | practice-broker.ts HTTP; network `BLOCKED_EXTERNAL` |
+| §18–§20 Promotion/lineage/hashes | server reportId+artifactId; validatePromotion; provenance COMPLETE required | `VERIFIED_UNIT` + `VERIFIED_INTEGRATION` | promotion.test + promote-paper IT |
+| §21 Practice HTTP transport | AlpacaPracticeVenue + HTTP transport + offline VERIFIED book | `VERIFIED_UNIT` | market-data 43 tests; network `BLOCKED_EXTERNAL` |
 | §22 Gateway wire | SANDBOX → practice; never local PAPER | `VERIFIED_UNIT` | execution-gateway.ts |
 | §23 LocalPaper lookups | NOT_FOUND until submit; book required for positions | `VERIFIED_UNIT` | execution-gateway.test |
 | §24 Unknown outcome | TIMEOUT → UNKNOWN_OUTCOME + reconcile class | `VERIFIED_UNIT` | practice-broker http + classifyAmbiguousSubmit |
@@ -76,15 +76,15 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 | §28 Support matrix | honest CAPABILITIES.md | docs | docs/launch/CAPABILITIES.md |
 | §29 Paper lifecycle IT | worker+DB no mocks | `VERIFIED_INTEGRATION` | paper-lifecycle.integration.test.ts |
 | §30 Protection crash | prior protection-crash + reopen IT | `VERIFIED_INTEGRATION` | existing ITs green |
-| §31 Playwright | browser vs live stack | `VERIFIED_E2E` | 8/8; paper-mvp + smokes; traces on failure |
-| §32 Operator feedback | whyNoTrades families; snapshot cost off primary UI | `VERIFIED_E2E` (whyNoTrades UI) + unit | overview/risk browser asserts + terminal.service |
+| §31 Playwright | browser vs live stack + CI job | `VERIFIED_E2E` (local) + CI job added | 8/8 local; Actions `browser-e2e` with deterministic PAPER feed |
+| §32 Operator feedback | capacity UI, ACK button, why-no-trades families | `VERIFIED_UNIT` + `VERIFIED_INTEGRATION` | operator-capacity IT; Risk ACK; Capacity section |
 | §33 Engine soak | StageRunner+DB | `VERIFIED_INTEGRATION` | wall **10038ms**; 71 cycles |
 | §34 Snapshot perf | e2e latency not claimed | `VERIFIED_UNIT` helpers only | snapshot-cost unit; no SLO claim |
 | §35 Migrations / unattributed | runtimeState migration; UNATTRIBUTED repair | `VERIFIED_INTEGRATION` | migrate deploy + repair helper |
-| §36 CI connected product | integration project + build | `VERIFIED_INTEGRATION` (CI green on branch) | `gh run` success on push/PR; browser E2E is local (not in Actions yet) |
+| §36 CI connected product | integration project + build + browser-e2e job | `IMPLEMENTED_UNVERIFIED` until Actions green on this push | unit/IT local green; browser job newly added |
 | §37 This matrix | honest statuses | this file | |
 | §38 Release gates | see below | | |
-| §39 PR | reviewable; do not merge | open PR #6 |
+| §39 PR | reviewable; do not merge | open PR #7 |
 
 ---
 
@@ -92,8 +92,8 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 
 | Gate | Meaning | Status |
 | --- | --- | --- |
-| Gate 1 — LOCAL PAPER MVP | Attributed intents, ownership, paper path, worker/DB + browser | **PASSING locally** — unit+IT+10s soak + **Playwright 8/8 `VERIFIED_E2E`** against live stack/`odin_e2e`. Remaining: no UI Alert ACK button (API ack only); browser suite not yet in GitHub Actions. |
-| Gate 2 — EXTERNAL PRACTICE | Named Alpaca demo | **BLOCKED_EXTERNAL** (HTTP transport implemented; no creds) |
+| Gate 1 — LOCAL PAPER MVP | Attributed intents, ownership, paper path, worker/DB + browser | **PASSING locally** — multi-intent/capacity/settlement/recon + operator capacity UI + validated promotion IT. Prior Playwright 8/8; browser CI job added this push (await Actions). |
+| Gate 2 — EXTERNAL PRACTICE | Named Alpaca demo | **BLOCKED_EXTERNAL** (HTTP transport + offline venue VERIFIED_UNIT; no owner creds) |
 | Gate 3 — LIVE | Live money | **DISABLED** |
 
 ---
@@ -111,3 +111,4 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 | --- | --- |
 | 2026-10-29 | CI race fix; shared contracts; allocation settlement in store; market scoping; fairness cursor; budgets; ownership exits; practice HTTP+gateway; lineage promotion gate; paper-lifecycle IT; engine soak; operator whyNoTrades families; CAPABILITIES honesty |
 | 2026-10-29 | Playwright Gate 1 browser E2E against live stack + isolated `odin_e2e` — 8/8 pass; `VERIFIED_E2E` for listed paper UI paths; docs/PLAYWRIGHT.md |
+| 2026-10-29 | Runtime correctness: multi-intent planner, instance capacity, ownership settlement, honest recon, SANDBOX outbox, Alpaca practice venue, validated promotion provenance, operator capacity/ACK UI, deterministic feed + Actions browser-e2e job |

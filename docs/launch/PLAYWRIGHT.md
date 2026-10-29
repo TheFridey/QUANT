@@ -32,7 +32,7 @@ pnpm exec playwright test e2e/paper-mvp.spec.ts
 | Preview / submit paper BUY | Est. qty/fees UI; new FILLED order id; cash drop; open position |
 | Protection view | Positions shows PROTECTED (or equivalent) |
 | Reduce / close | Positions Close → position gone / SELL FILLED |
-| Alert ack | Seeded `DurableAlert` + **API** ack (no ACK button in UI) + honesty copy |
+| Alert ack | Seeded `DurableAlert` + Risk panel **ACK** button (notification-only; ACK≠clear safety) |
 | History filters | Side/symbol Apply |
 | Disconnect / reconnect | Settings socket row down→connected via offline |
 | Mobile nav | Viewport 390×844 group tabs → Ticket |
@@ -52,9 +52,9 @@ Smokes: `login.spec.ts`, `operator-desk.spec.ts`, `command-centre.spec.ts`.
 
 ### Gaps (honest)
 
-- **No Alert ACK button in UI** — ack verified via `POST /api/terminal/alerts/:id/ack` + snapshot; Risk shows ACK≠clear-safety copy.
 - Manual BUY needs workable risk knobs (`minOrderNotionalUsd` / `maxRiskPerTradePct`); helpers tune these while PAUSED before ticket submit.
 - External practice / LIVE / real-money routing **not** exercised (and must not be).
 - Snapshot-cost / browser latency SLO **not** claimed here.
+- CI browser job uses `ODIN_MARKET_FEED=deterministic` (PAPER-only, no public market egress).
 
 Do **not** treat helper vitest ITs alone as browser E2E. Prefer this Playwright suite against a live stack for Gate 1 UI proof.

@@ -12,6 +12,12 @@ import {
   PulseProcessor,
   SentinelProcessor,
 } from "./processors.js";
+import {
+  deterministicFeed,
+  deterministicStepMs,
+  installDeterministicNetworkGuard,
+  resolveMarketFeedMode,
+} from "./deterministic-feed.js";
 import { RedisBus } from "./redis-bus.js";
 import { Scheduler } from "./scheduler.js";
 import { StageLeaseService } from "./stage-lease.js";
@@ -42,6 +48,12 @@ const queues = Object.values(QUEUES).map((name) => ({ name }));
       inject: [PrismaClient, RedisBus],
       useFactory: (prisma: PrismaClient, bus: RedisBus) => {
         const mode = process.env.DATA_MODE === "replay" || process.env.DATA_MODE === "demo" ? process.env.DATA_MODE : "live";
+        const feedMode = resolveMarketFeedMode(process.env);
+        if (feedMode === "deterministic") {
+          const stepMs = deterministicStepMs(process.env);
+          installDeterministicNetworkGuard({ stepMs });
+          return new StageRunner(prisma, deterministicFeed({ stepMs }), bus, mode);
+        }
         return new StageRunner(prisma, liveFeed, bus, mode);
       },
     },
