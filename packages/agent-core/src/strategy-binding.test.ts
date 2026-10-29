@@ -1,6 +1,6 @@
-import { DEFAULT_STRATEGY } from "@odin/shared";
+import { DEFAULT_STRATEGY, configHashOf } from "@odin/shared";
 import { describe, expect, it } from "vitest";
-import { resolveStrategyBinding } from "./strategy-binding.js";
+import { builtinArtifactIdentity, resolveStrategyBinding, verifyRuntimeBinding } from "./strategy-binding.js";
 import { moduleForInstance, type DurableStrategyInstance } from "./strategy-instances.js";
 
 describe("§7 explicit strategy binding", () => {
@@ -109,5 +109,90 @@ describe("§7 explicit strategy binding", () => {
       expect(binding.code).toBe("DYNAMIC_ARTIFACT_UNAVAILABLE");
       expect(binding.message).toMatch(/unavailable/i);
     }
+  });
+
+  it("refuses a builtin moduleRef whose claimed artifactHash is not that module's identity", () => {
+    const identity = builtinArtifactIdentity("pulse-momentum-v1")!;
+    expect(
+      resolveStrategyBinding({ moduleRef: "pulse-momentum-v1", artifactHash: identity.artifactHash, instrumentIds: [] }).ok,
+    ).toBe(true);
+    const forged = resolveStrategyBinding({
+      moduleRef: "pulse-momentum-v1",
+      artifactHash: "f".repeat(64),
+      instrumentIds: [],
+    });
+    expect(forged.ok).toBe(false);
+    if (!forged.ok) expect(forged.code).toBe("ARTIFACT_HASH_MISMATCH");
+  });
+});
+
+describe("builtin executable identity", () => {
+  it("keeps source, artifact, and config identities distinct and stable", () => {
+    const a = builtinArtifactIdentity("pulse-momentum-v1")!;
+    const b = builtinArtifactIdentity("pulse-momentum-v1")!;
+    const other = builtinArtifactIdentity("mean-revert-fade-v1")!;
+    expect(a).toEqual(b);
+    expect(a.artifactHash).not.toBe(a.sourceHash);
+    expect(a.artifactHash).not.toBe(other.artifactHash);
+    expect(a.artifactHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(builtinArtifactIdentity("fx-breakout-v1")).toBeNull();
+    expect(builtinArtifactIdentity("custom-generated-v1")).toBeNull();
+  });
+});
+
+describe("verifyRuntimeBinding", () => {
+  const identity = builtinArtifactIdentity("pulse-momentum-v1")!;
+  const config = { ...DEFAULT_STRATEGY, entryM5ChangePct: "3" };
+  const active = {
+    strategyId: "strat",
+    strategyVersion: "1",
+    moduleRef: identity.moduleRef,
+    moduleVersion: identity.moduleVersion,
+    sourceHash: identity.sourceHash,
+    artifactHash: identity.artifactHash,
+    configHash: configHashOf(config),
+  };
+  const loaded = resolveStrategyBinding({ moduleRef: "pulse-momentum-v1", instrumentIds: [] });
+  if (!loaded.ok) throw new Error("builtin must resolve");
+
+  it("accepts the exact promoted module and config", () => {
+    expect(
+      verifyRuntimeBinding({
+        activeStrategy: active,
+        loadedModule: { moduleRef: loaded.moduleRef, version: loaded.module.version, config: { ...config } },
+      }),
+    ).toEqual({ ok: true, mismatches: [] });
+  });
+
+  it("reports a different module, version, or config instead of stamping the promoted identity", () => {
+    const otherModule = verifyRuntimeBinding({
+      activeStrategy: active,
+      loadedModule: { moduleRef: "mean-revert-fade-v1", version: "1.1.0", config },
+    });
+    expect(otherModule.ok).toBe(false);
+    expect(otherModule.mismatches.map((m) => m.field)).toEqual(
+      expect.arrayContaining(["moduleRef", "moduleVersion", "artifactHash"]),
+    );
+    const changedConfig = verifyRuntimeBinding({
+      activeStrategy: active,
+      loadedModule: { moduleRef: loaded.moduleRef, version: loaded.module.version, config: { ...config, entryM5ChangePct: "9" } },
+    });
+    expect(changedConfig.ok).toBe(false);
+    expect(changedConfig.mismatches.map((m) => m.field)).toEqual(["configHash"]);
+    const bumped = verifyRuntimeBinding({
+      activeStrategy: active,
+      loadedModule: { moduleRef: loaded.moduleRef, version: "9.9.9", config },
+    });
+    expect(bumped.mismatches.map((m) => m.field)).toEqual(["moduleVersion", "artifactHash"]);
+  });
+
+  it("treats legacy or missing bindings as unverified", () => {
+    const legacy = verifyRuntimeBinding({
+      activeStrategy: { strategyId: "s", strategyVersion: "1", sourceHash: "a".repeat(64), artifactHash: "b".repeat(64) },
+      loadedModule: { moduleRef: loaded.moduleRef, version: loaded.module.version, config },
+    });
+    expect(legacy.ok).toBe(false);
+    expect(legacy.mismatches[0]?.field).toBe("binding");
+    expect(verifyRuntimeBinding({ activeStrategy: null, loadedModule: { moduleRef: "x", version: "1", config } }).ok).toBe(false);
   });
 });
