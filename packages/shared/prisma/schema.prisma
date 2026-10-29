@@ -67,12 +67,20 @@ model MarketObservation {
   fdvUsd         Decimal?  @db.Decimal(24, 8)
   marketCapUsd   Decimal?  @db.Decimal(24, 8)
   freshness      String
+  /// LIVE_FEED | DELAYED_FEED | FIXTURE_SEQUENCE | REPLAY_STORE | PROVIDER_DEMO | SANDBOX_BROKER
+  dataOrigin     String?
+  /// Owning trading environment for isolation (never mix fixture into paper metrics).
+  tradingEnvironment String?
+  /// Provider event time when known; else null (do not invent).
+  eventTime      DateTime?
   receivedAt     DateTime
   raw            Json
   createdAt      DateTime  @default(now())
 
   @@unique([ingestJobId, pairAddress])
   @@index([pairAddress, receivedAt])
+  @@index([pairAddress, eventTime])
+  @@index([tradingEnvironment, receivedAt])
   @@index([receivedAt])
 }
 
@@ -328,7 +336,11 @@ model Order {
   filledQty       Decimal   @default(0) @db.Decimal(24, 8)
   reasonCodes     String[]
   rejectReason    String?
+  /// Observation that informed the admission decision (may predate eligibility).
   observationId   String?
+  decisionObservationId String?
+  /// Observation used for the economic fill (at/after eligibility).
+  fillObservationId String?
   executionMode   String    @default("PAPER")
   venue           String    @default("PAPER")
   instrumentId    String?
@@ -372,10 +384,13 @@ model Position {
   baseQty        Decimal  @db.Decimal(24, 8)
   avgCostUsd     Decimal  @db.Decimal(24, 8)
   realizedPnlUsd Decimal  @db.Decimal(24, 8)
+  /// Current open-lot id; minted on 0→open, cleared on flat. Scopes protection + open meta (R01).
+  lifecycleId    String?
   updatedAt      DateTime @updatedAt
   account        PaperAccount @relation(fields: [accountId], references: [id])
 
   @@unique([accountId, pairAddress])
+  @@index([accountId, lifecycleId])
 }
 
 model LedgerEntry {
@@ -596,6 +611,8 @@ model ProtectionOrder {
   accountId                String
   positionKey              String
   ocoGroupId               String
+  /// Open-lot lifecycle this protection covers (R01).
+  lifecycleId              String?
   kind                     String
   origin                   String
   direction                String   @default("LONG")
@@ -618,6 +635,7 @@ model ProtectionOrder {
 
   @@index([ocoGroupId])
   @@index([positionKey, status])
+  @@index([lifecycleId, status])
   @@index([status, updatedAt])
   @@index([accountId, status])
 }
@@ -678,6 +696,8 @@ model OpportunityFunnelEvent {
 
 model DurableAlert {
   id        String    @id @default(cuid())
+  /// Optional account scope — notifications only; does not own safety resolution (R06).
+  accountId String?
   severity  String    @default("INFO")
   code      String
   message   String
@@ -687,4 +707,23 @@ model DurableAlert {
   ackedAt   DateTime?
 
   @@index([acked, createdAt])
+  @@index([accountId, acked, createdAt])
+}
+
+/// Active safety controls independent of DurableAlert.acked (R06).
+/// ACK of an alert never resolves these — only clean reconcile / explicit resolve path.
+model AccountSafetyState {
+  id          String    @id @default(cuid())
+  accountId   String
+  code        String
+  /// ACTIVE | RESOLVED
+  status      String
+  detail      Json?
+  activatedAt DateTime  @default(now())
+  resolvedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([accountId, code])
+  @@index([accountId, status])
 }

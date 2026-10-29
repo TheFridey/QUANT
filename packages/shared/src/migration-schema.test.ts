@@ -14,6 +14,43 @@ describe.runIf(hasDb)("migration schema upgrade smoke", () => {
     await prisma.$disconnect();
   });
 
+  it("exposes release1 lifecycle + safety + observation provenance columns", async () => {
+    const positionCols = await prisma.$queryRaw<Array<{ column_name: string }>>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'Position' AND column_name = 'lifecycleId'
+    `;
+    expect(positionCols).toHaveLength(1);
+
+    const orderCols = await prisma.$queryRaw<Array<{ column_name: string }>>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'Order'
+        AND column_name IN ('decisionObservationId', 'fillObservationId')
+      ORDER BY column_name
+    `;
+    expect(orderCols.map((c) => c.column_name)).toEqual([
+      "decisionObservationId",
+      "fillObservationId",
+    ]);
+
+    const obsCols = await prisma.$queryRaw<Array<{ column_name: string }>>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'MarketObservation'
+        AND column_name IN ('dataOrigin', 'eventTime', 'tradingEnvironment')
+      ORDER BY column_name
+    `;
+    expect(obsCols.map((c) => c.column_name)).toEqual([
+      "dataOrigin",
+      "eventTime",
+      "tradingEnvironment",
+    ]);
+
+    const safety = await prisma.$queryRaw<Array<{ table_name: string }>>`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_name = 'AccountSafetyState'
+    `;
+    expect(safety).toHaveLength(1);
+  });
+
   it("exposes protection ack + REPLAY isolation columns", async () => {
     const protectionCols = await prisma.$queryRaw<Array<{ column_name: string }>>`
       SELECT column_name FROM information_schema.columns

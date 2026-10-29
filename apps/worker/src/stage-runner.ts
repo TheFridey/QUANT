@@ -19,6 +19,7 @@ import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
 import {
   BirdeyeClient,
   buildFixturePairsAtStep,
+  fetchMandatorySolanaMarks,
   fetchSolanaUniverse,
   FrankfurterFxProvider,
   MarketDataGateway,
@@ -27,38 +28,48 @@ import {
 import { ObservabilityRegistry } from "@odin/analytics";
 import type { ReservationBudget } from "@odin/risk-engine";
 import { releaseInTx, reserveInTx } from "@odin/risk-engine";
-import type { NormalizedPair, ObservationPoint, SecurityAssessment } from "@odin/shared";
+import type { ObservationPoint, SecurityAssessment } from "@odin/shared";
 import {
   AGENT_BUS_CHANNEL,
   TERMINAL_CHANNEL,
-  assertEnvironmentIsolation,
   assertPaperOrSandboxOnly,
+  checkRowEnvironmentIsolation,
   classifyFreshness,
   d,
-  metricsAccountIdFor,
+  freshnessFromProvenance,
+  inferObservationProvenance,
   newId,
   operatorOrderSchema,
   parseStrategyConfig,
+  resolveExecutionContext,
   rollSessionEquity,
+  SAFETY_CODES,
   usd,
   type CyclePair,
   type DataMode,
   type DataState,
+  type ExecutionContext,
+  type NormalizedPair,
   type OperatorOrder,
   type StrategyConfig,
   type TradingEnvironment,
 } from "@odin/shared";
 import { Prisma, PrismaClient, toJson } from "@odin/shared/db";
 import {
+  activateSafetyState,
   armLongShortOco,
   claimOcoTriggerInTx,
   commitProposedOrder,
+  isEntriesSuspended,
   lockAccount,
   persistOcoGroup,
+  positionOpenMetaForLifecycle,
+  protectionGroupId,
   enrichReconcileReport,
   reconcileOrders,
   reconcilePositionQty,
   recoverProtectionAfterRestart,
+  resolveSafetyState,
   retryUnresolvedProtectionIntents,
   settlePendingOrder,
   updateTrailing,
@@ -175,49 +186,112 @@ export class StageRunner {
   async executor(cycleId: string): Promise<void> {
     if (!(await this.ready(cycleId, "atlas"))) return;
     const now = this.now();
+    const bootConfig = await this.config();
+    const ctx = resolveExecutionContext({ config: bootConfig, dataMode: this.dataMode });
+    await this.ensureAccount(ctx);
     // Crash/restart: restore confirmed protection + durable unresolved exit intents before admission.
-    await recoverProtectionAfterRestart(this.prisma, { accountId: "primary" });
+    await recoverProtectionAfterRestart(this.prisma, { accountId: ctx.accountId });
     await this.prisma.$transaction(async (tx) => {
-      await lockAccount(tx, "primary");
-      const loaded = await this.loadPlan(cycleId, now, tx);
-      if (!loaded) return;
-      for (const decision of loaded.plan.decisions.filter((item) => item.agent === "AEGIS" || item.agent === "ATLAS" || item.agent === "EXECUTOR")) {
-        await upsertDecision(tx, cycleId, decision);
-      }
+      await lockAccount(tx, ctx.accountId);
 
-      // Settle eligible PENDING orders before accepting new proposals (restart-safe).
+      // R05: settle/cancel pending under explicit policy FIRST, then refresh book/caps, then admit.
+      const engine = await tx.engineControl.findUnique({ where: { id: "primary" } });
+      const config = parseStrategyConfig(engine?.config ?? {});
       const pending = await tx.order.findMany({
-        where: { accountId: "primary", status: "PENDING" },
+        where: { accountId: ctx.accountId, status: "PENDING" },
         orderBy: { submittedAt: "asc" },
       });
       let filled = 0;
-      const reservationBudget = await this.buildReservationBudget(tx, loaded);
+      const settleBudget = await this.buildReservationBudget(tx, {
+        accountId: ctx.accountId,
+        config,
+        valuation: { equityUsd: null },
+      });
       for (const row of pending) {
+        // Pause / emergency: still settle eligible EXITs; cancel pending ENTRY/OPERATOR buys when halted.
+        const haltEntries =
+          engine?.status === "PAUSED" ||
+          engine?.status === "EMERGENCY_STOP" ||
+          engine?.status === "STOPPED" ||
+          config.pauseNewEntries === true;
+        if (
+          haltEntries &&
+          row.side === "BUY" &&
+          (row.intent === "ENTRY" || row.intent === "OPERATOR")
+        ) {
+          await tx.order.update({
+            where: { id: row.id },
+            data: {
+              status: "CANCELLED",
+              rejectReason: "ENGINE_HALTED",
+              reasonCodes: [...row.reasonCodes, "ENGINE_HALTED"],
+            },
+          });
+          await releaseInTx(
+            tx,
+            { accountId: ctx.accountId, mode: "PAPER", clientOrderId: row.clientOrderId },
+            settleBudget,
+            now,
+          );
+          continue;
+        }
         const settled = await settlePendingOrder(tx, {
-          accountId: "primary",
+          accountId: ctx.accountId,
           orderId: row.id,
-          config: loaded.config,
+          config,
           mode: this.dataMode,
           now,
+          tradingEnvironment: ctx.tradingEnvironment,
         });
-        if (settled.status === "FILLED") filled += 1;
-        // Terminal pending outcomes free durable admission capacity.
+        if (settled.status === "FILLED") {
+          filled += 1;
+          if (settled.side === "BUY" && settled.pairAddress) {
+            await this.armProtectionForFill(tx, {
+              accountId: ctx.accountId,
+              pairAddress: settled.pairAddress,
+              qty: settled.filledQty ?? row.qty.toString(),
+              config,
+              markUsd: null,
+            });
+          }
+        }
         if (settled.status === "FILLED" || settled.status === "REJECTED" || settled.status === "EXPIRED") {
           await releaseInTx(
             tx,
-            { accountId: "primary", mode: "PAPER", clientOrderId: row.clientOrderId },
-            reservationBudget,
+            { accountId: ctx.accountId, mode: "PAPER", clientOrderId: row.clientOrderId },
+            settleBudget,
             now,
           );
         }
       }
 
-      await this.reconcileAndAlert(tx);
+      // Refresh authoritative book after settlement (R05).
+      const loaded = await this.loadPlan(cycleId, now, tx, ctx);
+      if (!loaded) return;
+      for (const decision of loaded.plan.decisions.filter((item) => item.agent === "AEGIS" || item.agent === "ATLAS" || item.agent === "EXECUTOR")) {
+        await upsertDecision(tx, cycleId, decision);
+      }
+
+      await this.reconcileAndAlert(tx, ctx);
 
       const liveGate = assertPaperOrSandboxOnly(process.env);
       const filledIds: string[] = [];
+      const reservationBudget = await this.buildReservationBudget(tx, {
+        accountId: ctx.accountId,
+        config: loaded.config,
+        valuation: loaded.valuation,
+      });
+
+      // Remaining PENDING after settle still consume slots/exposure/risk.
+      const stillPending = await tx.order.findMany({
+        where: { accountId: ctx.accountId, status: "PENDING" },
+      });
+      const pendingPairSuppress = new Set(
+        stillPending.filter((o) => o.side === "BUY").map((o) => o.pairAddress),
+      );
+
       if (!liveGate.ok) {
-        await this.persistAlert(tx, liveGateAlert(liveGate.reason, liveGate.mode));
+        await this.persistAlert(tx, liveGateAlert(liveGate.reason, liveGate.mode), ctx.accountId);
         await upsertDecision(tx, cycleId, {
           agent: "EXECUTOR",
           modelVersion: "executor-paper-1.2.0",
@@ -232,7 +306,24 @@ export class StageRunner {
         });
       } else {
         for (const order of loaded.plan.orders) {
-          const needsReservation = order.side === "BUY" && order.intent === "ENTRY";
+          // Suppress duplicate pending intent for same instrument (R05).
+          if (order.side === "BUY" && pendingPairSuppress.has(order.pairAddress)) {
+            await upsertDecision(tx, cycleId, {
+              agent: "EXECUTOR",
+              modelVersion: "executor-paper-1.2.0",
+              pairAddress: order.pairAddress,
+              decision: "REJECT",
+              confidence: "1.000000",
+              reasonCodes: ["REJECTED"],
+              input: { clientOrderId: order.clientOrderId },
+              output: { reservationDenied: "PENDING_DUPLICATE" },
+              inputSource: "pending-suppress",
+              durationMs: 0,
+            });
+            continue;
+          }
+          const needsReservation =
+            order.side === "BUY" && (order.intent === "ENTRY" || order.intent === "OPERATOR");
           if (needsReservation) {
             const mark = loaded.marks?.[order.pairAddress]?.priceUsd;
             const exposureUsd =
@@ -241,7 +332,7 @@ export class StageRunner {
               tx,
               {
                 id: newId("rsv"),
-                accountId: "primary",
+                accountId: ctx.accountId,
                 mode: "PAPER",
                 clientOrderId: order.clientOrderId,
                 cashUsd: exposureUsd,
@@ -269,7 +360,7 @@ export class StageRunner {
             }
           }
           const result = await commitProposedOrder(tx, {
-            accountId: "primary",
+            accountId: ctx.accountId,
             cycleId,
             order: {
               ...order,
@@ -288,19 +379,21 @@ export class StageRunner {
             if (result.status === "FILLED" || result.status === "REJECTED" || result.status === "EXPIRED") {
               await releaseInTx(
                 tx,
-                { accountId: "primary", mode: "PAPER", clientOrderId: order.clientOrderId },
+                { accountId: ctx.accountId, mode: "PAPER", clientOrderId: order.clientOrderId },
                 reservationBudget,
                 now,
               );
             }
-            // PENDING keeps HELD reservation until settle.
+          }
+          if (result.status === "PENDING" && order.side === "BUY") {
+            pendingPairSuppress.add(order.pairAddress);
           }
           if (result.status === "FILLED") {
             filled += 1;
             filledIds.push(order.clientOrderId);
             if (order.side === "BUY") {
               await this.armProtectionForFill(tx, {
-                accountId: "primary",
+                accountId: ctx.accountId,
                 pairAddress: order.pairAddress,
                 qty: order.qty,
                 config: loaded.config,
@@ -310,11 +403,11 @@ export class StageRunner {
           }
         }
       }
-      await this.evaluateProtections(tx, loaded, now);
+      await this.evaluateProtections(tx, loaded, now, ctx);
       await this.persistFunnel(tx, cycleId, loaded, filledIds, now);
 
       if (loaded.flattenRequested) {
-        const open = await tx.position.findMany({ where: { accountId: "primary" } });
+        const open = await tx.position.findMany({ where: { accountId: ctx.accountId } });
         const remaining = open.some((position) => d(position.baseQty.toString()).gt(0));
         if (!remaining) {
           await tx.engineControl.update({ where: { id: "primary" }, data: { flattenRequested: false } });
@@ -460,22 +553,29 @@ export class StageRunner {
       const fxPairs = await this.fetchFrankfurterPaperPairs(now);
       paperExtras = [...paperExtras, ...fxPairs];
     }
-    if (paperExtras.length > 0) {
-      const isolation = assertEnvironmentIsolation("FIXTURE_SEQUENCE", tradingEnvironment);
-      if (!isolation.ok) {
-        await this.prisma.cycleRun.update({
-          where: { id: cycleId },
-          data: {
-            dataState: "STALE",
-            observationCount: 0,
-            error: isolation.reason,
-          },
-        });
-        await upsertDecision(this.prisma, cycleId, emptyDecision("FIXTURE_ISOLATION", isolation.reason));
-        return;
-      }
+
+    const ctx = resolveExecutionContext({ config, dataMode: this.dataMode });
+    await this.ensureAccount(ctx);
+
+    // R02: mandatory independent refresh for open holdings / pending / protected — prioritise over discovery.
+    const mandatoryTargets = await this.collectMandatoryMarkTargets(ctx.accountId);
+    const mandatoryRefresh = await fetchMandatorySolanaMarks({
+      targets: mandatoryTargets,
+      now,
+    });
+    const mandatoryByAddress = new Map(
+      (mandatoryRefresh.ok ? mandatoryRefresh.data : []).map((p) => [p.pairAddress, p]),
+    );
+    if (!mandatoryRefresh.ok) {
+      // Provider outage: do NOT pretend old marks are fresh — record decision, continue with discovery.
+      await upsertDecision(
+        this.prisma,
+        cycleId,
+        emptyDecision("UPSTREAM_UNAVAILABLE", `Held-mark refresh failed: ${mandatoryRefresh.error}`),
+      );
     }
-    if (!result.ok && paperExtras.length === 0) {
+
+    if (!result.ok && paperExtras.length === 0 && mandatoryByAddress.size === 0) {
       await this.prisma.cycleRun.update({
         where: { id: cycleId },
         data: { dataState: "STALE", observationCount: 0, error: result.error },
@@ -483,42 +583,83 @@ export class StageRunner {
       await upsertDecision(this.prisma, cycleId, emptyDecision("UPSTREAM_UNAVAILABLE", result.error));
       return;
     }
+
     const solanaPairs = result.ok ? result.data : [];
+    // Merge mandatory marks first (override discovery for held instruments).
+    const byAddress = new Map<string, NormalizedPair>();
+    for (const pair of solanaPairs) byAddress.set(pair.pairAddress, pair);
+    for (const [addr, pair] of mandatoryByAddress) byAddress.set(addr, pair);
+
     let liveCount = 0;
     let demoCount = 0;
-    for (const pair of solanaPairs) {
-      const freshness = classifyFreshness({
+    let delayedCount = 0;
+    let isolationSkips = 0;
+
+    for (const pair of byAddress.values()) {
+      const provenance = inferObservationProvenance({
+        source: pair.source,
+        raw: pair.raw,
+      });
+      const isolation = checkRowEnvironmentIsolation(provenance, tradingEnvironment);
+      if (!isolation.ok) {
+        isolationSkips += 1;
+        continue;
+      }
+      const classified = classifyFreshness({
         mode: "live",
         receivedAt: now,
         now,
         liveMaxAgeMs: config.liveMaxAgeMs,
         delayedMaxAgeMs: config.delayedMaxAgeMs,
       });
+      const freshness = freshnessFromProvenance(provenance, classified);
       await this.prisma.marketObservation.upsert({
         where: { ingestJobId_pairAddress: { ingestJobId: cycleId, pairAddress: pair.pairAddress } },
-        create: observationData(cycleId, pair, freshness, now),
+        create: observationData(cycleId, pair, freshness, now, {
+          dataOrigin: provenance.dataOrigin,
+          tradingEnvironment,
+          eventTime: provenance.eventTime ? new Date(provenance.eventTime) : now,
+        }),
         update: {},
       });
-      liveCount += 1;
+      if (freshness === "LIVE") liveCount += 1;
+      else if (freshness === "DELAYED") delayedCount += 1;
+      else demoCount += 1;
     }
-    let delayedCount = 0;
+
+    // R09: validate each extra row's typed origin — do not abort healthy Solana ingest for FX.
     for (const pair of paperExtras) {
-      const origin = (pair.raw as { dataOrigin?: string; providerId?: string } | null)?.dataOrigin;
-      const providerId = (pair.raw as { providerId?: string } | null)?.providerId;
+      const provenance = inferObservationProvenance({
+        source: pair.source,
+        raw: pair.raw,
+      });
+      const isolation = checkRowEnvironmentIsolation(provenance, tradingEnvironment);
+      if (!isolation.ok) {
+        isolationSkips += 1;
+        await upsertDecision(
+          this.prisma,
+          cycleId,
+          emptyDecision("FIXTURE_ISOLATION", `${pair.pairAddress}: ${isolation.reason}`),
+        );
+        continue;
+      }
       const freshness: DataState =
         tradingEnvironment === "FIXTURE"
           ? "DEMO"
-          : origin === "DELAYED_FEED" || providerId === "frankfurter_fx"
-            ? "DELAYED"
-            : "DEMO";
+          : freshnessFromProvenance(provenance, "DELAYED");
       await this.prisma.marketObservation.upsert({
         where: { ingestJobId_pairAddress: { ingestJobId: cycleId, pairAddress: pair.pairAddress } },
-        create: observationData(cycleId, pair, freshness, now),
+        create: observationData(cycleId, pair, freshness, now, {
+          dataOrigin: provenance.dataOrigin,
+          tradingEnvironment,
+          eventTime: provenance.eventTime ? new Date(provenance.eventTime) : now,
+        }),
         update: {},
       });
       if (freshness === "DELAYED") delayedCount += 1;
       else demoCount += 1;
     }
+
     const total = liveCount + demoCount + delayedCount;
     const state: DataState =
       liveCount > 0 ? "LIVE" : delayedCount > 0 ? "DELAYED" : demoCount > 0 ? "DEMO" : "STALE";
@@ -531,8 +672,10 @@ export class StageRunner {
           total === 0
             ? "DexScreener returned no Solana pairs and multi-market paper ingest empty"
             : !result.ok
-              ? `Solana upstream unavailable; paper multi-market DEMO rows ingested (${demoCount})`
-              : null,
+              ? `Solana upstream unavailable; paper multi-market / held marks ingested (${demoCount + delayedCount})`
+              : isolationSkips > 0
+                ? `Scoped ${isolationSkips} isolation skip(s); healthy rows retained`
+                : null,
       },
     });
     if (total === 0) {
@@ -548,11 +691,15 @@ export class StageRunner {
     }
   }
 
-  private async loadPlan(cycleId: string, now: Date, db: PrismaClient | Prisma.TransactionClient) {
+  private async loadPlan(
+    cycleId: string,
+    now: Date,
+    db: PrismaClient | Prisma.TransactionClient,
+    ctxOverride?: ExecutionContext,
+  ) {
     const cycle = await db.cycleRun.findUnique({ where: { id: cycleId } });
     const engine = await db.engineControl.findUnique({ where: { id: "primary" } });
-    const account = await db.paperAccount.findUnique({ where: { id: "primary" } });
-    if (!cycle || !engine || !account) return null;
+    if (!cycle || !engine) return null;
     let config: StrategyConfig;
     try {
       config = parseStrategyConfig(engine.config);
@@ -560,37 +707,44 @@ export class StageRunner {
       await upsertDecision(db, cycleId, emptyDecision("CONFIG_INVALID", "Strategy configuration failed validation"));
       return null;
     }
-    const rows = await db.marketObservation.findMany({ where: { ingestJobId: cycleId } });
+    const ctx = ctxOverride ?? resolveExecutionContext({ config, dataMode: this.dataMode });
+    const account = await db.paperAccount.findUnique({ where: { id: ctx.accountId } });
+    if (!account) return null;
+    const rows = await db.marketObservation.findMany({
+      where: {
+        ingestJobId: cycleId,
+        OR: [
+          { tradingEnvironment: ctx.tradingEnvironment },
+          { tradingEnvironment: null },
+        ],
+      },
+    });
     const pairsByAddress = new Map<string, CyclePair>();
     for (const row of rows) {
       pairsByAddress.set(row.pairAddress, toCyclePair(row, now, config, this.dataMode));
     }
-    const positions = await db.position.findMany({ where: { accountId: "primary" } });
+    const positions = await db.position.findMany({ where: { accountId: ctx.accountId } });
     const marks: Record<string, Mark | undefined> = {};
     for (const pair of pairsByAddress.values()) {
       if (pair.priceUsd) marks[pair.pairAddress] = { priceUsd: pair.priceUsd, freshness: pair.freshness };
     }
-    // Held positions are monitored even when they left the discovery/ingest snapshot (A04).
-    // Multi-market FX/ETF/commodity marks are merged the same way — never invent prices.
+    // Held positions monitored from THIS cycle's mandatory refresh when present.
+    // Never treat a prior-cycle stored mark as freshly ingested (R02).
     for (const position of positions) {
       if (!d(position.baseQty.toString()).gt(0)) continue;
       if (pairsByAddress.has(position.pairAddress)) continue;
-      const latest = await db.marketObservation.findFirst({
-        where: { pairAddress: position.pairAddress },
-        orderBy: { receivedAt: "desc" },
-      });
-      if (!latest) continue;
-      const heldPair = toCyclePair(latest, now, config, this.dataMode);
-      pairsByAddress.set(position.pairAddress, heldPair);
-      marks[position.pairAddress] = {
-        priceUsd: heldPair.priceUsd,
-        freshness: heldPair.freshness,
-      };
+      // Missing from this cycle → mark as STALE/MISSING for eval (do not invent freshness).
+      marks[position.pairAddress] = { priceUsd: null, freshness: "STALE" };
     }
     const pairs = [...pairsByAddress.values()];
     const positionViews = await Promise.all(
       positions.map(async (position) => {
-        const openMeta = await this.positionOpenMeta(db, position.pairAddress, marks[position.pairAddress]?.priceUsd ?? null);
+        const openMeta = await positionOpenMetaForLifecycle(db, {
+          accountId: ctx.accountId,
+          pairAddress: position.pairAddress,
+          lifecycleId: position.lifecycleId,
+          currentMarkUsd: marks[position.pairAddress]?.priceUsd ?? null,
+        });
         return {
           pairAddress: position.pairAddress,
           baseSymbol: position.baseSymbol,
@@ -644,12 +798,10 @@ export class StageRunner {
         : usd(d(valuation.equityUsd).minus(d(account.cashUsd.toString())));
     const highWaterMarkUsd = sessionRoll.highWaterMarkUsd;
     const activeStrategy = parseActiveStrategyIdentity(engine.activeStrategy);
-    const suspension = await db.durableAlert.findFirst({
-      where: { acked: false, code: ALERT_CODES.ENTRIES_SUSPENDED },
-      orderBy: { createdAt: "desc" },
-    });
+    // R06: suspension from AccountSafetyState — never from DurableAlert.acked alone.
+    const suspensionActive = await isEntriesSuspended(db, ctx.accountId);
     // Durable concurrent StrategyInstances — seed defaults, evaluate, allocate entries.
-    const instances = await ensureDefaultStrategyInstances(db, "primary");
+    const instances = await ensureDefaultStrategyInstances(db, ctx.accountId);
     const bars = pairs.map((pair) => ({
       instrumentId: pair.pairAddress.includes(":") ? pair.pairAddress : `solana:spot:universe`,
       pairAddress: pair.pairAddress,
@@ -716,7 +868,7 @@ export class StageRunner {
         securityByMint,
         highWaterMarkUsd,
         aggregateExposureUsd,
-        entriesSuspended: suspension !== null,
+        entriesSuspended: suspensionActive,
         activeStrategyId: activeStrategy?.strategyId ?? null,
         concurrentEntryAllowlist: gateEntries,
         concurrentInstanceByPair,
@@ -728,25 +880,50 @@ export class StageRunner {
   private async buildReservationBudget(
     tx: Prisma.TransactionClient,
     loaded: {
+      accountId: string;
       config: StrategyConfig;
       valuation: { equityUsd: string | null };
     },
   ): Promise<ReservationBudget> {
-    const account = await tx.paperAccount.findUniqueOrThrow({ where: { id: "primary" } });
-    const openSlots = await tx.position.count({
-      where: { accountId: "primary", baseQty: { gt: 0 } },
+    const account = await tx.paperAccount.findUniqueOrThrow({ where: { id: loaded.accountId } });
+    const openPositions = await tx.position.findMany({
+      where: { accountId: loaded.accountId, baseQty: { gt: 0 } },
     });
+    const pendingBuys = await tx.order.findMany({
+      where: {
+        accountId: loaded.accountId,
+        status: "PENDING",
+        side: "BUY",
+        intent: { in: ["ENTRY", "OPERATOR"] },
+      },
+    });
+    const openSlots = openPositions.length;
+    const pendingSlots = pendingBuys.length;
     const equity = loaded.valuation.equityUsd ?? account.cashUsd.toString();
     const exposureCap = usd(d(equity).mul(d(loaded.config.maxAggregateExposurePct)).div(100));
-    const riskBudget = usd(d(equity).mul(d(loaded.config.maxRiskPerTradePct)).mul(loaded.config.maxPositions).div(100));
+    // Open exposure: sum mark*qty when marks available; else avgCost*qty.
+    let openExposure = d("0");
+    for (const position of openPositions) {
+      openExposure = openExposure.plus(d(position.baseQty.toString()).mul(d(position.avgCostUsd.toString())));
+    }
+    let pendingExposure = d("0");
+    for (const order of pendingBuys) {
+      // Conservative: treat pending BUY qty as already reserved exposure units when no mark.
+      pendingExposure = pendingExposure.plus(d(order.qty.toString()));
+    }
+    const openRisk = openExposure.mul(d(loaded.config.stopLossPct)).div(100);
+    const pendingRisk = pendingExposure.mul(d(loaded.config.stopLossPct)).div(100);
+    const riskBudget = usd(
+      d(equity).mul(d(loaded.config.maxRiskPerTradePct)).mul(loaded.config.maxPositions).div(100),
+    );
     return {
       cashAvailableUsd: account.cashUsd.toString(),
       exposureCapUsd: exposureCap,
-      exposureUsedUsd: "0",
-      slotsAvailable: Math.max(0, loaded.config.maxPositions - openSlots),
-      slotsUsed: 0,
+      exposureUsedUsd: usd(openExposure.plus(pendingExposure)),
+      slotsAvailable: Math.max(0, loaded.config.maxPositions - openSlots - pendingSlots),
+      slotsUsed: openSlots + pendingSlots,
       riskBudgetUsd: riskBudget,
-      riskUsedUsd: "0",
+      riskUsedUsd: usd(openRisk.plus(pendingRisk)),
     };
   }
 
@@ -767,7 +944,8 @@ export class StageRunner {
       }),
     );
     if (events.length === 0) return;
-    const accountId = metricsAccountIdFor(loaded.config.tradingEnvironment ?? "MARKET_DATA_PAPER");
+    const funnelCtx = resolveExecutionContext({ config: loaded.config, dataMode: this.dataMode });
+    const accountId = funnelCtx.metricsAccountId;
     // Skip stages already persisted for this cycle (idempotent retry).
     const existing = await db.opportunityFunnelEvent.findMany({
       where: { cycleId, accountId },
@@ -793,14 +971,20 @@ export class StageRunner {
   private async persistAlert(
     db: PrismaClient | Prisma.TransactionClient,
     alert: { severity: string; code: string; message: string; payload?: Record<string, unknown> },
+    accountId?: string,
   ): Promise<void> {
     const existing = await db.durableAlert.findFirst({
-      where: { acked: false, code: alert.code },
+      where: {
+        acked: false,
+        code: alert.code,
+        ...(accountId ? { accountId } : {}),
+      },
       orderBy: { createdAt: "desc" },
     });
     if (existing) return;
     await db.durableAlert.create({
       data: {
+        accountId: accountId ?? null,
         severity: alert.severity,
         code: alert.code,
         message: alert.message,
@@ -809,13 +993,23 @@ export class StageRunner {
     });
   }
 
-  private async resolveAlerts(
+  /**
+   * Resolve safety controls (R06). Optionally ACK related notification alerts —
+   * ACK alone never clears safety; this path is reconcile-driven.
+   */
+  private async resolveSafetyAndAlerts(
     db: PrismaClient | Prisma.TransactionClient,
+    accountId: string,
     codes: string[],
     now: Date,
   ): Promise<void> {
+    await resolveSafetyState(db, { accountId, codes, now });
     await db.durableAlert.updateMany({
-      where: { acked: false, code: { in: codes } },
+      where: {
+        acked: false,
+        code: { in: codes },
+        OR: [{ accountId }, { accountId: null }],
+      },
       data: { acked: true, ackedAt: now },
     });
   }
@@ -825,9 +1019,12 @@ export class StageRunner {
    * Fault-injection / external brokers pass mismatched truth via env ODIN_RECONCILE_FAULT=1
    * to prove suspension alerts; clean reconcile resolves ENTRIES_SUSPENDED.
    */
-  private async reconcileAndAlert(db: PrismaClient | Prisma.TransactionClient): Promise<void> {
+  private async reconcileAndAlert(
+    db: PrismaClient | Prisma.TransactionClient,
+    ctx: ExecutionContext,
+  ): Promise<void> {
     const orders = await db.order.findMany({
-      where: { accountId: "primary" },
+      where: { accountId: ctx.accountId },
       orderBy: { createdAt: "desc" },
       take: 500,
     });
@@ -860,11 +1057,11 @@ export class StageRunner {
       });
     }
     const baseReport = reconcileOrders({ broker, ledger });
-    const positions = await db.position.findMany({ where: { accountId: "primary" } });
+    const positions = await db.position.findMany({ where: { accountId: ctx.accountId } });
     const positionDrifts: Array<{ pairAddress: string; driftQty: string }> = [];
     for (const position of positions) {
       const filledOrders = await db.order.findMany({
-        where: { accountId: "primary", pairAddress: position.pairAddress, status: "FILLED" },
+        where: { accountId: ctx.accountId, pairAddress: position.pairAddress, status: "FILLED" },
         include: { fills: true },
       });
       const buys: string[] = [];
@@ -891,18 +1088,30 @@ export class StageRunner {
       name: report.ok ? "reconcile_clean" : "reconcile_dirty",
       value: report.issues.length,
       unit: "issues",
-      meta: { suspendEntries: report.suspendEntries },
+      meta: { suspendEntries: report.suspendEntries, accountId: ctx.accountId },
     });
     if (report.suspendEntries) {
+      await activateSafetyState(db, {
+        accountId: ctx.accountId,
+        code: SAFETY_CODES.ENTRIES_SUSPENDED,
+        detail: { issues: report.issues, at: this.now().toISOString() },
+        now: this.now(),
+      });
       await this.persistAlert(
         db,
         entriesSuspendedAlert({ issues: report.issues, at: this.now().toISOString() }),
+        ctx.accountId,
       );
-      await this.persistAlert(db, reconcileIssueAlert({ issues: report.issues }));
+      await this.persistAlert(db, reconcileIssueAlert({ issues: report.issues }), ctx.accountId);
     } else if (report.ok) {
-      await this.resolveAlerts(db, [ALERT_CODES.ENTRIES_SUSPENDED, ALERT_CODES.RECONCILE_ISSUE], this.now());
+      await this.resolveSafetyAndAlerts(
+        db,
+        ctx.accountId,
+        [ALERT_CODES.ENTRIES_SUSPENDED, ALERT_CODES.RECONCILE_ISSUE, SAFETY_CODES.ENTRIES_SUSPENDED],
+        this.now(),
+      );
     } else {
-      await this.persistAlert(db, reconcileIssueAlert({ issues: report.issues }));
+      await this.persistAlert(db, reconcileIssueAlert({ issues: report.issues }), ctx.accountId);
     }
   }
 
@@ -933,31 +1142,6 @@ export class StageRunner {
         }));
     }
     return history;
-  }
-
-  private async positionOpenMeta(
-    db: PrismaClient | Prisma.TransactionClient,
-    pairAddress: string,
-    currentMarkUsd: string | null,
-  ): Promise<{ openedAt: string | null; peakMarkUsd: string | null }> {
-    const firstBuy = await db.fill.findFirst({
-      where: { pairAddress, side: "BUY" },
-      orderBy: { createdAt: "asc" },
-    });
-    const openedAt = firstBuy?.createdAt.toISOString() ?? null;
-    let peak = currentMarkUsd ? d(currentMarkUsd) : null;
-    if (openedAt) {
-      const since = new Date(openedAt);
-      const highs = await db.marketObservation.findMany({
-        where: { pairAddress, receivedAt: { gte: since }, priceUsd: { not: null } },
-        orderBy: { priceUsd: "desc" },
-        take: 1,
-      });
-      const high = highs[0]?.priceUsd?.toString();
-      if (high) peak = peak ? DecimalMax(peak, d(high)) : d(high);
-      if (firstBuy) peak = peak ? DecimalMax(peak, d(firstBuy.priceUsd.toString())) : d(firstBuy.priceUsd.toString());
-    }
-    return { openedAt, peakMarkUsd: peak ? usd(peak) : null };
   }
 
   private async loadSecurity(pairs: CyclePair[]): Promise<Record<string, SecurityAssessment>> {
@@ -1099,14 +1283,15 @@ export class StageRunner {
     cycleId: string,
     loaded: NonNullable<Awaited<ReturnType<StageRunner["loadPlan"]>>>,
   ): Promise<void> {
-    const account = await this.prisma.paperAccount.findUnique({ where: { id: "primary" } });
+    const ctx = resolveExecutionContext({ config: loaded.config, dataMode: this.dataMode });
+    const account = await this.prisma.paperAccount.findUnique({ where: { id: ctx.accountId } });
     if (!account) return;
     const fees = await this.prisma.ledgerEntry.aggregate({
-      where: { accountId: "primary", type: "FEE" },
+      where: { accountId: ctx.accountId, type: "FEE" },
       _sum: { amountUsd: true },
     });
     const closed = await this.prisma.ledgerEntry.findMany({
-      where: { accountId: "primary", type: "REALIZED_PNL" },
+      where: { accountId: ctx.accountId, type: "REALIZED_PNL" },
       orderBy: { createdAt: "desc" },
       take: 200,
     });
@@ -1123,7 +1308,7 @@ export class StageRunner {
         : usd(DecimalMax(d(loaded.highWaterMarkUsd), d(equityUsd)));
     await this.prisma.equitySnapshot.create({
       data: {
-        accountId: metricsAccountIdFor(loaded.config.tradingEnvironment ?? "MARKET_DATA_PAPER"),
+        accountId: ctx.metricsAccountId,
         cycleId,
         cashUsd: account.cashUsd.toString(),
         equityUsd,
@@ -1135,7 +1320,7 @@ export class StageRunner {
         valuation: loaded.valuation.valuation,
         feesUsd: report.feesUsd,
         metrics: toJson({
-          tradingEnvironment: loaded.config.tradingEnvironment ?? "MARKET_DATA_PAPER",
+          tradingEnvironment: ctx.tradingEnvironment,
           winRate: report.winRate,
           wins: report.wins,
           losses: report.losses,
@@ -1153,7 +1338,7 @@ export class StageRunner {
     });
     if (hwm) {
       await this.prisma.paperAccount.update({
-        where: { id: "primary" },
+        where: { id: ctx.accountId },
         data: { highWaterMarkUsd: hwm },
       });
     }
@@ -1313,6 +1498,68 @@ export class StageRunner {
     }
   }
 
+  private async ensureAccount(ctx: ExecutionContext): Promise<void> {
+    const existing = await this.prisma.paperAccount.findUnique({ where: { id: ctx.accountId } });
+    if (existing) return;
+    const config = await this.config();
+    const starting = usd(d(config.startingBalanceUsd));
+    await this.prisma.paperAccount.create({
+      data: {
+        id: ctx.accountId,
+        cashUsd: starting,
+        startingBalanceUsd: starting,
+        tradingEnvironment: ctx.tradingEnvironment,
+      },
+    });
+    await this.prisma.ledgerEntry.create({
+      data: {
+        accountId: ctx.accountId,
+        type: "OPENING_BALANCE",
+        amountUsd: starting,
+        affectsCash: true,
+        note: `Opening balance for ${ctx.tradingEnvironment}`,
+      },
+    });
+  }
+
+  /** Open holdings + pending + protected instruments that must be refreshed independently (R02). */
+  private async collectMandatoryMarkTargets(
+    accountId: string,
+  ): Promise<Array<{ pairAddress: string; baseAddress?: string | null }>> {
+    const positions = await this.prisma.position.findMany({
+      where: { accountId, baseQty: { gt: 0 } },
+      select: { pairAddress: true, baseSymbol: true },
+    });
+    const pending = await this.prisma.order.findMany({
+      where: { accountId, status: "PENDING" },
+      select: { pairAddress: true },
+    });
+    const protectedRows = await this.prisma.protectionOrder.findMany({
+      where: { accountId, status: { in: ["ARMED", "TRIGGERED", "SUBMITTED", "FAILED"] } },
+      select: { positionKey: true },
+    });
+    const addresses = new Set<string>();
+    for (const p of positions) addresses.add(p.pairAddress);
+    for (const p of pending) addresses.add(p.pairAddress);
+    for (const row of protectedRows) {
+      const pair = row.positionKey.includes(":")
+        ? row.positionKey.slice(row.positionKey.indexOf(":") + 1)
+        : row.positionKey;
+      // Strip trailing lifecycle if present in key — positionKey is account:pair.
+      addresses.add(pair);
+    }
+    const targets: Array<{ pairAddress: string; baseAddress?: string | null }> = [];
+    for (const pairAddress of addresses) {
+      const latest = await this.prisma.marketObservation.findFirst({
+        where: { pairAddress },
+        orderBy: { receivedAt: "desc" },
+        select: { baseAddress: true },
+      });
+      targets.push({ pairAddress, baseAddress: latest?.baseAddress ?? null });
+    }
+    return targets;
+  }
+
   private async armProtectionForFill(
     tx: Prisma.TransactionClient,
     input: {
@@ -1323,27 +1570,66 @@ export class StageRunner {
       markUsd: string | null;
     },
   ): Promise<void> {
-    if (!input.markUsd) return;
     const position = await tx.position.findUnique({
       where: {
         accountId_pairAddress: { accountId: input.accountId, pairAddress: input.pairAddress },
       },
     });
     if (!position || d(position.baseQty.toString()).lte(0)) return;
-    const groupId = `oco_${input.accountId}_${input.pairAddress}`;
-    const existing = await tx.protectionOrder.count({ where: { ocoGroupId: groupId, status: "ARMED" } });
-    if (existing > 0) return;
+    let lifecycleId = position.lifecycleId;
+    if (!lifecycleId) {
+      lifecycleId = newId("lot");
+      await tx.position.update({
+        where: {
+          accountId_pairAddress: { accountId: input.accountId, pairAddress: input.pairAddress },
+        },
+        data: { lifecycleId },
+      });
+    }
+    const entryPrice =
+      input.markUsd && d(input.markUsd).gt(0)
+        ? input.markUsd
+        : position.avgCostUsd.toString();
+    if (!entryPrice || !d(entryPrice).gt(0)) {
+      // Urgent recovery: cannot arm without a price — surface safety state.
+      await activateSafetyState(tx, {
+        accountId: input.accountId,
+        code: SAFETY_CODES.PROTECTION_RECOVERY,
+        detail: { pairAddress: input.pairAddress, lifecycleId, reason: "MISSING_MARK_FOR_PROTECTION" },
+        now: this.now(),
+      });
+      return;
+    }
+    const groupId = protectionGroupId(input.accountId, input.pairAddress, lifecycleId);
+    const existing = await tx.protectionOrder.count({
+      where: { ocoGroupId: groupId, status: "ARMED" },
+    });
+    if (existing > 0) {
+      // Scale protected qty up to current position size on partial adds.
+      await tx.protectionOrder.updateMany({
+        where: { ocoGroupId: groupId, status: "ARMED" },
+        data: {
+          protectedQty: position.baseQty.toString(),
+          remainingQty: position.baseQty.toString(),
+        },
+      });
+      return;
+    }
     const group = armLongShortOco({
       groupId,
       positionKey: `${input.accountId}:${input.pairAddress}`,
       direction: "LONG",
       qty: position.baseQty.toString(),
-      entryPriceUsd: position.avgCostUsd.toString(),
+      entryPriceUsd: entryPrice,
       stopLossPct: input.config.stopLossPct,
       takeProfitPct: input.config.takeProfitPct,
       origin: "SYNTHETIC_ENGINE",
     });
-    await persistOcoGroup(tx, { accountId: input.accountId, group });
+    await persistOcoGroup(tx, {
+      accountId: input.accountId,
+      group,
+      lifecycleId,
+    });
   }
 
   private async evaluateProtections(
@@ -1353,9 +1639,10 @@ export class StageRunner {
       config: StrategyConfig;
     },
     _now: Date,
+    ctx: ExecutionContext,
   ): Promise<void> {
     const armed = await tx.protectionOrder.findMany({
-      where: { accountId: "primary", status: "ARMED" },
+      where: { accountId: ctx.accountId, status: "ARMED" },
       distinct: ["ocoGroupId"],
     });
     for (const row of armed) {
@@ -1398,7 +1685,7 @@ export class StageRunner {
       if (!claim.ok) continue;
       // Synthetic exit: propose reduce-only by committing via mark; on failure leave unresolved.
       const position = await tx.position.findFirst({
-        where: { accountId: "primary", pairAddress: pair },
+        where: { accountId: ctx.accountId, pairAddress: pair },
       });
       if (!position || d(position.baseQty.toString()).lte(0)) continue;
       const observation = await tx.marketObservation.findFirst({
@@ -1413,7 +1700,7 @@ export class StageRunner {
         await tx.protectionIntent.create({
           data: {
             id: newId("protint"),
-            accountId: "primary",
+            accountId: ctx.accountId,
             ocoGroupId: row.ocoGroupId,
             legId: claim.claimedLegId,
             status: "UNRESOLVED",
@@ -1426,7 +1713,7 @@ export class StageRunner {
       }
       try {
         const result = await commitProposedOrder(tx, {
-          accountId: "primary",
+          accountId: ctx.accountId,
           cycleId: `prot_${row.ocoGroupId}`,
           order: {
             clientOrderId: `prot_exit_${claim.claimedLegId}_${_now.getTime()}`,
@@ -1460,7 +1747,7 @@ export class StageRunner {
           await tx.protectionIntent.create({
             data: {
               id: newId("protint"),
-              accountId: "primary",
+              accountId: ctx.accountId,
               ocoGroupId: row.ocoGroupId,
               legId: claim.claimedLegId,
               status: "UNRESOLVED",
@@ -1471,6 +1758,7 @@ export class StageRunner {
           });
           await tx.durableAlert.create({
             data: {
+              accountId: ctx.accountId,
               severity: "ERROR",
               code: "PROTECTION_EXIT_FAILED",
               message: `Protective exit failed: ${result.reason ?? "unknown"}`,
@@ -1487,7 +1775,7 @@ export class StageRunner {
         await tx.protectionIntent.create({
           data: {
             id: newId("protint"),
-            accountId: "primary",
+            accountId: ctx.accountId,
             ocoGroupId: row.ocoGroupId,
             legId: claim.claimedLegId,
             status: "UNRESOLVED",
@@ -1522,7 +1810,17 @@ function emptyDecision(reason: DecisionDraft["reasonCodes"][number], error: stri
   };
 }
 
-function observationData(cycleId: string, pair: NormalizedPair, freshness: DataState, receivedAt: Date) {
+function observationData(
+  cycleId: string,
+  pair: NormalizedPair,
+  freshness: DataState,
+  receivedAt: Date,
+  meta?: {
+    dataOrigin?: string | null;
+    tradingEnvironment?: string | null;
+    eventTime?: Date | null;
+  },
+) {
   return {
     ingestJobId: cycleId,
     source: pair.source,
@@ -1539,17 +1837,20 @@ function observationData(cycleId: string, pair: NormalizedPair, freshness: DataS
     liquidityUsd: pair.liquidityUsd,
     volume24hUsd: pair.volume24hUsd,
     volume5mUsd: pair.volume5mUsd,
-          priceChangeM5: pair.priceChangeM5Pct,
-          priceChangeH1: pair.priceChangeH1Pct,
-          priceChangeH24: pair.priceChangeH24Pct,
-          txnsM5Buys: pair.txnsM5Buys,
-          txnsM5Sells: pair.txnsM5Sells,
-          pairCreatedAt: pair.pairCreatedAt ? new Date(pair.pairCreatedAt) : null,
-          fdvUsd: pair.fdvUsd ?? null,
-          marketCapUsd: pair.marketCapUsd ?? null,
-          freshness,
-          receivedAt,
-          raw: toJson(pair.raw ?? {}),
+    priceChangeM5: pair.priceChangeM5Pct,
+    priceChangeH1: pair.priceChangeH1Pct,
+    priceChangeH24: pair.priceChangeH24Pct,
+    txnsM5Buys: pair.txnsM5Buys,
+    txnsM5Sells: pair.txnsM5Sells,
+    pairCreatedAt: pair.pairCreatedAt ? new Date(pair.pairCreatedAt) : null,
+    fdvUsd: pair.fdvUsd ?? null,
+    marketCapUsd: pair.marketCapUsd ?? null,
+    freshness,
+    dataOrigin: meta?.dataOrigin ?? null,
+    tradingEnvironment: meta?.tradingEnvironment ?? null,
+    eventTime: meta?.eventTime ?? null,
+    receivedAt,
+    raw: toJson(pair.raw ?? {}),
   };
 }
 
@@ -1579,7 +1880,9 @@ function toCyclePair(
     fdvUsd?: { toString(): string } | null;
     marketCapUsd?: { toString(): string } | null;
     freshness?: string;
+    dataOrigin?: string | null;
     receivedAt: Date;
+    raw?: unknown;
   },
   now: Date,
   config: StrategyConfig,
@@ -1607,12 +1910,24 @@ function toCyclePair(
           : source === "etf_stub" || source === "index_stub"
             ? "equity"
             : "solana";
-  const stubDemo =
-    source === "fx_stub" ||
-    source === "etf_stub" ||
-    source === "index_stub" ||
-    source === "commodity_stub" ||
-    row.freshness === "DEMO";
+  const provenance = inferObservationProvenance({
+    source: row.source,
+    freshness: row.freshness,
+    dataOrigin: row.dataOrigin,
+    raw: row.raw,
+  });
+  const classified =
+    row.freshness === "DEMO" || row.freshness === "DELAYED" || row.freshness === "REPLAY"
+      ? (row.freshness as DataState)
+      : classifyFreshness({
+          mode,
+          receivedAt: row.receivedAt,
+          now,
+          liveMaxAgeMs: config.liveMaxAgeMs,
+          delayedMaxAgeMs: config.delayedMaxAgeMs,
+        });
+  // R09: DELAYED_FEED / frankfurter stay DELAYED — never force DEMO solely because source=fx_stub.
+  const freshness = freshnessFromProvenance(provenance, classified);
   return {
     source,
     chainId,
@@ -1637,15 +1952,7 @@ function toCyclePair(
     fdvUsd: row.fdvUsd?.toString() ?? null,
     marketCapUsd: row.marketCapUsd?.toString() ?? null,
     observationId: row.id,
-    freshness: stubDemo
-      ? "DEMO"
-      : classifyFreshness({
-          mode,
-          receivedAt: row.receivedAt,
-          now,
-          liveMaxAgeMs: config.liveMaxAgeMs,
-          delayedMaxAgeMs: config.delayedMaxAgeMs,
-        }),
+    freshness,
     receivedAt: row.receivedAt.toISOString(),
   };
 }
