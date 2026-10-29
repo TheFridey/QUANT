@@ -35,15 +35,15 @@ See also `docs/launch/IMPLEMENTATION_STATUS.md` for Gate 1 programme status.
 | D26 | P1 | IMPLEMENTED | compose Postgres/Redis bind `127.0.0.1`; RUNBOOKS production bind + ADMIN_PASSWORD rotation limitation | compose + `docs/launch/RUNBOOKS.md` | — (restore drill still OPEN) |
 | D27 | P1 | IMPLEMENTED | CI `pnpm build` + `build-packages` job; soak comments helper≠full engine | `.github/workflows/ci.yml` / `scripts/soak-capacity.mjs` | — (full-engine/browser soak still OPEN) |
 | D28 | P2 | IMPLEMENTED (partial) | `packages/evolution/src/lineage.ts` distinct hashes + approval binding + partitions (spend budgets still prior autonomy path) | `pnpm exec vitest run packages/evolution/src/lineage.test.ts` | VERIFIED_UNIT (lineage helpers; full lab UX open) |
-| D29 | P2 | OPEN | Snapshot/query cost | api | — | profile before optimising; not claimed fixed |
+| D29 | P2 | IMPLEMENTED (partial) | `snapshot-cost.ts` bounds + phase timing in `TerminalService.snapshot`; account-scoped order counts; indexes `Order(accountId,createdAt)` | `pnpm exec vitest run packages/analytics/src/snapshot-cost.test.ts` | VERIFIED_UNIT (timing helpers; no production SLO claim) |
 | D30 | P2 | IMPLEMENTED | Global `:focus-visible`; history Open buttons; positions `aria-live` mutation status; non-colour status words on readiness/protection (Radix kept) | web globals + history/positions | — |
 
 ### Status counts (from rows)
 
 | Status | Count |
 | --- | --- |
-| IMPLEMENTED | 29 (D01–D28, D30; D28 partial lineage) |
-| OPEN | 1 (D29) |
+| IMPLEMENTED | 30 (D01–D30; D28/D29 partial) |
+| OPEN | 0 |
 | DESIGN | 0 |
 | **Total** | **30** |
 
@@ -52,5 +52,5 @@ See also `docs/launch/IMPLEMENTATION_STATUS.md` for Gate 1 programme status.
 - Gate A code paths updated on this branch; full worker/DB verification still pending for D01/D02/D07.
 - Gate B (local): D08 multi-route mandatory refresh, D09 ExecutionGateway SANDBOX stub (no local PAPER masquerade; full demo lifecycle follow-on), D10 practice URL/readiness, D11 instance ownership, D12 HOLD≠bypass exits, D13 promotion evidence, D15 MarketSelection admission.
 - Gate C (operator UX): D16 ops vs strategy immutability, D17 draft preservation, D18 socket≠market-live refresh hygiene, D19 ticket intent/preview/async receipt, D20 position protection/close actions.
-- Gate D (partial): D14 analytics window labels; D22 history pagination hooks; D23 readiness checklist; D24 nav hierarchy; D25 single-operator auth/socket hardening; D26 loopback compose + rotation note; D27 CI production build; D28 lineage helpers (lab UX open); D30 focus-visible/live-region. Remainders: D29 snapshot cost, multi-user rooms, tested restore, full-engine/browser soak, CSV export / full onboarding wizard.
+- Gate D (partial): D14 analytics window labels; D22 history pagination hooks; D23 readiness checklist; D24 nav hierarchy; D25 single-operator auth/socket hardening; D26 loopback compose + rotation note; D27 CI production build; D28 lineage helpers (lab UX open); D29 snapshot bounds/timing (no SLO claim); D30 focus-visible/live-region. Remainders: multi-user rooms, full-engine/browser soak, CSV export / full onboarding wizard.
 - Live money remains disabled.
