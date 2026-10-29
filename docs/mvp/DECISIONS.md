@@ -88,3 +88,28 @@
 
 **Decision:** OCO TRIGGERED claims are transactional. Synthetic exit failure creates durable `ProtectionIntent` UNRESOLVED + alert; never permanently suppress because helper status was TRIGGERED. Long and short geometry supported. Alert ACK does not clear safety suspension — only clean reconcile does.
 **Date:** 2026-10-28
+
+## D017 — Amendment failure keeps last confirmed protection
+
+**Decision:** Protection legs store `confirmedTriggerPriceUsd` / `desiredTriggerPriceUsd` / `ackState`. Failed venue or synthetic amendments restore confirmed triggers and leave durable UNRESOLVED intents. Worker crash mid-TRIGGERED/SUBMITTED recovers via `recoverProtectionAfterRestart` before the next admission cycle.
+**Date:** 2026-10-29
+
+## D018 — Shared exit rules + deterministic clock
+
+**Decision:** Backtest and runtime evaluate stop/take-profit/trailing/time via `evaluateExitRules` and share `clock.ts` for deterministic time. Parity tests cover fees/gaps/pending eligibility. Worker still arms LONG by default for spot paper buys.
+**Date:** 2026-10-29
+
+## D019 — Commodity paper proxies; no invented futures economics
+
+**Decision:** `productSemanticsFor` exposes currency/multiplier/costs for seeded commodity paper proxies (multiplier=1). Unknown or incomplete futures-style products return `executionSupported=false` (`PRODUCT_SEMANTICS_UNSUPPORTED`) rather than inventing CL contract sizes.
+**Date:** 2026-10-29
+
+## D020 — REPLAY metrics isolation
+
+**Decision:** Funnel events and equity snapshots carry `accountId` from `metricsAccountIdFor(tradingEnvironment)`. Terminal snapshot filters metrics by that account. REPLAY_STORE observations cannot enter non-REPLAY accounts.
+**Date:** 2026-10-29
+
+## D021 — Venue-native protection is desired until ACK
+
+**Decision:** Alpaca bracket and OANDA STOP_LOSS/TAKE_PROFIT helpers track desired vs ack. Missing credentials or missing venue order id → REJECTED; never invent ACK success. Credentialed ACK remains BLOCKED_EXTERNAL_TEST.
+**Date:** 2026-10-29

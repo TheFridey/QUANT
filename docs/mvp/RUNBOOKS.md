@@ -69,10 +69,19 @@ See `docs/mvp/PROVIDER_CAPABILITIES.md`.
 # Adversarial in-memory + PG race (≥2 workers):
 pnpm exec vitest run packages/risk-engine/src/reservations.test.ts packages/risk-engine/src/pg-reservations.test.ts
 
-# Long/short OCO + failed exit lifecycle:
-pnpm exec vitest run packages/trading-engine/src/protection.test.ts packages/trading-engine/src/protection-lifecycle.test.ts
+# Long/short OCO + failed exit + crash/restart + amendment keep-confirmed:
+pnpm exec vitest run packages/trading-engine/src/protection*.test.ts
+
+# Backtest/runtime exit parity + REPLAY account isolation:
+pnpm exec vitest run packages/backtest/src/parity.test.ts packages/shared/src/environments.test.ts
 ```
 
-## Capacity note
+## Capacity / soak
 
-In-process `ReservationLedger` admitting 50 slots is **not** a production queue/worker/DB capacity claim. Production-shaped soak requires BullMQ workers + Postgres under load (see EVIDENCE.md).
+```bash
+pnpm build:packages
+node scripts/soak-capacity.mjs
+# Expect: admitted=50, ocoExactlyOnePerGroup=true, label=fixture_shaped_soak without live feeds
+```
+
+In-process `ReservationLedger` admitting 50 slots is **not** a production queue/worker/DB capacity claim. The soak script exercises real Postgres reservation + protection races; without live feeds it must be labeled fixture-shaped (see EVIDENCE.md).

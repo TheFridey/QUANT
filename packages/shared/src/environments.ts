@@ -49,6 +49,37 @@ export function isFixtureEnvironment(env: TradingEnvironment): boolean {
   return env === "FIXTURE";
 }
 
+export function isReplayEnvironment(env: TradingEnvironment): boolean {
+  return env === "REPLAY";
+}
+
+/**
+ * Resolve which paper account owns metrics / funnel / equity snapshots.
+ * REPLAY and FIXTURE never share the MARKET_DATA_PAPER primary ledger.
+ */
+export function metricsAccountIdFor(
+  env: TradingEnvironment | string | null | undefined,
+  base = "primary",
+): string {
+  const resolved = (TRADING_ENVIRONMENTS as readonly string[]).includes(env ?? "")
+    ? (env as TradingEnvironment)
+    : DEFAULT_TRADING_ENVIRONMENT;
+  return accountIdForEnvironment(resolved, base);
+}
+
+/** True when a funnel/equity/report row's accountId may be included for this env. */
+export function metricsAccountMatches(
+  rowAccountId: string | null | undefined,
+  env: TradingEnvironment | string | null | undefined,
+): boolean {
+  const expected = metricsAccountIdFor(env);
+  if (!rowAccountId || rowAccountId === "primary") {
+    // Legacy rows defaulted to primary — only visible to MARKET_DATA_PAPER.
+    return expected === "primary";
+  }
+  return rowAccountId === expected;
+}
+
 export function assertEnvironmentIsolation(
   observationOrigin: DataOrigin,
   accountEnvironment: TradingEnvironment,

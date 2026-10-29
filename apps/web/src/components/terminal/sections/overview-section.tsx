@@ -20,6 +20,9 @@ export function OverviewSection() {
 
   const fixtureMode = snapshot.execution?.fixtureMode === true
     || snapshot.execution?.tradingEnvironment === "FIXTURE";
+  const replayMode = snapshot.execution?.replayMode === true
+    || snapshot.execution?.tradingEnvironment === "REPLAY";
+  const unresolved = snapshot.execution?.unresolvedProtection ?? 0;
 
   return (
     <div className="space-y-3">
@@ -31,6 +34,28 @@ export function OverviewSection() {
           <strong className="font-semibold tracking-wide">FIXTURE MODE</strong>
           <span className="ml-2 text-amber-100/80">
             Synthetic sequences only — isolated from market-data paper accounts, metrics, and reports.
+          </span>
+        </div>
+      ) : null}
+      {replayMode ? (
+        <div
+          role="status"
+          className="rounded border border-sky-800/50 bg-sky-950/30 px-4 py-3 text-sm text-sky-100"
+        >
+          <strong className="font-semibold tracking-wide">REPLAY MODE</strong>
+          <span className="ml-2 text-sky-100/80">
+            Metrics/funnel scoped to {snapshot.execution?.metricsAccountId ?? "primary:replay"} — not mixed into paper.
+          </span>
+        </div>
+      ) : null}
+      {unresolved > 0 ? (
+        <div
+          role="status"
+          className="rounded border border-rose-800/50 bg-rose-950/30 px-4 py-3 text-sm text-rose-100"
+        >
+          <strong className="font-semibold tracking-wide">UNRESOLVED PROTECTION</strong>
+          <span className="ml-2 text-rose-100/80">
+            {unresolved} durable exit intent{unresolved === 1 ? "" : "s"} awaiting retry — ACK of alerts does not clear these.
           </span>
         </div>
       ) : null}
@@ -110,6 +135,17 @@ export function OverviewSection() {
               <div>
                 <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Open alerts</dt>
                 <dd className="mono">{snapshot.alerts?.length ?? 0}</dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Provider readiness</dt>
+                <dd className="mono text-[10px]">
+                  A:{snapshot.execution?.providerReadiness?.alpaca_paper ?? "—"} · O:
+                  {snapshot.execution?.providerReadiness?.oanda_practice ?? "—"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Environment</dt>
+                <dd className="mono">{snapshot.execution?.tradingEnvironment ?? "MARKET_DATA_PAPER"}</dd>
               </div>
               <div className="col-span-2">
                 <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Active strategy</dt>

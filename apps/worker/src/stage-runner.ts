@@ -32,6 +32,7 @@ import {
   assertPaperOrSandboxOnly,
   classifyFreshness,
   d,
+  metricsAccountIdFor,
   newId,
   operatorOrderSchema,
   parseStrategyConfig,
@@ -51,6 +52,7 @@ import {
   lockAccount,
   persistOcoGroup,
   reconcileOrders,
+  recoverProtectionAfterRestart,
   retryUnresolvedProtectionIntents,
   settlePendingOrder,
 } from "@odin/trading-engine";
@@ -164,6 +166,8 @@ export class StageRunner {
   async executor(cycleId: string): Promise<void> {
     if (!(await this.ready(cycleId, "atlas"))) return;
     const now = this.now();
+    // Crash/restart: restore confirmed protection + durable unresolved exit intents before admission.
+    await recoverProtectionAfterRestart(this.prisma, { accountId: "primary" });
     await this.prisma.$transaction(async (tx) => {
       await lockAccount(tx, "primary");
       const loaded = await this.loadPlan(cycleId, now, tx);
@@ -736,8 +740,10 @@ export class StageRunner {
       at: now.toISOString(),
     });
     if (events.length === 0) return;
+    const accountId = metricsAccountIdFor(loaded.config.tradingEnvironment ?? "MARKET_DATA_PAPER");
     await db.opportunityFunnelEvent.createMany({
       data: events.map((event) => ({
+        accountId,
         cycleId: event.cycleId,
         pairAddress: event.pairAddress,
         instrumentId: event.instrumentId ?? null,
@@ -1049,6 +1055,7 @@ export class StageRunner {
         : usd(DecimalMax(d(loaded.highWaterMarkUsd), d(equityUsd)));
     await this.prisma.equitySnapshot.create({
       data: {
+        accountId: metricsAccountIdFor(loaded.config.tradingEnvironment ?? "MARKET_DATA_PAPER"),
         cycleId,
         cashUsd: account.cashUsd.toString(),
         equityUsd,
@@ -1060,6 +1067,7 @@ export class StageRunner {
         valuation: loaded.valuation.valuation,
         feesUsd: report.feesUsd,
         metrics: toJson({
+          tradingEnvironment: loaded.config.tradingEnvironment ?? "MARKET_DATA_PAPER",
           winRate: report.winRate,
           wins: report.wins,
           losses: report.losses,

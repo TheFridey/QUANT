@@ -5,6 +5,8 @@ export * from "./ledger.js";
 export * from "./store.js";
 export * from "./protection.js";
 export * from "./protection-lifecycle.js";
+export * from "./exit-rules.js";
+export * from "./venue-protection.js";
 export * from "./cost-model.js";
 export * from "./reconcile.js";
 

@@ -126,6 +126,8 @@ model SecurityAssessment {
 
 model EquitySnapshot {
   id               String   @id @default(cuid())
+  /// Account / environment isolation for REPLAY vs paper metrics.
+  accountId        String   @default("primary")
   cycleId          String?
   cashUsd          Decimal  @db.Decimal(24, 8)
   equityUsd        Decimal? @db.Decimal(24, 8)
@@ -140,6 +142,7 @@ model EquitySnapshot {
 
   @@index([createdAt])
   @@index([cycleId])
+  @@index([accountId, createdAt])
 }
 
 model ResearchProposal {
@@ -589,27 +592,34 @@ model RiskReservationEvent {
 }
 
 model ProtectionOrder {
-  id                  String   @id @default(cuid())
-  accountId           String
-  positionKey         String
-  ocoGroupId          String
-  kind                String
-  origin              String
-  direction           String   @default("LONG")
-  protectedQty        Decimal  @db.Decimal(24, 8) @default(0)
-  remainingQty        Decimal  @db.Decimal(24, 8) @default(0)
-  triggerPriceUsd     Decimal? @db.Decimal(24, 8)
-  trailPct            Decimal? @db.Decimal(16, 6)
-  extremePriceUsd     Decimal? @db.Decimal(24, 8)
-  status              String
-  claimWorkerId       String?
-  strategyInstanceId  String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  id                       String   @id @default(cuid())
+  accountId                String
+  positionKey              String
+  ocoGroupId               String
+  kind                     String
+  origin                   String
+  direction                String   @default("LONG")
+  protectedQty             Decimal  @db.Decimal(24, 8) @default(0)
+  remainingQty             Decimal  @db.Decimal(24, 8) @default(0)
+  triggerPriceUsd          Decimal? @db.Decimal(24, 8)
+  /// Last confirmed (acked) trigger — retained when amendment fails.
+  confirmedTriggerPriceUsd Decimal? @db.Decimal(24, 8)
+  /// Desired trigger during amend/submit (may diverge until ACK).
+  desiredTriggerPriceUsd   Decimal? @db.Decimal(24, 8)
+  trailPct                 Decimal? @db.Decimal(16, 6)
+  extremePriceUsd          Decimal? @db.Decimal(24, 8)
+  status                   String
+  /// DESIRED_ONLY | SUBMITTED | ACKED | REJECTED | CANCELLED | UNKNOWN
+  ackState                 String   @default("ACKED")
+  claimWorkerId            String?
+  strategyInstanceId       String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
 
   @@index([ocoGroupId])
   @@index([positionKey, status])
   @@index([status, updatedAt])
+  @@index([accountId, status])
 }
 
 model ProtectionIntent {
@@ -651,6 +661,8 @@ model StrategyInstance {
 
 model OpportunityFunnelEvent {
   id           String   @id @default(cuid())
+  /// Account / environment isolation — REPLAY funnel must not mix into paper.
+  accountId    String   @default("primary")
   cycleId      String
   pairAddress  String
   instrumentId String?
@@ -661,6 +673,7 @@ model OpportunityFunnelEvent {
 
   @@index([cycleId])
   @@index([stage, createdAt])
+  @@index([accountId, createdAt])
 }
 
 model DurableAlert {

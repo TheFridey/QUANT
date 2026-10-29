@@ -257,7 +257,7 @@ export const SEED_INSTRUMENTS: Instrument[] = [
     providerSymbol: "XAUUSD",
     executionCapabilities: ["PAPER_SPOT"],
     enabledByDefault: true,
-    notes: "DEMO paper commodity proxy — not a live metals venue.",
+    notes: "Paper gold/USD spot proxy (multiplier=1). Not exchange-cleared XAU futures.",
   },
   {
     id: "commodity:WTI",
@@ -274,7 +274,7 @@ export const SEED_INSTRUMENTS: Instrument[] = [
     providerSymbol: "CL",
     executionCapabilities: ["PAPER_SPOT"],
     enabledByDefault: true,
-    notes: "DEMO paper commodity proxy — not a live futures venue.",
+    notes: "Paper WTI spot proxy units (multiplier=1). CL futures contract size is NOT modelled.",
   },
 ];
 

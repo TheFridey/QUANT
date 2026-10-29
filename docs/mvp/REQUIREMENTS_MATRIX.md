@@ -6,9 +6,9 @@ Mechanical roll-up from ACCEPTANCE_SCENARIOS (implementation ≠ verification):
 
 | Status | Count | Notes |
 | --- | --- | --- |
-| VERIFIED_OFFLINE | 19 | Gate A core + PG admission + several helpers with runtime call sites |
-| PARTIAL | 32 | Implemented depth incomplete or UX/ops unfinished |
-| IMPLEMENTED_UNVERIFIED | 6 | Protection/instances/costs/gateway pending richer harness |
+| VERIFIED_OFFLINE | 25 | Gate A core + PG admission + protection crash/OCO + exit parity + REPLAY metrics + costs |
+| PARTIAL | 29 | Implemented depth incomplete or UX/ops unfinished |
+| IMPLEMENTED_UNVERIFIED | 3 | Gateway + concurrent instances/allocation pending richer harness |
 | BLOCKED_EXTERNAL_TEST | 1 | C40 named external demo (credentialed) |
 | VERIFIED_EXTERNAL | 0 | none |
 | NOT_STARTED | 0 | — |
@@ -22,9 +22,9 @@ Mechanical roll-up from ACCEPTANCE_SCENARIOS (implementation ≠ verification):
 | Fixture isolation | VERIFIED_OFFLINE | `paper-multimarket.test`, default `multiMarketPaperIngest=false`, FIXTURE banner |
 | Named providers | IMPLEMENTED_UNVERIFIED + BLOCKED_EXTERNAL_TEST | Alpaca/OANDA adapters + offline contracts; credentialed script exit 2 without keys |
 | PG reservations in admission | VERIFIED_OFFLINE | `reserveInTx` in worker executor + `pg-reservations.test` race |
-| Long/short protection | IMPLEMENTED_UNVERIFIED | helpers + worker arm/evaluate/retry; richer multi-worker crash harness TBD |
-| Concurrent strategies | IMPLEMENTED_UNVERIFIED | durable `StrategyInstance` seeded + evaluate/allocate in `loadPlan` |
-| Capacity 50 slots | PARTIAL | in-process only — explicitly not prod SLO |
+| Long/short protection | VERIFIED_OFFLINE | worker arm/evaluate/retry + crash restart + amendment keep-confirmed + 2-worker OCO race |
+| Concurrent strategies | IMPLEMENTED_UNVERIFIED | durable StrategyInstance seeded + evaluate/allocate in `loadPlan` |
+| Capacity 50 slots | PARTIAL | PG soak script production-shaped path; fixture-shaped without live feeds — not a live SLO |
 | External demo C40 | BLOCKED_EXTERNAL_TEST | adapter READY only with named practice credentials |
 
 ## External blockers

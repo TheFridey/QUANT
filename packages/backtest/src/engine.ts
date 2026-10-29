@@ -1,5 +1,10 @@
 import { d, isTradableQuote, usd, type StrategyConfig, Decimal } from "@odin/shared";
-import { quoteFill, qtyForNotional, maxEntryNotional } from "@odin/trading-engine";
+import {
+  evaluateExitRules,
+  quoteFill,
+  qtyForNotional,
+  maxEntryNotional,
+} from "@odin/trading-engine";
 import { reportDataQuality } from "./quality.js";
 import type {
   BacktestEngineParams,
@@ -276,29 +281,29 @@ function evaluateExit(
   config: StrategyConfig,
 ): { intent: string; reasonCodes: string[] } | null {
   if (!position || !obs.priceUsd || d(obs.priceUsd).lte(0)) return null;
-  const pnlPct = d(obs.priceUsd).minus(d(position.avgCostUsd)).div(d(position.avgCostUsd)).mul(100);
-  if (pnlPct.lte(d(config.stopLossPct).neg())) {
-    return { intent: "EXIT", reasonCodes: ["STOP_LOSS"] };
-  }
-  if (pnlPct.gte(config.takeProfitPct)) {
-    return { intent: "EXIT", reasonCodes: ["TAKE_PROFIT"] };
-  }
-  if (config.trailingStopPct !== null && d(position.peakMarkUsd).gt(0)) {
-    const drop = d(position.peakMarkUsd).minus(d(obs.priceUsd)).div(d(position.peakMarkUsd)).mul(100);
-    if (drop.gte(config.trailingStopPct)) {
-      return { intent: "EXIT", reasonCodes: ["TRAILING_STOP"] };
-    }
-  }
-  if (config.maxHoldingMs !== null) {
-    const heldMs = Date.parse(obs.receivedAt) - Date.parse(position.openedAt);
-    if (heldMs >= config.maxHoldingMs) {
-      return { intent: "EXIT", reasonCodes: ["MAX_HOLDING"] };
-    }
-  }
-  if (obs.priceChangeM5Pct !== null && d(obs.priceChangeM5Pct).lte(config.exitM5ChangePct)) {
-    return { intent: "EXIT", reasonCodes: ["EXIT_MOMENTUM"] };
-  }
-  return null;
+  const hit = evaluateExitRules({
+    markUsd: obs.priceUsd,
+    markAt: obs.receivedAt,
+    position: {
+      direction: "LONG",
+      avgCostUsd: position.avgCostUsd,
+      openedAt: position.openedAt,
+      extremeMarkUsd: position.peakMarkUsd,
+      qty: position.qty,
+    },
+    config: {
+      stopLossPct: config.stopLossPct,
+      takeProfitPct: config.takeProfitPct,
+      trailingStopPct: config.trailingStopPct,
+      maxHoldingMs: config.maxHoldingMs,
+      exitM5ChangePct: config.exitM5ChangePct,
+      priceChangeM5Pct: obs.priceChangeM5Pct,
+    },
+  });
+  if (!hit) return null;
+  // Keep peak in sync when trailing updates extreme.
+  if (hit.extremeMarkUsd) position.peakMarkUsd = hit.extremeMarkUsd;
+  return { intent: hit.intent, reasonCodes: hit.reasonCodes };
 }
 
 function tryFill(

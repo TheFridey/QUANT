@@ -13,9 +13,9 @@ Helper unit tests alone never promote a row to `VERIFIED_*` for a runtime path.
 | --- | --- |
 | NOT_STARTED | 0 |
 | IMPLEMENTING | 0 |
-| PARTIAL | 32 |
-| IMPLEMENTED_UNVERIFIED | 6 |
-| VERIFIED_OFFLINE | 19 |
+| PARTIAL | 29 |
+| IMPLEMENTED_UNVERIFIED | 3 |
+| VERIFIED_OFFLINE | 25 |
 | VERIFIED_EXTERNAL | 0 |
 | BLOCKED_EXTERNAL_TEST | 1 |
 
@@ -46,17 +46,17 @@ Credentialed Alpaca/OANDA/Birdeye are also operationally BLOCKED_EXTERNAL_TEST o
 | B11 | Broaden crypto discovery | dexscreener universe | observe | dexscreener.test | live DexScreener | PARTIAL | still boost+WSOL primary | — |
 | B12 | FX data/instruments | instruments + Frankfurter/OANDA | observe/providers | fx-feed.test | named provider | PARTIAL | holidays/DST; practice exec blocked | WS3 |
 | B13 | Executable index ETF proxies | etf:SPY/QQQ + Alpaca | paper path | instruments + fx-feed | delayed feed | PARTIAL | fixture levels ≠ market-driven without Alpaca | WS4 |
-| B14 | Equity/ETF/commodity semantics | commodity seeds | paper path | multi-market tests | — | PARTIAL | multipliers/currency incomplete | WS4 |
+| B14 | Equity/ETF/commodity semantics | product-semantics.ts + commodity seeds | cost-model + paper path | product-semantics + cost-model tests | — | PARTIAL | paper proxies OK; CL futures multiplier intentionally unsupported | WS4 |
 | B15 | Market-data gateway | market-provider + named adapters | observe | provider tests | — | IMPLEMENTED_UNVERIFIED | credentialed smoke blocked | WS3 |
 | B16 | Durable order lifecycle | Order model + store | executor | pending tests | — | PARTIAL | venue ack path missing | C40 |
 | B17 | Paper latency/expiry | eligibleAt/expiresAt | store | store.pending.test | n/a | VERIFIED_OFFLINE | — | — |
-| B18 | Realistic market-specific costs | cost-model.ts in fill | fill path | cost-model.test | n/a | IMPLEMENTED_UNVERIFIED | DEX impact still for Solana | WS4 |
-| B19 | Atomic risk reservations | PostgresReservationAuthority + reserveInTx | **worker executor admission** | reservations + pg race | n/a | VERIFIED_OFFLINE | richer multi-worker crash/restart harness TBD | WS5 |
+| B18 | Realistic market-specific costs | cost-model.ts (+ product semantics) | **fill path** | cost-model + parity tests | n/a | VERIFIED_OFFLINE | DEX impact still for Solana | WS4 |
+| B19 | Atomic risk reservations | PostgresReservationAuthority + reserveInTx | **worker executor admission** | reservations + pg race | n/a | VERIFIED_OFFLINE | — | WS5 |
 | B20 | Exposure / daily loss / session equity | session-equity.ts | stage-runner | session-equity.test | n/a | PARTIAL | midnight+HWM present; full MTM TBD | — |
-| B21 | Protective stops | protection + lifecycle | **worker arm/evaluate/retry** | protection*.test | n/a | IMPLEMENTED_UNVERIFIED | multi-worker crash depth TBD | WS6 |
-| B22 | Native vs synthetic protection | ProtectionOrigin type | schema + helper | protection.test | n/a | PARTIAL | venue-native not wired | C40 |
-| B23 | TP/OCO | claimOcoTriggerInTx + armLongShortOco | worker evaluateProtections | protection + lifecycle | n/a | IMPLEMENTED_UNVERIFIED | crash/restart races depth | WS6 |
-| B24 | Trailing / breakeven / time | helpers + pulse params | pulse/backtest | unit | n/a | PARTIAL | peak/trough persist incomplete | WS6 |
+| B21 | Protective stops | protection + lifecycle + recover | **worker arm/evaluate/retry/recover** | protection-crash.test | n/a | VERIFIED_OFFLINE | venue-native ACK still external-blocked | WS6 |
+| B22 | Native vs synthetic protection | venue-protection.ts + ackState | schema + Alpaca/OANDA helpers | venue-protection.test | n/a | PARTIAL | desired→ACK offline; credentialed ACK blocked | C40 |
+| B23 | TP/OCO | claimOcoTriggerInTx + armLongShortOco | worker evaluateProtections | protection-crash 2-worker race | n/a | VERIFIED_OFFLINE | — | WS6 |
+| B24 | Trailing / breakeven / time | exit-rules.ts shared | pulse/backtest + parity | parity + exit-rules tests | n/a | PARTIAL | peak/trough durable persist incomplete | WS6 |
 | B25 | Operating controls pause/flatten | pauseNewEntries + flatten | engine control | gate-a + alerts | n/a | PARTIAL | exits active when paused — covered in evaluateRisk | WS6/WS9 |
 | B26 | Risk hierarchy / breakers | evaluate + alerts | risk path | evaluate.test | n/a | PARTIAL | ACK≠resolve suspension covered; depth TBD | WS9 |
 | B27 | Correlation budgeting | correlation.ts | evaluate | correlation.test | n/a | VERIFIED_OFFLINE | not yet on all admission routes | B19 |
@@ -71,8 +71,8 @@ Credentialed Alpaca/OANDA/Birdeye are also operationally BLOCKED_EXTERNAL_TEST o
 | C31 | Strategy library modules | pulse/fx/etf/commodity/mean-revert | activeStrategy | library.test | n/a | VERIFIED_OFFLINE | consolidation incomplete | WS8 |
 | C32 | Concurrent strategy instances | StrategyInstance + ensureDefault + allocate | **worker loadPlan** | strategy-instances.test | n/a | IMPLEMENTED_UNVERIFIED | richer multi-worker instance soak TBD | WS7 |
 | C33 | Opportunity allocation | allocateOpportunities + funnel | worker loadPlan gating | strategy-instances + funnel | n/a | IMPLEMENTED_UNVERIFIED | fairness depth TBD | WS7 |
-| C34 | Backtest/runtime unify | trailing/time partial | pulse vs engine | tests | n/a | PARTIAL | shared clock/rules TBD | WS8 |
-| C35 | Replay risk/pending | DATA_MODE=replay | observe copy | environments helpers | n/a | PARTIAL | isolated REPLAY account not on all metrics | WS2/WS8 |
+| C34 | Backtest/runtime unify | exit-rules.ts + clock.ts | backtest engine + runtime | parity.test | n/a | VERIFIED_OFFLINE | short runtime arms still LONG-default in worker | WS8 |
+| C35 | Replay risk/pending | metricsAccountIdFor + REPLAY_STORE guard | worker funnel/equity + terminal | environments.test | n/a | VERIFIED_OFFLINE | observe copy still shared store | WS2/WS8 |
 | C36 | Data integrity | evolution integrity | research | integrity tests | n/a | PARTIAL | — | — |
 | C37 | Net performance attribution | analytics | reports | performance.test | n/a | PARTIAL | instance-level attribution missing | WS7 |
 | C38 | Promoted strategy drives decisions | activeStrategy → plan | loadPlan | active-strategy.test | n/a | VERIFIED_OFFLINE | generated code isolation incomplete | WS8 |
@@ -87,19 +87,19 @@ Credentialed Alpaca/OANDA/Birdeye are also operationally BLOCKED_EXTERNAL_TEST o
 | ID | Requirement | Code | Runtime | Offline | External | Status | Residual | Dep |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | D44 | Opportunity funnel | OpportunityFunnelEvent | worker+terminal | funnel.test | n/a | VERIFIED_OFFLINE | — | — |
-| D45 | Command centre overview | terminal overview + FIXTURE banner | web | manual | n/a | PARTIAL | readiness fields incomplete | WS10 |
+| D45 | Command centre overview | overview + FIXTURE/REPLAY banners + unresolved + readiness | web | manual | n/a | PARTIAL | not a full redesign | WS10 |
 | D46 | Multi-market controls | partial terminal | web/api | — | n/a | PARTIAL | — | WS10 |
-| D47 | Positions panel depth | positions + protection read | terminal.service | — | n/a | PARTIAL | durable protection fields incomplete | WS6/WS10 |
-| D48 | Strategy/ops controls UI | engine control API | web | — | n/a | PARTIAL | — | WS10 |
-| D49 | Risk settings/diagnostics | risk-section env fields | terminal | — | n/a | PARTIAL | mode/origin must stay honest | WS10 |
+| D47 | Positions panel depth | confirmed vs helper + ackState | terminal.service + positions-section | — | n/a | PARTIAL | venue ACK still offline-only | WS6/WS10 |
+| D48 | Strategy/ops controls UI | engine control API + risk unresolved actions | web | — | n/a | PARTIAL | — | WS10 |
+| D49 | Risk settings/diagnostics | risk-section env + provider readiness | terminal | — | n/a | PARTIAL | mode/origin must stay honest | WS10 |
 | D50 | Durable alerts | DurableAlert | worker+API | alerts-ack.test | n/a | PARTIAL | ACK≠safety resolve covered | WS9 |
 | D51 | Scheduling | BullMQ processors | worker | integration | n/a | PARTIAL | multi-worker concurrency | — |
 | D52 | Observability | ObservabilityEvent | analytics | — | n/a | PARTIAL | — | — |
 | D53 | Infra migrations | `20261028240000_mvp_durable_authority_isolation` | db:deploy | applied odin+odin_test | n/a | VERIFIED_OFFLINE | — | WS5/WS6 |
-| D54 | Unit/contract tests | vitest suite | CI | pnpm test 195 pass / 1 skip | n/a | PARTIAL | map continues to deepen | verify |
-| D55 | Fault-injection | fault-injection.test | unit | tests | n/a | PARTIAL | durable crash/restart races TBD | WS5/WS6 |
+| D54 | Unit/contract tests | vitest suite | CI | pnpm test 223 pass / 1 skip | n/a | PARTIAL | map continues to deepen | verify |
+| D55 | Fault-injection | fault-injection + protection-crash | unit + PG | protection-crash.test | n/a | VERIFIED_OFFLINE | broader infra faults still TBD | WS5/WS6 |
 | D56 | Multi-market E2E | multi-market.e2e.test | in-process | e2e | n/a | PARTIAL | still largely fixture-shaped | WS2 |
-| D57 | Load/capacity | load-capacity.report | in-process ledger | report | n/a | PARTIAL | 50 slots ≠ prod-shaped | capacity |
+| D57 | Load/capacity | soak-capacity.mjs + load-capacity.report | PG reservation/OCO path | soak exit 0 fixture_shaped | n/a | PARTIAL | real PG path; not live-feed SLO | capacity |
 | D58 | Runbooks/handoff | RUNBOOKS/HANDOFF/EVIDENCE | docs | — | n/a | VERIFIED_OFFLINE | must stay synced to HEAD | delivery |
 
 ---
@@ -116,14 +116,14 @@ Track separately; each needs command + result in `EVIDENCE.md`.
 6. Reservation adversarial — pass
 7. Durable stop failure → retry/unresolved — pass (lifecycle + worker retry hook)
 8. Long + short protection lifecycle — pass
-9. Concurrent OCO race (2 workers) — PARTIAL (claim path unit; multi-worker harness depth TBD)
+9. Concurrent OCO race (2 workers) — pass (`protection-crash.test` exactly-one claim)
 10. Partial close + rejected stop — pass (lifecycle tests)
-11. Failed amendment / trailing restart — PARTIAL
+11. Failed amendment / trailing restart — pass (amend keep-confirmed + recoverProtectionAfterRestart)
 12. Pause-new-entries keeps exits; flatten incomplete — pass (gate-a + evaluateRisk)
 13. Alert ACK ≠ resolve safety suspension — pass
 14. ≥3 concurrent strategy instances — pass (library + worker seed/evaluate/allocate)
 15. FX sessions/DST/minima — PARTIAL (sessions.test; DST incomplete)
-16. Replay/runtime parity — PARTIAL
+16. Replay/runtime parity — pass offline (exit-rules parity + REPLAY metrics account isolation)
 17. External manual position policy — documented (refuse fake LIVE)
 18. Normal paper never fills fixtures — pass (isolation tests)
 

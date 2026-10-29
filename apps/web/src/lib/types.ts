@@ -67,6 +67,10 @@ export type PositionRow = {
   protected?: boolean;
   protectionOrigin?: string | null;
   protectionKinds?: string[];
+  protectionAckState?: string | null;
+  protectionConfirmed?: boolean;
+  protectionHelper?: boolean;
+  protectionStatuses?: string[];
 };
 
 export type WatchlistRow = {
@@ -164,7 +168,18 @@ export type Snapshot = {
     multiMarketPaperIngest: boolean;
     tradingEnvironment?: "FIXTURE" | "REPLAY" | "MARKET_DATA_PAPER" | "EXTERNAL_DEMO" | string;
     fixtureMode?: boolean;
+    replayMode?: boolean;
+    metricsAccountId?: string;
     unresolvedProtection?: number;
+    unresolvedActions?: Array<{
+      id: string;
+      ocoGroupId: string;
+      legId: string;
+      reason: string;
+      attempts: number;
+      retryAfter: string | null;
+    }>;
+    providerReadiness?: Record<string, string>;
     entriesSuspended: boolean;
   };
   activeStrategy?: {

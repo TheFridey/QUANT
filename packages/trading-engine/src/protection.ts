@@ -10,10 +10,18 @@ export type ProtectionLeg = {
   origin: ProtectionOrigin;
   /** Trigger price (absolute). For trailing, updated from peak/trough. */
   triggerPriceUsd: string | null;
+  /**
+   * Last venue/engine-confirmed trigger. Amendment failures restore this —
+   * never clear confirmed protection because a later amend failed.
+   */
+  confirmedTriggerPriceUsd?: string | null;
+  /** Desired (possibly unacked) trigger during amend/submit. */
+  desiredTriggerPriceUsd?: string | null;
   /** For trailing: distance pct from peak (long) or trough (short). */
   trailPct: string | null;
   ocoGroupId: string;
   status: "ARMED" | "TRIGGERED" | "SUBMITTED" | "CONFIRMED" | "CANCELLED" | "FILLED" | "FAILED";
+  ackState?: "DESIRED_ONLY" | "SUBMITTED" | "ACKED" | "REJECTED" | "CANCELLED" | "UNKNOWN";
 };
 
 export type OcoGroup = {
@@ -145,8 +153,73 @@ export function advanceProtectionLeg(
 ): OcoGroup {
   return {
     ...group,
-    legs: group.legs.map((leg) => (leg.id === legId ? { ...leg, status } : leg)),
+    legs: group.legs.map((leg) => {
+      if (leg.id !== legId) return leg;
+      if (status === "CONFIRMED") {
+        return {
+          ...leg,
+          status,
+          ackState: "ACKED" as const,
+          confirmedTriggerPriceUsd: leg.triggerPriceUsd,
+          desiredTriggerPriceUsd: leg.triggerPriceUsd,
+        };
+      }
+      if (status === "SUBMITTED") {
+        return { ...leg, status, ackState: "SUBMITTED" as const };
+      }
+      return { ...leg, status };
+    }),
     remainingQty: status === "FILLED" ? "0.00000000" : group.remainingQty,
+  };
+}
+
+/**
+ * Amend armed/confirmed stop or take-profit trigger.
+ * On failure, restore last confirmedTriggerPriceUsd and keep prior ack —
+ * never leave the position without its last confirmed protection.
+ */
+export function amendProtectionTrigger(
+  group: OcoGroup,
+  legId: string,
+  nextTriggerPriceUsd: string,
+  outcome: { ok: true } | { ok: false; error: string },
+): { group: OcoGroup; keptConfirmed: boolean; error: string | null } {
+  const leg = group.legs.find((item) => item.id === legId);
+  if (!leg) return { group, keptConfirmed: false, error: "LEG_MISSING" };
+  if (outcome.ok) {
+    const nextLegs = group.legs.map((item) =>
+      item.id === legId
+        ? {
+            ...item,
+            triggerPriceUsd: nextTriggerPriceUsd,
+            desiredTriggerPriceUsd: nextTriggerPriceUsd,
+            confirmedTriggerPriceUsd: nextTriggerPriceUsd,
+            ackState: "ACKED" as const,
+            status: item.status === "FAILED" ? ("ARMED" as const) : item.status,
+          }
+        : item,
+    );
+    return { group: { ...group, legs: nextLegs }, keptConfirmed: false, error: null };
+  }
+  const confirmed = leg.confirmedTriggerPriceUsd ?? leg.triggerPriceUsd;
+  const nextLegs = group.legs.map((item) =>
+    item.id === legId
+      ? {
+          ...item,
+          triggerPriceUsd: confirmed,
+          desiredTriggerPriceUsd: nextTriggerPriceUsd,
+          confirmedTriggerPriceUsd: confirmed,
+          ackState:
+            confirmed != null
+              ? ("ACKED" as const)
+              : ("REJECTED" as const),
+        }
+      : item,
+  );
+  return {
+    group: { ...group, legs: nextLegs },
+    keptConfirmed: confirmed != null,
+    error: outcome.error,
   };
 }
 

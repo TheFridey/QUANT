@@ -72,6 +72,18 @@ export function RiskSection() {
             <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Unresolved protection</dt>
             <dd className="mono">{execution?.unresolvedProtection ?? 0}</dd>
           </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Metrics account</dt>
+            <dd className="mono">{execution?.metricsAccountId ?? "primary"}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Alpaca paper</dt>
+            <dd className="mono">{execution?.providerReadiness?.alpaca_paper ?? "—"}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">OANDA practice</dt>
+            <dd className="mono">{execution?.providerReadiness?.oanda_practice ?? "—"}</dd>
+          </div>
           {execution?.refuseReason ? (
             <div className="col-span-2">
               <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Refuse reason</dt>
@@ -86,6 +98,18 @@ export function RiskSection() {
                 : "default PULSE (no promotion)"}
             </dd>
           </div>
+          {(execution?.unresolvedActions?.length ?? 0) > 0 ? (
+            <div className="col-span-2">
+              <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Unresolved actions</dt>
+              <dd className="mt-1 space-y-1 text-[11px] text-loss">
+                {execution!.unresolvedActions!.slice(0, 5).map((action) => (
+                  <div key={action.id} className="mono">
+                    {action.reason} · attempts={action.attempts}
+                  </div>
+                ))}
+              </dd>
+            </div>
+          ) : null}
         </dl>
       </Panel>
       <Panel title="Opportunity funnel">

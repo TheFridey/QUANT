@@ -40,4 +40,16 @@ describe("market-specific cost models", () => {
     });
     expect(crypto.applyDexImpact).toBe(true);
   });
+
+  it("commodity proxies expose currency/multiplier without DEX impact", () => {
+    const xau = costModelForInstrument("commodity:XAUUSD", {
+      feeBps: "30",
+      spreadBpsEstimate: "5",
+      minLiquidityUsd: "1",
+    });
+    expect(xau.applyDexImpact).toBe(false);
+    expect(xau.currency).toBe("USD");
+    expect(xau.multiplier).toBe("1");
+    expect(xau.executionSupported).toBe(true);
+  });
 });

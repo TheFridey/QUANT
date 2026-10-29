@@ -187,6 +187,63 @@ export class OandaPracticeProvider implements MarketDataProvider {
     }
     return { instrumentId, side, allowed: true, reasonCodes: ["EXTERNAL_DEMO"] };
   }
+
+  /**
+   * Submit STOP_LOSS / TAKE_PROFIT against an open trade on practice.
+   * Returns desired≠acked failure when credentials missing — never invents ACK.
+   */
+  async submitProtectiveOrders(input: {
+    tradeId: string;
+    stopLossPrice?: string | null;
+    takeProfitPrice?: string | null;
+  }): Promise<
+    | { ok: true; orderIds: string[]; status: string }
+    | { ok: false; error: string; readiness: ProviderReadiness }
+  > {
+    const ready = this.readiness();
+    if (ready !== "READY") {
+      return { ok: false, error: `Cannot submit protective orders: readiness=${ready}`, readiness: ready };
+    }
+    if (!input.stopLossPrice && !input.takeProfitPrice) {
+      return { ok: false, error: "NO_PROTECTIVE_PRICES", readiness: ready };
+    }
+    const fetchImpl = this.options.fetchImpl ?? fetch;
+    const orderIds: string[] = [];
+    const specs: Array<{ type: string; price: string }> = [];
+    if (input.stopLossPrice) specs.push({ type: "STOP_LOSS", price: input.stopLossPrice });
+    if (input.takeProfitPrice) specs.push({ type: "TAKE_PROFIT", price: input.takeProfitPrice });
+    for (const spec of specs) {
+      const response = await fetchImpl(
+        `${this.credentials.apiUrl}/v3/accounts/${this.credentials.accountId}/orders`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${process.env.OANDA_API_TOKEN ?? ""}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            order: {
+              type: spec.type,
+              tradeID: input.tradeId,
+              price: spec.price,
+              timeInForce: "GTC",
+            },
+          }),
+        },
+      );
+      if (!response.ok) {
+        return { ok: false, error: `oanda_protect:http_${response.status}`, readiness: ready };
+      }
+      const body = (await response.json()) as {
+        orderCreateTransaction?: { id?: string };
+        orderFillTransaction?: { id?: string };
+      };
+      const id = body.orderCreateTransaction?.id ?? body.orderFillTransaction?.id;
+      if (!id) return { ok: false, error: "oanda_protect:missing_id", readiness: ready };
+      orderIds.push(id);
+    }
+    return { ok: true, orderIds, status: "accepted" };
+  }
 }
 
 export function inventoryOandaCredentials(env: NodeJS.ProcessEnv = process.env): OandaPracticeCredentials {

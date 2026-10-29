@@ -180,10 +180,25 @@ export class AlpacaPaperProvider implements MarketDataProvider {
     qty: string;
     type?: "market" | "limit";
     clientOrderId: string;
+    /** Optional bracket protection — desired until venue ACK; never invent success. */
+    bracket?: { takeProfitLimit: string; stopLossStop: string };
   }): Promise<{ ok: true; brokerOrderId: string; status: string } | { ok: false; error: string; readiness: ProviderReadiness }> {
     const ready = this.readiness();
     if (ready !== "READY") return { ok: false, error: `Cannot submit: readiness=${ready}`, readiness: ready };
     const fetchImpl = this.options.fetchImpl ?? fetch;
+    const body: Record<string, unknown> = {
+      symbol: input.symbol,
+      qty: input.qty,
+      side: input.side,
+      type: input.type ?? "market",
+      time_in_force: "day",
+      client_order_id: input.clientOrderId,
+    };
+    if (input.bracket) {
+      body.order_class = "bracket";
+      body.take_profit = { limit_price: input.bracket.takeProfitLimit };
+      body.stop_loss = { stop_price: input.bracket.stopLossStop };
+    }
     const response = await fetchImpl(`${this.credentials.baseUrl}/v2/orders`, {
       method: "POST",
       headers: {
@@ -191,21 +206,14 @@ export class AlpacaPaperProvider implements MarketDataProvider {
         "APCA-API-KEY-ID": process.env.ALPACA_API_KEY_ID ?? "",
         "APCA-API-SECRET-KEY": process.env.ALPACA_API_SECRET_KEY ?? "",
       },
-      body: JSON.stringify({
-        symbol: input.symbol,
-        qty: input.qty,
-        side: input.side,
-        type: input.type ?? "market",
-        time_in_force: "day",
-        client_order_id: input.clientOrderId,
-      }),
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       return { ok: false, error: `alpaca_submit:http_${response.status}`, readiness: ready };
     }
-    const body = (await response.json()) as { id?: string; status?: string };
-    if (!body.id) return { ok: false, error: "alpaca_submit:missing_id", readiness: ready };
-    return { ok: true, brokerOrderId: body.id, status: body.status ?? "accepted" };
+    const payload = (await response.json()) as { id?: string; status?: string };
+    if (!payload.id) return { ok: false, error: "alpaca_submit:missing_id", readiness: ready };
+    return { ok: true, brokerOrderId: payload.id, status: payload.status ?? "accepted" };
   }
 }
 

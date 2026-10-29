@@ -4,6 +4,12 @@ import { parseActiveStrategyIdentity, summarizeFunnel, type FunnelStage } from "
 import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
 import { BirdeyeClient } from "@odin/market-data";
 import {
+  inventoryAlpacaCredentials,
+  inventoryOandaCredentials,
+  AlpacaPaperProvider,
+  OandaPracticeProvider,
+} from "@odin/market-data";
+import {
   QUEUES,
   REASON_TEXT,
   assertPaperOrSandboxOnly,
@@ -12,6 +18,7 @@ import {
   emergencyStopSchema,
   isReasonCode,
   mergeStrategy,
+  metricsAccountIdFor,
   newId,
   operatorOrderSchema,
   stageJobId,
@@ -65,9 +72,15 @@ export class TerminalService {
   async snapshot() {
     const now = new Date();
     const engineRow = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
-    const account = await this.prisma.paperAccount.findUnique({ where: { id: "primary" } });
+    const configEarly = this.readConfig(engineRow?.config);
+    const tradingEnvironment = configEarly?.tradingEnvironment ?? "MARKET_DATA_PAPER";
+    const metricsAccountId = metricsAccountIdFor(tradingEnvironment);
+    // Prefer environment-scoped account; fall back to primary only for MARKET_DATA_PAPER.
+    const account =
+      (await this.prisma.paperAccount.findUnique({ where: { id: metricsAccountId } })) ??
+      (await this.prisma.paperAccount.findUnique({ where: { id: "primary" } }));
     if (!engineRow || !account) throw new NotFoundException("Paper account is not initialised");
-    const config = this.readConfig(engineRow.config);
+    const config = configEarly;
     const latestBatch = await this.prisma.cycleRun.findFirst({
       where: { observationCount: { gt: 0 } },
       orderBy: { startedAt: "desc" },
@@ -83,7 +96,7 @@ export class TerminalService {
       .map((row) => this.presentPair(row, now, config))
       .sort((a, b) => Number(b.liquidityUsd ?? 0) - Number(a.liquidityUsd ?? 0))
       .slice(0, config?.universeLimit ?? 12);
-    const positions = await this.prisma.position.findMany({ where: { accountId: "primary" } });
+    const positions = await this.prisma.position.findMany({ where: { accountId: account.id } });
     const marks: Record<string, Mark | undefined> = {};
     for (const position of positions) {
       const row = latest.get(position.pairAddress) ?? (await this.prisma.marketObservation.findFirst({
@@ -111,16 +124,16 @@ export class TerminalService {
     }));
     const valuation = valuePortfolio({ cashUsd: account.cashUsd.toString(), positions: positionViews, marks });
     const fees = await this.prisma.ledgerEntry.aggregate({
-      where: { accountId: "primary", type: "FEE" },
+      where: { accountId: account.id, type: "FEE" },
       _sum: { amountUsd: true },
     });
     const closed = await this.prisma.ledgerEntry.findMany({
-      where: { accountId: "primary", type: "REALIZED_PNL" },
+      where: { accountId: account.id, type: "REALIZED_PNL" },
       orderBy: { createdAt: "desc" },
       take: 200,
     });
     const equitySeriesRows = await this.prisma.equitySnapshot.findMany({
-      where: { equityUsd: { not: null } },
+      where: { accountId: metricsAccountId, equityUsd: { not: null } },
       orderBy: { createdAt: "asc" },
       take: 500,
       select: { equityUsd: true },
@@ -174,6 +187,7 @@ export class TerminalService {
     const liveGate = assertPaperOrSandboxOnly(process.env);
     const executionMode = !liveGate.ok ? "REFUSED" : liveGate.mode === "SANDBOX" ? "SANDBOX" : "PAPER";
     const funnelRows = await this.prisma.opportunityFunnelEvent.findMany({
+      where: { accountId: metricsAccountId },
       orderBy: { createdAt: "desc" },
       take: 200,
     });
@@ -193,14 +207,26 @@ export class TerminalService {
       take: 40,
     });
     const protections = await this.prisma.protectionOrder.findMany({
-      where: { status: { in: ["ARMED", "TRIGGERED", "SUBMITTED", "CONFIRMED", "FAILED"] } },
+      where: {
+        accountId: account.id,
+        status: { in: ["ARMED", "TRIGGERED", "SUBMITTED", "CONFIRMED", "FAILED"] },
+      },
       orderBy: { createdAt: "desc" },
       take: 100,
     });
     const protectedKeys = new Set(protections.map((row) => row.positionKey));
-    const unresolvedProtection = await this.prisma.protectionIntent.count({
-      where: { status: "UNRESOLVED" },
+    const unresolvedIntents = await this.prisma.protectionIntent.findMany({
+      where: { accountId: account.id, status: "UNRESOLVED" },
+      orderBy: { createdAt: "desc" },
+      take: 40,
     });
+    const unresolvedProtection = unresolvedIntents.length;
+    const alpacaCreds = inventoryAlpacaCredentials();
+    const oandaCreds = inventoryOandaCredentials();
+    const providerReadiness = {
+      alpaca_paper: new AlpacaPaperProvider(alpacaCreds).readiness(),
+      oanda_practice: new OandaPracticeProvider(oandaCreds).readiness(),
+    };
     const whyBlocked = decisions
       .filter((decision) => decision.decision === "REJECT" || decision.reasonCodes.some((code) => /BLOCK|REJECT|PAUSE|SUSPEND|BREAKER|STALE|DEMO/.test(code)))
       .slice(0, 24)
@@ -222,9 +248,20 @@ export class TerminalService {
         pauseNewEntries: config?.pauseNewEntries === true,
         allowDemoPaperEntries: config?.allowDemoPaperEntries === true,
         multiMarketPaperIngest: config?.multiMarketPaperIngest === true,
-        tradingEnvironment: config?.tradingEnvironment ?? "MARKET_DATA_PAPER",
-        fixtureMode: (config?.tradingEnvironment ?? "MARKET_DATA_PAPER") === "FIXTURE",
+        tradingEnvironment: tradingEnvironment,
+        fixtureMode: tradingEnvironment === "FIXTURE",
+        replayMode: tradingEnvironment === "REPLAY",
+        metricsAccountId,
         unresolvedProtection,
+        unresolvedActions: unresolvedIntents.map((intent) => ({
+          id: intent.id,
+          ocoGroupId: intent.ocoGroupId,
+          legId: intent.legId,
+          reason: intent.reason,
+          attempts: intent.attempts,
+          retryAfter: intent.retryAfter?.toISOString() ?? null,
+        })),
+        providerReadiness,
         entriesSuspended: alerts.some((alert) => alert.code === "ENTRIES_SUSPENDED"),
       },
       activeStrategy,
@@ -307,21 +344,46 @@ export class TerminalService {
             report.valuation.equityUsd === null || position.marketValueUsd === null
               ? null
               : d(position.marketValueUsd).div(d(report.valuation.equityUsd)).mul(100).toFixed(4);
-          const positionKey = `primary:${position.pairAddress}`;
+          const positionKey = `${account.id}:${position.pairAddress}`;
           const protectedLegs = protections.filter(
-            (row) => row.positionKey === positionKey || row.positionKey.endsWith(`:${position.pairAddress}`),
+            (row) =>
+              row.positionKey === positionKey ||
+              row.positionKey === `primary:${position.pairAddress}` ||
+              row.positionKey.endsWith(`:${position.pairAddress}`),
           );
+          const stopLeg = protectedLegs.find((row) => row.kind === "STOP");
+          const tpLeg = protectedLegs.find((row) => row.kind === "TAKE_PROFIT");
+          const confirmed =
+            protectedLegs.length > 0 &&
+            protectedLegs.every(
+              (row) =>
+                row.ackState === "ACKED" ||
+                row.origin === "SYNTHETIC_ENGINE" ||
+                row.status === "CONFIRMED" ||
+                row.status === "ARMED",
+            );
+          const helperOnly =
+            protectedLegs.length > 0 &&
+            protectedLegs.every((row) => row.origin === "SYNTHETIC_ENGINE");
+          const durableConfirmedStop =
+            stopLeg?.confirmedTriggerPriceUsd?.toString() ?? stopLeg?.triggerPriceUsd?.toString() ?? null;
+          const durableConfirmedTarget =
+            tpLeg?.confirmedTriggerPriceUsd?.toString() ?? tpLeg?.triggerPriceUsd?.toString() ?? null;
           return {
             ...position,
             openedAt,
-            stopUsd,
-            targetUsd,
+            stopUsd: durableConfirmedStop ?? stopUsd,
+            targetUsd: durableConfirmedTarget ?? targetUsd,
             stopLossPct,
             takeProfitPct,
             exposurePct,
             protected: protectedKeys.has(positionKey) || protectedLegs.length > 0,
             protectionOrigin: protectedLegs[0]?.origin ?? null,
             protectionKinds: protectedLegs.map((row) => row.kind),
+            protectionAckState: stopLeg?.ackState ?? tpLeg?.ackState ?? null,
+            protectionConfirmed: confirmed,
+            protectionHelper: helperOnly,
+            protectionStatuses: protectedLegs.map((row) => row.status),
           };
         }),
       },

@@ -10,4 +10,6 @@ export * from "./sessions.js";
 export * from "./session-equity.js";
 export * from "./execution-gate.js";
 export * from "./environments.js";
+export * from "./clock.js";
+export * from "./product-semantics.js";
 export * from "./evolution.js";

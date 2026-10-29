@@ -13,8 +13,8 @@ Named adapters only. Fixtures are not providers. `EXTERNAL_DEMO_API_KEY` alone d
 | `index_yahoo_delayed` | Delayed index/ETF chart meta | EQUITY_INDEX / research | none | Yahoo chart | Indices NO_EXECUTION | READY / null on failure |
 | `index_stub` | Null index stub | EQUITY_INDEX | none | local | NO_EXECUTION | READY |
 | `commodity_stub` | Commodity paper proxy | COMMODITY_PROXY | none | local/FIXTURE | Internal paper | FIXTURE or DEMO only |
-| `alpaca_paper` | US equity/ETF paper broker | EQUITY_ETF_PROXY | `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` | `https://paper-api.alpaca.markets` | Paper submit/ack/cancel | MISSING_CREDENTIALS |
-| `oanda_practice` | FX practice broker | FX_SPOT | `OANDA_API_TOKEN`, `OANDA_ACCOUNT_ID` | `https://api-fxpractice.oanda.com` | Practice orders | MISSING_CREDENTIALS |
+| `alpaca_paper` | US equity/ETF paper broker | EQUITY_ETF_PROXY | `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` | `https://paper-api.alpaca.markets` | Paper submit/ack/cancel + bracket desired→ACK | MISSING_CREDENTIALS |
+| `oanda_practice` | FX practice broker | FX_SPOT | `OANDA_API_TOKEN`, `OANDA_ACCOUNT_ID` | `https://api-fxpractice.oanda.com` | Practice orders + STOP_LOSS/TAKE_PROFIT desired→ACK | MISSING_CREDENTIALS |
 | `external_demo` | Facade over Alpaca+OANDA | ETF + FX | named vars above | practice hosts only | Delegates | MISSING_CREDENTIALS |
 
 Optional URL overrides: `ALPACA_PAPER_BASE_URL`, `ALPACA_DATA_BASE_URL`, `OANDA_API_URL`. Non-practice hosts → `INVALID_CONFIGURATION`.
@@ -27,8 +27,8 @@ Optional URL overrides: `ALPACA_PAPER_BASE_URL`, `ALPACA_DATA_BASE_URL`, `OANDA_
 | `etf:QQQ` | Invesco QQQ Trust | Not NDX |
 | `fx:EURUSD` / `GBPUSD` | Spot FX pair | Quote USD; lot/tick in registry |
 | `fx:USDJPY` | Spot FX | Quote JPY — convert before USD risk |
-| `commodity:XAUUSD` | Gold USD paper proxy | Not exchange-cleared future; multiplier TBD |
-| `commodity:WTI` | WTI paper proxy | Not CL future contract; multiplier TBD |
+| `commodity:XAUUSD` | Gold USD paper proxy | Spot proxy multiplier=1 USD; not exchange-cleared XAU futures |
+| `commodity:WTI` | WTI paper proxy | Spot proxy multiplier=1 USD; CL futures contract size NOT modelled |
 | `index:SPX` / `NDX` / … | Index levels | RESEARCH_ONLY / NO_EXECUTION |
 
 ## UK / demo eligibility (informational, not legal advice)

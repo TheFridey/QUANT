@@ -51,9 +51,15 @@ export function PositionsSection() {
                   <td className="px-3 py-2 text-[11px]">
                     {position.protected ? (
                       <span className="text-foreground">
-                        Protected
+                        {position.protectionConfirmed
+                          ? "Confirmed"
+                          : position.protectionHelper
+                            ? "Helper"
+                            : "Desired"}
                         <span className="block text-[10px] text-muted">
-                          {(position.protectionKinds ?? []).join("/") || "OCO"} · {position.protectionOrigin ?? "—"}
+                          {(position.protectionKinds ?? []).join("/") || "OCO"} ·{" "}
+                          {position.protectionOrigin === "VENUE_NATIVE" ? "venue" : "engine"} ·{" "}
+                          {position.protectionAckState ?? "—"}
                         </span>
                       </span>
                     ) : (
