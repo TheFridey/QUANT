@@ -1,7 +1,14 @@
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
-import { parseActiveStrategyIdentity, summarizeFunnel, type FunnelStage } from "@odin/agent-core";
-import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
+import {
+  ALERT_CODES,
+  alertAckDoesNotClearSafety,
+  parseActiveStrategyIdentity,
+  sortAlertsForOps,
+  summarizeFunnel,
+  type FunnelStage,
+} from "@odin/agent-core";
+import { attributeNetPerformance, performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
 import { BirdeyeClient } from "@odin/market-data";
 import {
   inventoryAlpacaCredentials,
@@ -9,6 +16,7 @@ import {
   AlpacaPaperProvider,
   OandaPracticeProvider,
 } from "@odin/market-data";
+import { evaluateCircuitBreaker, evaluateRiskHierarchy } from "@odin/risk-engine";
 import {
   QUEUES,
   REASON_TEXT,
@@ -17,21 +25,24 @@ import {
   classifyReasonCodes,
   d,
   emergencyStopSchema,
+  findInstrument,
   isReasonCode,
   mergeStrategy,
   metricsAccountIdFor,
   newId,
   operatorOrderSchema,
+  productSemanticsFor,
   stageJobId,
   parseStrategyConfig,
   strategyPatchSchema,
   usd,
+  evaluateSession,
   type DataState,
   type EngineAction,
   type StrategyConfig,
 } from "@odin/shared";
 import { PrismaClient, toJson } from "@odin/shared/db";
-import { allowedActions, transition } from "@odin/trading-engine";
+import { allowedActions, compareDesiredVsConfirmed, transition } from "@odin/trading-engine";
 import { Queue } from "bullmq";
 
 @Injectable()
@@ -202,11 +213,17 @@ export class TerminalService {
         at: row.createdAt.toISOString(),
       })),
     );
-    const alerts = await this.prisma.durableAlert.findMany({
+    const alertsRaw = await this.prisma.durableAlert.findMany({
       where: { acked: false },
       orderBy: { createdAt: "desc" },
       take: 40,
     });
+    const alertsSorted = sortAlertsForOps(
+      alertsRaw.map((alert) => ({
+        ...alert,
+        createdAt: alert.createdAt,
+      })),
+    );
     const protections = await this.prisma.protectionOrder.findMany({
       where: {
         accountId: account.id,
@@ -228,6 +245,46 @@ export class TerminalService {
       alpaca_paper: new AlpacaPaperProvider(alpacaCreds).readiness(),
       oanda_practice: new OandaPracticeProvider(oandaCreds).readiness(),
     };
+    const breaker = evaluateCircuitBreaker({
+      dailyPnlUsd: account.sessionStartEquityUsd
+        ? report.valuation.equityUsd === null
+          ? null
+          : usd(d(report.valuation.equityUsd).minus(d(account.sessionStartEquityUsd.toString())))
+        : report.valuation.realizedPnlUsd,
+      startingBalanceUsd: account.startingBalanceUsd.toString(),
+      maxDailyLossPct: config?.maxDailyLossPct ?? "3",
+      equityUsd: report.valuation.equityUsd,
+      highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,
+      maxTotalDrawdownPct: config?.maxTotalDrawdownPct ?? "10",
+    });
+    const entriesSuspendedFlag = alertsSorted.some((alert) => alert.code === ALERT_CODES.ENTRIES_SUSPENDED);
+    const riskHierarchy = evaluateRiskHierarchy({
+      engineStatus: engineRow.status,
+      circuitBreakerOpen: breaker.open,
+      circuitBreakerReasons: breaker.reasonCodes,
+      entriesSuspended: entriesSuspendedFlag,
+      pauseNewEntries: config?.pauseNewEntries === true,
+      flattenIncomplete: engineRow.flattenRequested === true && positions.some((p) => d(p.baseQty.toString()).gt(0)),
+    });
+    const closedOrderIds = closed.map((entry) => entry.orderId).filter((id): id is string => Boolean(id));
+    const closedOrders =
+      closedOrderIds.length === 0
+        ? []
+        : await this.prisma.order.findMany({
+            where: { id: { in: closedOrderIds } },
+            select: { id: true, strategyVersion: true, instrumentId: true, pairAddress: true },
+          });
+    const orderAttr = new Map(closedOrders.map((order) => [order.id, order]));
+    const attributionFills = closed.map((entry) => {
+      const order = entry.orderId ? orderAttr.get(entry.orderId) : undefined;
+      return {
+        strategyInstanceId: order?.strategyVersion ?? null,
+        realizedPnlUsd: entry.amountUsd.toString(),
+        feeUsd: "0",
+        instrumentId: order?.instrumentId ?? order?.pairAddress ?? null,
+      };
+    });
+    const instanceAttribution = attributeNetPerformance(attributionFills);
     const whyBlocked = decisions
       .filter((decision) => decision.decision === "REJECT" || decision.reasonCodes.some((code) => /BLOCK|REJECT|PAUSE|SUSPEND|BREAKER|STALE|DEMO|UNKNOWN/.test(code)))
       .slice(0, 24)
@@ -272,7 +329,34 @@ export class TerminalService {
           retryAfter: intent.retryAfter?.toISOString() ?? null,
         })),
         providerReadiness,
-        entriesSuspended: alerts.some((alert) => alert.code === "ENTRIES_SUSPENDED"),
+        entriesSuspended: entriesSuspendedFlag,
+        circuitBreakerOpen: breaker.open,
+        circuitBreakerReasons: breaker.reasonCodes,
+        riskDominantHard: riskHierarchy.dominantHard?.kind ?? null,
+        riskBlocksNewEntries: riskHierarchy.blocksNewEntries,
+      },
+      riskDiagnostics: {
+        hierarchy: riskHierarchy.controls.map((control) => ({
+          kind: control.kind,
+          rank: control.rank,
+          hard: control.hard,
+          reasonCodes: control.reasonCodes,
+          detail: control.detail ?? null,
+        })),
+        dominantHard: riskHierarchy.dominantHard?.kind ?? null,
+        blocksNewEntries: riskHierarchy.blocksNewEntries,
+        circuitBreakerOpen: breaker.open,
+        circuitBreakerReasons: breaker.reasonCodes,
+        ackDoesNotClear: riskHierarchy.ackDoesNotClear,
+        unresolvedProtection,
+        providerReadiness,
+      },
+      instanceAttribution: {
+        portfolioNetPnlUsd: instanceAttribution.portfolioNetPnlUsd,
+        portfolioFeesUsd: instanceAttribution.portfolioFeesUsd,
+        sampleSize: instanceAttribution.sampleSize,
+        instances: instanceAttribution.instances.slice(0, 12),
+        unattributedTrades: instanceAttribution.unattributed.trades,
       },
       activeStrategy,
       funnel: {
@@ -287,13 +371,14 @@ export class TerminalService {
           createdAt: row.createdAt.toISOString(),
         })),
       },
-      alerts: alerts.map((alert) => ({
+      alerts: alertsSorted.map((alert) => ({
         id: alert.id,
         severity: alert.severity,
         code: alert.code,
         message: alert.message,
         acked: alert.acked,
         createdAt: alert.createdAt.toISOString(),
+        ackClearsSafety: !alertAckDoesNotClearSafety(alert.code),
       })),
       whyBlocked,
       observability: {
@@ -385,10 +470,38 @@ export class TerminalService {
           const helperOnly =
             protectedLegs.length > 0 &&
             protectedLegs.every((row) => row.origin === "SYNTHETIC_ENGINE");
+          const venueNativeLegs = protectedLegs.filter((row) => row.origin === "VENUE_NATIVE");
+          const venueConfirmed =
+            venueNativeLegs.length > 0 &&
+            venueNativeLegs.every((row) => row.ackState === "ACKED" && row.confirmedTriggerPriceUsd != null);
           const durableConfirmedStop =
             stopLeg?.confirmedTriggerPriceUsd?.toString() ?? stopLeg?.triggerPriceUsd?.toString() ?? null;
           const durableConfirmedTarget =
             tpLeg?.confirmedTriggerPriceUsd?.toString() ?? tpLeg?.triggerPriceUsd?.toString() ?? null;
+          const instrument = findInstrument(position.pairAddress);
+          const semantics = productSemanticsFor(position.pairAddress);
+          const session = instrument
+            ? evaluateSession({ session: instrument.session, now })
+            : null;
+          // Desired-vs-confirmed diagnostic for venue-native legs (offline modelling).
+          const desireReport =
+            stopLeg && stopLeg.origin === "VENUE_NATIVE"
+              ? compareDesiredVsConfirmed({
+                  id: stopLeg.id,
+                  providerId: "alpaca_paper",
+                  instrumentId: position.pairAddress,
+                  origin: "VENUE_NATIVE",
+                  stopPrice: stopLeg.desiredTriggerPriceUsd?.toString() ?? stopLeg.triggerPriceUsd?.toString() ?? null,
+                  takeProfitPrice:
+                    tpLeg?.desiredTriggerPriceUsd?.toString() ?? tpLeg?.triggerPriceUsd?.toString() ?? null,
+                  qty: stopLeg.protectedQty.toString(),
+                  lastConfirmedStopPrice: stopLeg.confirmedTriggerPriceUsd?.toString() ?? null,
+                  lastConfirmedTakeProfitPrice: tpLeg?.confirmedTriggerPriceUsd?.toString() ?? null,
+                  ackState: (stopLeg.ackState as "DESIRED_ONLY" | "SUBMITTED" | "ACKED" | "REJECTED" | "CANCELLED" | "UNKNOWN") ?? "UNKNOWN",
+                  venueOrderId: null,
+                  lastError: null,
+                })
+              : null;
           return {
             ...position,
             openedAt,
@@ -403,7 +516,13 @@ export class TerminalService {
             protectionAckState: stopLeg?.ackState ?? tpLeg?.ackState ?? null,
             protectionConfirmed: confirmed,
             protectionHelper: helperOnly,
+            protectionVenueConfirmed: venueConfirmed,
+            protectionDesireDiverges: desireReport?.desireDivergesFromConfirmed ?? false,
             protectionStatuses: protectedLegs.map((row) => row.status),
+            productLabel: semantics?.productLabel ?? null,
+            paperFamily: semantics?.paperFamily ?? null,
+            sessionStatus: session?.status ?? null,
+            sessionReason: session?.reason ?? null,
           };
         }),
       },

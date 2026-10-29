@@ -3,9 +3,12 @@ import {
   alpacaBracketOrderFields,
   amendVenueProtectionDesire,
   applyVenueProtectionAck,
+  compareDesiredVsConfirmed,
+  desireSyntheticProtection,
   desireVenueProtection,
   markVenueProtectionSubmitted,
   oandaProtectiveOrderSpecs,
+  transitionOrderAck,
   venueProtectionCapability,
 } from "./venue-protection.js";
 
@@ -102,5 +105,53 @@ describe("venue-native protection desired vs ack", () => {
       { type: "STOP_LOSS", price: "1.20" },
       { type: "TAKE_PROFIT", price: "1.30" },
     ]);
+  });
+
+  it("compares desired vs confirmed without inventing venue success", () => {
+    let desire = desireVenueProtection({
+      id: "vp5",
+      providerId: "alpaca_paper",
+      instrumentId: "etf:SPY",
+      stopPrice: "500",
+      takeProfitPrice: "540",
+      qty: "1",
+    });
+    const desiredOnly = compareDesiredVsConfirmed(desire);
+    expect(desiredOnly.venueConfirmed).toBe(false);
+    expect(desiredOnly.ackState).toBe("DESIRED_ONLY");
+
+    desire = markVenueProtectionSubmitted(desire);
+    expect(compareDesiredVsConfirmed(desire).venueConfirmed).toBe(false);
+
+    desire = applyVenueProtectionAck(desire, {
+      ok: true,
+      venueOrderId: "alpaca-99",
+      stopPrice: "500",
+      takeProfitPrice: "540",
+    });
+    const acked = compareDesiredVsConfirmed(desire);
+    expect(acked.venueConfirmed).toBe(true);
+    expect(acked.isVenueNative).toBe(true);
+
+    // Synthetic helper never counts as venue-confirmed even when locally armed.
+    const synthetic = desireSyntheticProtection({
+      id: "syn1",
+      instrumentId: "fx:EURUSD",
+      stopPrice: "1.08",
+      takeProfitPrice: "1.12",
+      qty: "1000",
+    });
+    const synReport = compareDesiredVsConfirmed(synthetic);
+    expect(synReport.venueConfirmed).toBe(false);
+    expect(synReport.isVenueNative).toBe(false);
+  });
+
+  it("models durable order ack transitions offline without inventing fill success", () => {
+    expect(transitionOrderAck("NEW", "submit")).toBe("SUBMITTED");
+    expect(transitionOrderAck("SUBMITTED", "ack")).toBe("ACKED");
+    expect(transitionOrderAck("ACKED", "fill")).toBe("FILLED");
+    const invalid = transitionOrderAck("FILLED", "ack");
+    expect(invalid).toEqual({ ok: false, reason: "INVALID_TRANSITION:FILLED+ack" });
+    expect(transitionOrderAck("SUBMITTED", "reject")).toBe("REJECTED");
   });
 });

@@ -207,3 +207,106 @@ export function oandaProtectiveOrderSpecs(desire: VenueProtectionDesire): Array<
   if (desire.takeProfitPrice) specs.push({ type: "TAKE_PROFIT", price: desire.takeProfitPrice });
   return specs;
 }
+
+/**
+ * Offline desired-vs-confirmed comparison (B16/B22).
+ * Never treats DESIRED_ONLY / SUBMITTED as venue-confirmed.
+ */
+export type ProtectionConfirmationReport = {
+  desiredStop: string | null;
+  desiredTakeProfit: string | null;
+  confirmedStop: string | null;
+  confirmedTakeProfit: string | null;
+  ackState: ProtectionAckState;
+  /** True only when ackState=ACKED and confirmed prices present for desired legs. */
+  venueConfirmed: boolean;
+  /** True when local desire differs from last confirmed (amend pending / drift). */
+  desireDivergesFromConfirmed: boolean;
+  /** Helper/synthetic engine protection is never venue-confirmed. */
+  isVenueNative: boolean;
+  readinessNote: string;
+};
+
+export function compareDesiredVsConfirmed(desire: VenueProtectionDesire): ProtectionConfirmationReport {
+  const isVenueNative = desire.origin === "VENUE_NATIVE";
+  const venueConfirmed =
+    isVenueNative &&
+    desire.ackState === "ACKED" &&
+    Boolean(desire.venueOrderId) &&
+    (desire.stopPrice == null || desire.lastConfirmedStopPrice != null) &&
+    (desire.takeProfitPrice == null || desire.lastConfirmedTakeProfitPrice != null);
+  const desireDivergesFromConfirmed =
+    (desire.lastConfirmedStopPrice != null &&
+      desire.stopPrice != null &&
+      desire.stopPrice !== desire.lastConfirmedStopPrice) ||
+    (desire.lastConfirmedTakeProfitPrice != null &&
+      desire.takeProfitPrice != null &&
+      desire.takeProfitPrice !== desire.lastConfirmedTakeProfitPrice);
+  return {
+    desiredStop: desire.stopPrice,
+    desiredTakeProfit: desire.takeProfitPrice,
+    confirmedStop: desire.lastConfirmedStopPrice,
+    confirmedTakeProfit: desire.lastConfirmedTakeProfitPrice,
+    ackState: desire.ackState,
+    venueConfirmed,
+    desireDivergesFromConfirmed,
+    isVenueNative,
+    readinessNote: venueConfirmed
+      ? "Venue ACK present — still not VERIFIED_EXTERNAL without practice credentials"
+      : desire.ackState === "DESIRED_ONLY" || desire.ackState === "SUBMITTED"
+        ? "Desired/submitted only — do not claim broker protection"
+        : desire.ackState === "REJECTED"
+          ? "Venue rejected — keep last confirmed if any"
+          : "Protection not venue-confirmed",
+  };
+}
+
+/**
+ * Synthetic engine protection desire (helper path). Origin is never VENUE_NATIVE;
+ * compareDesiredVsConfirmed must report venueConfirmed=false even if locally armed.
+ */
+export function desireSyntheticProtection(input: {
+  id: string;
+  instrumentId: string;
+  stopPrice: string | null;
+  takeProfitPrice: string | null;
+  qty: string;
+}): VenueProtectionDesire {
+  return {
+    id: input.id,
+    providerId: "alpaca_paper",
+    instrumentId: input.instrumentId,
+    origin: "SYNTHETIC_ENGINE",
+    stopPrice: input.stopPrice,
+    takeProfitPrice: input.takeProfitPrice,
+    qty: input.qty,
+    lastConfirmedStopPrice: input.stopPrice,
+    lastConfirmedTakeProfitPrice: input.takeProfitPrice,
+    ackState: "ACKED",
+    venueOrderId: null,
+    lastError: null,
+  };
+}
+
+/** Offline order-lifecycle ack states that are not inventable success. */
+export const ORDER_ACK_STATES = ["NEW", "SUBMITTED", "ACKED", "PARTIAL", "FILLED", "REJECTED", "CANCELLED", "EXPIRED"] as const;
+export type OrderAckState = (typeof ORDER_ACK_STATES)[number];
+
+export function transitionOrderAck(
+  current: OrderAckState,
+  event: "submit" | "ack" | "partial" | "fill" | "reject" | "cancel" | "expire",
+): OrderAckState | { ok: false; reason: string } {
+  const table: Record<OrderAckState, Partial<Record<typeof event, OrderAckState>>> = {
+    NEW: { submit: "SUBMITTED", reject: "REJECTED", cancel: "CANCELLED", expire: "EXPIRED" },
+    SUBMITTED: { ack: "ACKED", reject: "REJECTED", cancel: "CANCELLED", expire: "EXPIRED", fill: "FILLED", partial: "PARTIAL" },
+    ACKED: { partial: "PARTIAL", fill: "FILLED", cancel: "CANCELLED", reject: "REJECTED" },
+    PARTIAL: { partial: "PARTIAL", fill: "FILLED", cancel: "CANCELLED", reject: "REJECTED" },
+    FILLED: {},
+    REJECTED: {},
+    CANCELLED: {},
+    EXPIRED: {},
+  };
+  const next = table[current][event];
+  if (!next) return { ok: false, reason: `INVALID_TRANSITION:${current}+${event}` };
+  return next;
+}

@@ -20,39 +20,39 @@
 ## Latest local run
 
 ```text
-pnpm test             # 239 passed / 1 skipped
+pnpm test             # 267 passed / 1 skipped
 pnpm typecheck        # clean
 pnpm lint             # clean
 pnpm build            # api/worker/web clean
-pnpm db:deploy        # 20261029070000 present on odin + odin_test
+pnpm db:deploy        # prior migrations; additive only this increment (no new migration)
 node scripts/verify-external-providers.mjs  # exit 2 BLOCKED_EXTERNAL_TEST
-node scripts/soak-capacity.mjs              # fixture_shaped_soak exit 0 (prior)
+node scripts/soak-capacity.mjs              # fixture_shaped_soak (not live SLO)
 ```
 
 ### Targeted additions this increment
 
 | Area | Command | Result |
 | --- | --- | --- |
-| Organic discovery | `vitest run packages/market-data/src/dexscreener.test.ts` | pass (boosts optional) |
-| Gateway | `vitest run packages/market-data/src/gateway.test.ts` | pass |
-| Session equity | `vitest run packages/shared/src/session-equity.test.ts` | pass |
-| Operating controls | `vitest run packages/risk-engine/src/operating-controls.test.ts` | pass |
-| Hard blocks | `vitest run packages/shared/src/blocks.test.ts` | pass |
-| Strategy instances IT | `vitest run packages/agent-core/src/strategy-instances.integration.test.ts` | pass |
-| Funnel uniqueness | `vitest run packages/agent-core/src/funnel.test.ts` | pass |
-| Reconcile depth | `vitest run packages/trading-engine/src/fault-injection.test.ts` | pass |
-| Observability | `vitest run packages/analytics/src/observability.test.ts` | pass |
-| Migration smoke | `vitest run packages/shared/src/migration-schema.test.ts` | pass |
-| Research honesty | `vitest run packages/evolution/src/research-artifact-honesty.test.ts` | pass |
+| Sessions holidays/DST/FX weekend | `vitest run packages/shared/src/sessions.test.ts` | pass |
+| Held multi-market marks | `vitest run packages/shared/src/held-marks.test.ts` | pass |
+| Product semantics labels/pip | `vitest run packages/shared/src/product-semantics.test.ts` | pass |
+| Risk hierarchy / breakers | `vitest run packages/risk-engine/src/risk-hierarchy.test.ts` | pass |
+| Worker leases | `vitest run packages/risk-engine/src/worker-lease.test.ts` | pass |
+| Desired vs ACK / order ack | `vitest run packages/trading-engine/src/venue-protection.test.ts` | pass |
+| Data integrity windows | `vitest run packages/evolution/src/data-integrity.test.ts` | pass |
+| Instance attribution | `vitest run packages/analytics/src/attribution.test.ts` | pass |
+| Alerts ops depth | `vitest run packages/agent-core/src/alerts.test.ts` | pass |
+| Multi-market held+session E2E | `vitest run packages/agent-core/src/multi-market.e2e.test.ts` | pass |
+| Sandbox skip/pass honesty | `vitest run packages/evolution/src/research-artifact-honesty.test.ts` | pass |
 
 ### Migrations
 
-- `20261029070000_mvp_protection_ack_replay_isolation` verified via `migration-schema.test` column presence.
+- No new migration this increment (additive-only rule respected; prior `20261029070000` unchanged).
 
 ### Capacity / soak
 
-- `scripts/soak-capacity.mjs` remains fixture-shaped without live feeds; not a live SLO claim.
+- `scripts/soak-capacity.mjs` remains fixture-shaped without live feeds; exit 0 ≠ live SLO / VERIFIED_EXTERNAL.
 
 ### Security sandbox
 
-- Bubblewrap-dependent evolution tests may skip — environment skip, not trading regression.
+- Bubblewrap-dependent evolution tests may skip — environment skip reported honestly as `SKIP_ISOLATION_UNAVAILABLE`, not a trading regression.

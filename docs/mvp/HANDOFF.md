@@ -6,7 +6,7 @@
 - Base: `main`
 - PR: https://github.com/TheFridey/QUANT/pull/2
 - Baseline reviewed: `05143f1`
-- HEAD: `21f2ec8`
+- HEAD: *(set after push; see latest commit)*
 
 ## What works end-to-end
 
@@ -14,22 +14,23 @@
 - **Organic DexScreener discovery:** token-profiles + search primary; paid boosts optional supplement only
 - **MarketDataGateway:** routes FX/ETF to named providers; worker FX paper ingest uses gateway; no invented levels
 - **Session equity / HWM:** `rollSessionEquity` wired into worker `loadPlan` with UTC midnight roll + daily PnL reset
-- **Operating controls:** `PAUSE_NEW_ENTRIES` / `ENTRIES_SUSPENDED` distinct hard blocks; exits/flatten survive
-- **Hard blocks vs advisories:** `blocks.ts` + terminal why-blocked classification; UNKNOWN≠PASS
-- **Funnel uniqueness:** dedupe cycle|pair|stage on persist
-- **Observability:** worker flushes ObservabilityEvent; terminal risk panel lists recent
-- **Reconcile depth:** position qty vs fills enrich; suspend without inventing fills
-- **Trailing peak persist** on armed protection during evaluate
-- **Strategy instances:** ≥3 seeded; evaluate/allocate call-site integration test
-- Fixture isolation, PG reservations, protection crash/OCO, exit parity, commodity semantics, REPLAY metrics isolation, venue desired→ACK, soak script (prior)
+- **Sessions depth:** US equity holidays, DST boundary checks, FX Fri 17:00–Sun 17:00 ET weekend closure; `planCycle` rejects BUY with `SESSION_CLOSED`
+- **Held multi-market marks:** FX/ETF/commodity outside discovery merged without inventing prices (`held-marks` + loadPlan)
+- **Product semantics:** FX pip/session labels, ETF/commodity paper families; CL futures still unsupported
+- **Risk hierarchy:** ranked hard controls; circuit breaker composition; ACK≠clear ranks; terminal `riskDiagnostics`
+- **Desired vs ACK protection:** offline compare + synthetic≠venue-confirmed; positions panel surfaces helper vs venue ACK
+- **Instance attribution:** net PnL/fees by strategyVersion stamp; terminal panel
+- **Research integrity:** look-ahead/leakage/duplicate checks; sandbox skip vs pass honesty
+- **Worker leases:** exclusive cycle lease race tests (BullMQ multi-process lock still PARTIAL)
+- **Operating controls / hard blocks / funnel / observability / reconcile / trailing / instances** (prior)
 - LIVE remains gated/refused
 
 ## Gate progress (honest)
 
 | Status | Count |
 | --- | --- |
-| VERIFIED_OFFLINE | 36 |
-| PARTIAL | 21 |
+| VERIFIED_OFFLINE | 48 |
+| PARTIAL | 9 |
 | IMPLEMENTED_UNVERIFIED | 0 |
 | BLOCKED_EXTERNAL_TEST | 1 |
 | VERIFIED_EXTERNAL | 0 |
@@ -48,7 +49,7 @@ node scripts/verify-external-providers.mjs
 
 ## Residual PARTIAL
 
-A04, A09, A10 · B12–B14, B16, B22, B26 · C36, C37, C39 · D45, D47–D51, D54, D56, D57
+A09 · B12–B13, B16 · D48, D51, D54, D56, D57
 
 **BLOCKED_EXTERNAL_TEST:** C40
 
@@ -57,25 +58,34 @@ A04, A09, A10 · B12–B14, B16, B22, B26 · C36, C37, C39 · D45, D47–D51, D5
 1. Walk RUNBOOKS on MARKET_DATA_PAPER (no fixture banner)
 2. Supply practice credentials → `verify-external-providers`
 3. Do not mark VERIFIED_EXTERNAL from fixtures/soak
-4. Review PR #2
+4. Optional: wire WorkerLeaseManager into BullMQ job locks for D51 promotion
+5. Review PR #2
 
 ## PR title / body (if ManagePullRequest unavailable)
 
-**Title:** `feat(mvp): organic discovery, session equity, controls, gateway, reconcile depth`
+**Title:** `feat(mvp): sessions/DST, held marks, risk hierarchy, attribution, UX diagnostics`
 
 **Body:**
 
 ```markdown
 ## Summary
-Continues QUANT MVP: organic crypto discovery, MarketDataGateway call sites, UTC session equity/HWM, operating controls hard-blocks, strategy instance integration evidence, funnel uniqueness, observability persist, reconcile position-qty depth, terminal multi-market/observability UX.
+Closes local PARTIAL gaps without credentials: FX/equity session holidays+DST+weekend closure, held multi-market mark/eval outside discovery, product semantics labels, risk hierarchy/breakers, desired-vs-ACK protection modelling, research integrity + sandbox skip honesty, instance attribution, command-centre/positions/risk diagnostics from persisted backend, alert ops depth, worker lease races, deeper multi-market E2E. No LIVE. No fake external success. No MARKET_DATA_PAPER fixture contamination. Additive migrations only (none this increment).
 
 ## Matrix
-VERIFIED_OFFLINE 36 · PARTIAL 21 · IMPLEMENTED_UNVERIFIED 0 · BLOCKED_EXTERNAL_TEST 1 · VERIFIED_EXTERNAL 0
+VERIFIED_OFFLINE 48 · PARTIAL 9 · IMPLEMENTED_UNVERIFIED 0 · BLOCKED_EXTERNAL_TEST 1 · VERIFIED_EXTERNAL 0
 
 ## Verify
-- pnpm test → 239 passed / 1 skipped
+- pnpm test → 267 passed / 1 skipped
 - typecheck / lint / build clean
 - C40 still exit 2 without credentials
+- soak remains fixture_shaped_soak (not live SLO)
+
+## Still owner-only / PARTIAL
+- A09/B12/B13 credentialed market-driven levels
+- B16/C40 venue ACK with practice keys
+- D48 deeper ops controls UI
+- D51 BullMQ multi-process lease wiring
+- D54/D56/D57 contract map / fixture-shaped E2E / capacity SLO honesty
 ```
 
 ## Docs

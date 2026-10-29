@@ -1,5 +1,5 @@
 import { d } from "./money.js";
-import { findInstrument, type AssetClass, type Instrument } from "./instruments.js";
+import { findInstrument, type AssetClass, type Instrument, type SessionKind } from "./instruments.js";
 
 /**
  * Product economics for sizing / PnL / costs.
@@ -30,9 +30,23 @@ export type ProductSemantics = {
   executionSupported: boolean;
   unsupportedReason: string | null;
   notes: string;
+  /** Human/ops product label — never invents futures contract size. */
+  productLabel: string;
+  /** Session kind from registry (for ops / session gate). */
+  session: SessionKind | null;
+  /**
+   * FX pip size when assetClass=FX_SPOT (e.g. 0.0001 for most pairs, 0.01 for JPY).
+   * Null for non-FX.
+   */
+  pipSize: string | null;
+  /** Paper product family for UX / cost routing. */
+  paperFamily: "CRYPTO_SPOT" | "FX_SPOT" | "ETF_PROXY" | "COMMODITY_PROXY" | "INDEX_RESEARCH" | "UNSUPPORTED";
 };
 
-const COMMODITY_PAPER: Record<string, Omit<ProductSemantics, "instrumentId" | "assetClass" | "tickSize" | "lotSize">> = {
+const COMMODITY_PAPER: Record<
+  string,
+  Omit<ProductSemantics, "instrumentId" | "assetClass" | "tickSize" | "lotSize" | "session" | "productLabel" | "pipSize" | "paperFamily">
+> = {
   "commodity:XAUUSD": {
     currency: "USD",
     multiplier: "1",
@@ -56,6 +70,29 @@ const COMMODITY_PAPER: Record<string, Omit<ProductSemantics, "instrumentId" | "a
   },
 };
 
+function fxPipSize(instrument: Instrument): string {
+  // JPY quotes conventionally use 0.01 pip; most majors use 0.0001.
+  if (instrument.quote === "JPY" || instrument.base === "JPY") return "0.01";
+  return "0.0001";
+}
+
+function paperFamilyFor(assetClass: AssetClass, executionSupported: boolean): ProductSemantics["paperFamily"] {
+  if (!executionSupported && assetClass === "EQUITY_INDEX") return "INDEX_RESEARCH";
+  if (!executionSupported) return "UNSUPPORTED";
+  switch (assetClass) {
+    case "SPOT_CRYPTO_PAIR":
+      return "CRYPTO_SPOT";
+    case "FX_SPOT":
+      return "FX_SPOT";
+    case "EQUITY_ETF_PROXY":
+      return "ETF_PROXY";
+    case "COMMODITY_PROXY":
+      return "COMMODITY_PROXY";
+    default:
+      return "UNSUPPORTED";
+  }
+}
+
 /**
  * Resolve product semantics. Unknown / incomplete futures-style products return
  * executionSupported=false so callers can refuse without inventing economics.
@@ -78,6 +115,10 @@ export function productSemanticsFor(instrumentIdOrPair: string): ProductSemantic
       assetClass: instrument.assetClass,
       tickSize: instrument.tickSize,
       lotSize: instrument.lotSize,
+      productLabel: `${instrument.symbol} paper commodity proxy (not futures)`,
+      session: instrument.session,
+      pipSize: null,
+      paperFamily: "COMMODITY_PROXY",
       ...known,
     };
   }
@@ -94,8 +135,17 @@ export function productSemanticsFor(instrumentIdOrPair: string): ProductSemantic
       executionSupported: false,
       unsupportedReason: "Index levels are RESEARCH_ONLY / NO_EXECUTION",
       notes: instrument.notes ?? "Index — no paper fills",
+      productLabel: `${instrument.symbol} index level (research-only)`,
+      session: instrument.session,
+      pipSize: null,
+      paperFamily: "INDEX_RESEARCH",
     };
   }
+  const executionSupported =
+    !instrument.executionCapabilities.includes("NO_EXECUTION") &&
+    !instrument.executionCapabilities.includes("RESEARCH_ONLY");
+  const isFx = instrument.assetClass === "FX_SPOT";
+  const isEtf = instrument.assetClass === "EQUITY_ETF_PROXY";
   return {
     instrumentId: instrument.id,
     assetClass: instrument.assetClass,
@@ -103,16 +153,23 @@ export function productSemanticsFor(instrumentIdOrPair: string): ProductSemantic
     multiplier: "1",
     tickSize: instrument.tickSize,
     lotSize: instrument.lotSize,
-    spreadBpsEstimate: instrument.assetClass === "FX_SPOT" ? "1.5" : instrument.assetClass === "EQUITY_ETF_PROXY" ? "2" : "0",
-    feeBps: instrument.assetClass === "FX_SPOT" ? "0.5" : instrument.assetClass === "EQUITY_ETF_PROXY" ? "1" : "0",
-    executionSupported: !instrument.executionCapabilities.includes("NO_EXECUTION") &&
-      !instrument.executionCapabilities.includes("RESEARCH_ONLY"),
+    spreadBpsEstimate: isFx ? "1.5" : isEtf ? "2" : "0",
+    feeBps: isFx ? "0.5" : isEtf ? "1" : "0",
+    executionSupported,
     unsupportedReason: instrument.executionCapabilities.includes("NO_EXECUTION")
       ? "NO_EXECUTION"
       : instrument.executionCapabilities.includes("RESEARCH_ONLY")
         ? "RESEARCH_ONLY"
         : null,
     notes: instrument.notes ?? "",
+    productLabel: isFx
+      ? `${instrument.symbol} FX spot paper (${fxPipSize(instrument)} pip)`
+      : isEtf
+        ? `${instrument.symbol} equity ETF proxy (cash session)`
+        : `${instrument.symbol} ${instrument.assetClass}`,
+    session: instrument.session,
+    pipSize: isFx ? fxPipSize(instrument) : null,
+    paperFamily: paperFamilyFor(instrument.assetClass, executionSupported),
   };
 }
 
@@ -129,7 +186,16 @@ function unsupportedCommodity(id: string, reason: string): ProductSemantics {
     executionSupported: false,
     unsupportedReason: reason,
     notes: reason,
+    productLabel: `${id} unsupported commodity`,
+    session: null,
+    pipSize: null,
+    paperFamily: "UNSUPPORTED",
   };
+}
+
+/** Ops-facing product label for seed instruments (never invents CL futures size). */
+export function productLabelFor(instrumentIdOrPair: string): string | null {
+  return productSemanticsFor(instrumentIdOrPair)?.productLabel ?? null;
 }
 
 /** Notional in quote currency: price * qty * multiplier. */

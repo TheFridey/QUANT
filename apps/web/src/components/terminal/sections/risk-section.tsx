@@ -13,6 +13,10 @@ export function RiskSection() {
   const funnel = snapshot.funnel?.summary ?? {};
   const protectedCount = p.positions.filter((row) => row.protected).length;
   const unprotectedCount = p.positions.length - protectedCount;
+  const risk = snapshot.riskDiagnostics;
+  const attribution = snapshot.instanceAttribution;
+  const helperProtected = p.positions.filter((row) => row.protectionHelper).length;
+  const venueConfirmed = p.positions.filter((row) => row.protectionVenueConfirmed).length;
 
   return (
     <div className="grid gap-3 lg:grid-cols-2 animate-odin-fade">
@@ -26,6 +30,8 @@ export function RiskSection() {
           <Metric label="HWM" value={<span className="mono">{formatUsd(p.highWaterMarkUsd)}</span>} />
           <Metric label="Protected" value={<span className="mono">{protectedCount}</span>} />
           <Metric label="Unprotected" value={<span className="mono">{unprotectedCount}</span>} />
+          <Metric label="Helper protection" value={<span className="mono">{helperProtected}</span>} />
+          <Metric label="Venue ACK" value={<span className="mono">{venueConfirmed}</span>} />
         </div>
       </Panel>
       <Panel title="Configured limits">
@@ -112,6 +118,41 @@ export function RiskSection() {
           ) : null}
         </dl>
       </Panel>
+      <Panel title="Risk hierarchy">
+        <dl className="grid grid-cols-2 gap-3 p-4 text-xs">
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Dominant hard</dt>
+            <dd className="mono">{risk?.dominantHard ?? execution?.riskDominantHard ?? "—"}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Blocks new entries</dt>
+            <dd className="mono">{risk?.blocksNewEntries || execution?.riskBlocksNewEntries ? "yes" : "no"}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Circuit breaker</dt>
+            <dd className="mono">{risk?.circuitBreakerOpen || execution?.circuitBreakerOpen ? "OPEN" : "closed"}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">ACK ≠ clear</dt>
+            <dd className="mono text-[10px]">{(risk?.ackDoesNotClear ?? []).join(", ") || "—"}</dd>
+          </div>
+          <div className="col-span-2">
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Active controls</dt>
+            <dd className="mt-1 space-y-1 text-[11px]">
+              {(risk?.hierarchy ?? []).length === 0 ? (
+                <span className="text-muted">None active</span>
+              ) : (
+                risk!.hierarchy.map((control) => (
+                  <div key={control.kind} className="mono">
+                    [{control.rank}] {control.kind}
+                    {control.hard ? " HARD" : ""} · {control.reasonCodes.join(", ")}
+                  </div>
+                ))
+              )}
+            </dd>
+          </div>
+        </dl>
+      </Panel>
       <Panel title="Opportunity funnel">
         <div className="grid grid-cols-3 gap-3 p-4 text-xs">
           {Object.entries(funnel).map(([stage, count]) => (
@@ -120,6 +161,31 @@ export function RiskSection() {
               <div className="mono mt-1">{count}</div>
             </div>
           ))}
+        </div>
+      </Panel>
+      <Panel title="Instance attribution">
+        <div className="p-4 text-xs space-y-2">
+          <div className="grid grid-cols-2 gap-3">
+            <Metric label="Portfolio net" value={<span className="mono">{formatUsd(attribution?.portfolioNetPnlUsd ?? null)}</span>} />
+            <Metric label="Sample" value={<span className="mono">{attribution?.sampleSize ?? 0}</span>} />
+          </div>
+          {(attribution?.instances?.length ?? 0) === 0 ? (
+            <p className="text-muted">No attributed closed trades yet (strategyVersion stamps on orders).</p>
+          ) : (
+            <ul className="divide-y divide-border/70">
+              {attribution!.instances.slice(0, 6).map((row) => (
+                <li key={row.strategyInstanceId} className="flex justify-between gap-2 py-1 mono text-[11px]">
+                  <span>{row.strategyInstanceId}</span>
+                  <span>
+                    n={row.trades} · net {formatUsd(row.netPnlUsd)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {(attribution?.unattributedTrades ?? 0) > 0 ? (
+            <p className="text-[10px] text-muted">Unattributed trades: {attribution!.unattributedTrades}</p>
+          ) : null}
         </div>
       </Panel>
       <Panel title="Why blocked" className="lg:col-span-2">
@@ -174,6 +240,9 @@ export function RiskSection() {
               <li key={alert.id} className="flex flex-wrap items-start justify-between gap-2 px-3 py-2">
                 <span>
                   <span className="mono">{alert.severity}</span> · {alert.code}
+                  {alert.ackClearsSafety === false ? (
+                    <span className="ml-2 text-[10px] text-loss">ACK≠clear safety</span>
+                  ) : null}
                   <span className="mt-1 block text-muted">{alert.message}</span>
                 </span>
                 <span className="mono text-muted">{alert.createdAt}</span>

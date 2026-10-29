@@ -23,6 +23,9 @@ export function OverviewSection() {
   const replayMode = snapshot.execution?.replayMode === true
     || snapshot.execution?.tradingEnvironment === "REPLAY";
   const unresolved = snapshot.execution?.unresolvedProtection ?? 0;
+  const breakerOpen = snapshot.execution?.circuitBreakerOpen === true
+    || snapshot.riskDiagnostics?.circuitBreakerOpen === true;
+  const dominantHard = snapshot.execution?.riskDominantHard ?? snapshot.riskDiagnostics?.dominantHard ?? null;
 
   return (
     <div className="space-y-3">
@@ -56,6 +59,19 @@ export function OverviewSection() {
           <strong className="font-semibold tracking-wide">UNRESOLVED PROTECTION</strong>
           <span className="ml-2 text-rose-100/80">
             {unresolved} durable exit intent{unresolved === 1 ? "" : "s"} awaiting retry — ACK of alerts does not clear these.
+          </span>
+        </div>
+      ) : null}
+      {breakerOpen || dominantHard ? (
+        <div
+          role="status"
+          className="rounded border border-orange-800/50 bg-orange-950/30 px-4 py-3 text-sm text-orange-100"
+        >
+          <strong className="font-semibold tracking-wide">RISK CONTROLS</strong>
+          <span className="ml-2 text-orange-100/80">
+            {breakerOpen ? "Circuit breaker open. " : ""}
+            {dominantHard ? `Dominant hard control: ${dominantHard}. ` : ""}
+            Alert ACK does not reset breaker or entry suspension.
           </span>
         </div>
       ) : null}
@@ -135,6 +151,14 @@ export function OverviewSection() {
               <div>
                 <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Open alerts</dt>
                 <dd className="mono">{snapshot.alerts?.length ?? 0}</dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Circuit breaker</dt>
+                <dd className="mono">{breakerOpen ? "OPEN" : "closed"}</dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Risk dominant</dt>
+                <dd className="mono text-[10px]">{dominantHard ?? "—"}</dd>
               </div>
               <div>
                 <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Provider readiness</dt>

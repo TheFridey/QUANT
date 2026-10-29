@@ -37,7 +37,19 @@ export function PositionsSection() {
                 <tr key={position.pairAddress} className="border-b border-border/70">
                   <td className="px-3 py-2">
                     <div>{position.baseSymbol}</div>
-                    <div className="text-[10px] text-muted">{position.markState}</div>
+                    <div className="text-[10px] text-muted">
+                      {position.markState}
+                      {position.paperFamily ? ` · ${position.paperFamily}` : ""}
+                    </div>
+                    {position.productLabel ? (
+                      <div className="text-[10px] text-muted truncate max-w-[160px]">{position.productLabel}</div>
+                    ) : null}
+                    {position.sessionStatus ? (
+                      <div className="text-[10px] text-muted">
+                        Session {position.sessionStatus}
+                        {position.sessionReason ? ` (${position.sessionReason})` : ""}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="mono px-3 py-2">{formatQty(position.baseQty)}</td>
                   <td className="mono px-3 py-2">{formatPx(position.avgCostUsd)}</td>
@@ -51,15 +63,18 @@ export function PositionsSection() {
                   <td className="px-3 py-2 text-[11px]">
                     {position.protected ? (
                       <span className="text-foreground">
-                        {position.protectionConfirmed
-                          ? "Confirmed"
+                        {position.protectionVenueConfirmed
+                          ? "Venue ACK"
                           : position.protectionHelper
                             ? "Helper"
-                            : "Desired"}
+                            : position.protectionConfirmed
+                              ? "Confirmed"
+                              : "Desired"}
                         <span className="block text-[10px] text-muted">
                           {(position.protectionKinds ?? []).join("/") || "OCO"} ·{" "}
                           {position.protectionOrigin === "VENUE_NATIVE" ? "venue" : "engine"} ·{" "}
                           {position.protectionAckState ?? "—"}
+                          {position.protectionDesireDiverges ? " · desire≠confirmed" : ""}
                         </span>
                       </span>
                     ) : (

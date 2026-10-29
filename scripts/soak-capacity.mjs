@@ -2,10 +2,12 @@
 /**
  * Production-shaped capacity/soak probe on real Postgres reservation + protection path.
  *
- * Honesty rules:
- * - Labels fixture soak when MARKET_DATA_PAPER live feeds are absent.
- * - Never claims VERIFIED_EXTERNAL or production SLO pass from this script alone.
- * - Uses DATABASE_URL; does not truncate / reset operator databases.
+ * Honesty rules (D57):
+ * - Labels result `fixture_shaped_soak` when MARKET_DATA_PAPER live feeds are absent.
+ * - Labels `mixed_credential_env` only when Alpaca/OANDA env vars are present — still NOT a live SLO.
+ * - Never claims VERIFIED_EXTERNAL, VERIFIED_OFFLINE capacity SLO, or production latency budgets.
+ * - Exit 0 means the PG reservation/OCO path completed; it does not promote D57 beyond PARTIAL.
+ * - Uses DATABASE_URL; does not truncate / reset operator databases or contaminate MARKET_DATA_PAPER.
  *
  * Prerequisites: pnpm build:packages && DATABASE_URL set
  *

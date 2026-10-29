@@ -1,6 +1,15 @@
 import { valuePortfolio } from "@odin/analytics";
-import { evaluateCircuitBreaker, evaluateRisk } from "@odin/risk-engine";
-import { d, type CyclePair, type OrderIntent, type OrderSide, type ReasonCode, type SecurityAssessment } from "@odin/shared";
+import { evaluateCircuitBreaker, evaluateRisk, evaluateRiskHierarchy } from "@odin/risk-engine";
+import {
+  d,
+  entriesAllowedInSession,
+  findInstrument,
+  type CyclePair,
+  type OrderIntent,
+  type OrderSide,
+  type ReasonCode,
+  type SecurityAssessment,
+} from "@odin/shared";
 import {
   admitNotionalAgainstMinOrder,
   applyFill,
@@ -73,6 +82,14 @@ export function planCycle(input: PlanInput): {
     equityUsd: valuedSeed.equityUsd,
     highWaterMarkUsd: input.highWaterMarkUsd ?? valuedSeed.equityUsd,
     maxTotalDrawdownPct: input.config.maxTotalDrawdownPct,
+  });
+  // Hierarchy snapshot for diagnostics — ACK never clears breaker/suspension ranks.
+  const riskHierarchy = evaluateRiskHierarchy({
+    engineStatus: input.engineStatus,
+    circuitBreakerOpen: breaker.open,
+    circuitBreakerReasons: breaker.reasonCodes,
+    entriesSuspended: input.entriesSuspended === true,
+    pauseNewEntries: input.config.pauseNewEntries === true,
   });
 
   for (const pair of ordered) {
@@ -160,10 +177,35 @@ export function planCycle(input: PlanInput): {
           dailyPnlUsd: dailyPnl,
           openPositions,
           circuitBreaker: breaker,
+          riskHierarchy: {
+            dominantHard: riskHierarchy.dominantHard?.kind ?? null,
+            blocksNewEntries: riskHierarchy.blocksNewEntries,
+          },
         }, "portfolio:risk", Date.now() - atlasStarted),
       );
       decisions.push(row("EXECUTOR", pair.pairAddress, "HOLD", ["NO_ORDER"], "1.000000", { blockedBy: "ATLAS" }));
       continue;
+    }
+
+    // Session gate for registered multi-market instruments — BUY entries only; exits still flow.
+    if (side === "BUY" && intent === "ENTRY") {
+      const instrument = findInstrument(pair.pairAddress);
+      if (instrument && !entriesAllowedInSession(instrument.session, now)) {
+        decisions.push(
+          row(
+            "ATLAS",
+            pair.pairAddress,
+            "REJECT",
+            ["SESSION_CLOSED"],
+            "1.000000",
+            {},
+            { session: instrument.session, riskHierarchy: riskHierarchy.dominantHard?.kind ?? null },
+            "portfolio:session",
+          ),
+        );
+        decisions.push(row("EXECUTOR", pair.pairAddress, "HOLD", ["NO_ORDER"], "1.000000", { blockedBy: "ATLAS" }));
+        continue;
+      }
     }
 
     // Concurrent StrategyInstance allocation gates new entries only.

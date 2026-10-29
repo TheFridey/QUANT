@@ -169,6 +169,137 @@ describe("multi-market paper E2E", () => {
     });
     expect(summarizeFunnel(funnel).ORDERED).toBe(1);
   });
+
+  it("evaluates held FX/ETF/commodity marks outside discovery for exits", () => {
+    const config = {
+      ...DEFAULT_STRATEGY,
+      startingBalanceUsd: "10000.00000000",
+      maxPositions: 10,
+      allowDemoPaperEntries: true,
+      stopLossPct: "5",
+    };
+    // Discovery only has a quiet crypto pair — held multi-market books must still exit on stop.
+    const discovery = [
+      pair("crypto-discovery-onlyxxxxxxxxxxxxxxxxxxxx", {
+        priceUsd: "100",
+        priceChangeM5Pct: "0.1",
+        priceChangeH1Pct: "0.1",
+        txnsM5Buys: 1,
+        txnsM5Sells: 9,
+        freshness: "LIVE",
+      }),
+      pair("fx:EURUSD", {
+        chainId: "fx",
+        source: "fx_stub",
+        freshness: "DEMO",
+        baseSymbol: "EUR",
+        quoteSymbol: "USD",
+        priceUsd: "1.00",
+        priceChangeM5Pct: "0.1",
+        priceChangeH1Pct: "0.1",
+        observationId: "obs_held_fx",
+        liquidityUsd: "50000000",
+      }),
+      pair("etf:SPY", {
+        chainId: "equity",
+        source: "etf_stub",
+        freshness: "DEMO",
+        baseSymbol: "SPY",
+        quoteSymbol: "USD",
+        priceUsd: "480",
+        priceChangeM5Pct: "0.1",
+        priceChangeH1Pct: "0.1",
+        observationId: "obs_held_etf",
+        liquidityUsd: "50000000",
+      }),
+      pair("commodity:XAUUSD", {
+        chainId: "commodity",
+        source: "commodity_stub",
+        freshness: "DEMO",
+        baseSymbol: "XAU",
+        quoteSymbol: "USD",
+        priceUsd: "2400",
+        priceChangeM5Pct: "0.1",
+        priceChangeH1Pct: "0.1",
+        observationId: "obs_held_xau",
+        liquidityUsd: "50000000",
+      }),
+    ];
+    const plan = planCycle(
+      input({
+        config,
+        cashUsd: "5000.00000000",
+        startingBalanceUsd: config.startingBalanceUsd,
+        highWaterMarkUsd: config.startingBalanceUsd,
+        pairs: discovery,
+        marks: Object.fromEntries(
+          discovery.map((row) => [row.pairAddress, { priceUsd: row.priceUsd, freshness: row.freshness }]),
+        ),
+        positions: [
+          {
+            pairAddress: "fx:EURUSD",
+            baseSymbol: "EUR",
+            baseQty: "1000",
+            avgCostUsd: "1.10",
+            realizedPnlUsd: "0",
+          },
+          {
+            pairAddress: "etf:SPY",
+            baseSymbol: "SPY",
+            baseQty: "2",
+            avgCostUsd: "520",
+            realizedPnlUsd: "0",
+          },
+          {
+            pairAddress: "commodity:XAUUSD",
+            baseSymbol: "XAU",
+            baseQty: "1",
+            avgCostUsd: "2650",
+            realizedPnlUsd: "0",
+          },
+        ],
+      }),
+    );
+    const sells = plan.orders.filter((order) => order.side === "SELL");
+    const sold = new Set(sells.map((order) => order.pairAddress));
+    expect(sold.has("fx:EURUSD") || sold.has("etf:SPY") || sold.has("commodity:XAUUSD")).toBe(true);
+  });
+
+  it("blocks FX entries when session is weekend-closed without inventing open status", () => {
+    const saturday = new Date("2026-10-24T15:00:00.000Z");
+    const plan = planCycle(
+      input({
+        config: {
+          ...DEFAULT_STRATEGY,
+          allowDemoPaperEntries: true,
+          entryM5ChangePct: "2",
+        },
+        now: saturday,
+        cashUsd: "10000",
+        pairs: [
+          pair("fx:EURUSD", {
+            chainId: "fx",
+            source: "fx_stub",
+            freshness: "DEMO",
+            baseSymbol: "EUR",
+            priceUsd: "1.08",
+            priceChangeM5Pct: "3",
+            priceChangeH1Pct: "1",
+            observationId: "obs_fx_weekend",
+            liquidityUsd: "50000000",
+          }),
+        ],
+        marks: { "fx:EURUSD": { priceUsd: "1.08", freshness: "DEMO" } },
+      }),
+    );
+    const buys = plan.orders.filter((o) => o.side === "BUY" && o.pairAddress === "fx:EURUSD");
+    expect(buys).toHaveLength(0);
+    expect(
+      plan.decisions.some(
+        (d) => d.pairAddress === "fx:EURUSD" && d.reasonCodes.includes("SESSION_CLOSED"),
+      ),
+    ).toBe(true);
+  });
 });
 
 function pair(address: string, overrides: Partial<CyclePair> = {}): CyclePair {

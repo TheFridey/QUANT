@@ -70,7 +70,13 @@ export type PositionRow = {
   protectionAckState?: string | null;
   protectionConfirmed?: boolean;
   protectionHelper?: boolean;
+  protectionVenueConfirmed?: boolean;
+  protectionDesireDiverges?: boolean;
   protectionStatuses?: string[];
+  productLabel?: string | null;
+  paperFamily?: string | null;
+  sessionStatus?: string | null;
+  sessionReason?: string | null;
 };
 
 export type WatchlistRow = {
@@ -181,6 +187,40 @@ export type Snapshot = {
     }>;
     providerReadiness?: Record<string, string>;
     entriesSuspended: boolean;
+    circuitBreakerOpen?: boolean;
+    circuitBreakerReasons?: string[];
+    riskDominantHard?: string | null;
+    riskBlocksNewEntries?: boolean;
+  };
+  riskDiagnostics?: {
+    hierarchy: Array<{
+      kind: string;
+      rank: number;
+      hard: boolean;
+      reasonCodes: string[];
+      detail: string | null;
+    }>;
+    dominantHard: string | null;
+    blocksNewEntries: boolean;
+    circuitBreakerOpen: boolean;
+    circuitBreakerReasons: string[];
+    ackDoesNotClear: string[];
+    unresolvedProtection: number;
+    providerReadiness: Record<string, string>;
+  };
+  instanceAttribution?: {
+    portfolioNetPnlUsd: string;
+    portfolioFeesUsd: string;
+    sampleSize: number;
+    instances: Array<{
+      strategyInstanceId: string;
+      trades: number;
+      netPnlUsd: string;
+      feesUsd: string;
+      winRate: string | null;
+      netShare: string | null;
+    }>;
+    unattributedTrades: number;
   };
   activeStrategy?: {
     strategyId: string;
@@ -207,6 +247,7 @@ export type Snapshot = {
     message: string;
     acked: boolean;
     createdAt: string;
+    ackClearsSafety?: boolean;
   }>;
   whyBlocked?: Array<{
     agent: string;

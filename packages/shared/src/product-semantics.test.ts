@@ -48,4 +48,25 @@ describe("commodity product semantics", () => {
     const instrument = findInstrument("commodity:XAUUSD")!;
     expect(assertCommoditySemanticsHonest(instrument).ok).toBe(true);
   });
+
+  it("labels FX pip sizes and ETF/commodity paper families without inventing futures", () => {
+    const eurusd = productSemanticsFor("fx:EURUSD")!;
+    expect(eurusd.paperFamily).toBe("FX_SPOT");
+    expect(eurusd.pipSize).toBe("0.0001");
+    expect(eurusd.session).toBe("FX_WEEKDAY");
+    expect(eurusd.productLabel).toMatch(/FX spot/i);
+
+    const usdjpy = productSemanticsFor("fx:USDJPY")!;
+    expect(usdjpy.pipSize).toBe("0.01");
+
+    const spy = productSemanticsFor("etf:SPY")!;
+    expect(spy.paperFamily).toBe("ETF_PROXY");
+    expect(spy.session).toBe("INDEX_RTH");
+    expect(spy.productLabel).toMatch(/ETF proxy/i);
+
+    const wti = productSemanticsFor("commodity:WTI")!;
+    expect(wti.paperFamily).toBe("COMMODITY_PROXY");
+    expect(wti.productLabel).toMatch(/not futures/i);
+    expect(wti.notes).toMatch(/CL futures/i);
+  });
 });

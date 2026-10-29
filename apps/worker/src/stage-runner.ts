@@ -570,7 +570,8 @@ export class StageRunner {
     for (const pair of pairsByAddress.values()) {
       if (pair.priceUsd) marks[pair.pairAddress] = { priceUsd: pair.priceUsd, freshness: pair.freshness };
     }
-    // Held positions are monitored even when they left the discovery/ingest snapshot.
+    // Held positions are monitored even when they left the discovery/ingest snapshot (A04).
+    // Multi-market FX/ETF/commodity marks are merged the same way — never invent prices.
     for (const position of positions) {
       if (!d(position.baseQty.toString()).gt(0)) continue;
       if (pairsByAddress.has(position.pairAddress)) continue;
