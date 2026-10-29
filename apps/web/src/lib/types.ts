@@ -64,6 +64,19 @@ export type PositionRow = {
   stopLossPct?: string | null;
   takeProfitPct?: string | null;
   exposurePct?: string | null;
+  protected?: boolean;
+  protectionOrigin?: string | null;
+  protectionKinds?: string[];
+  protectionAckState?: string | null;
+  protectionConfirmed?: boolean;
+  protectionHelper?: boolean;
+  protectionVenueConfirmed?: boolean;
+  protectionDesireDiverges?: boolean;
+  protectionStatuses?: string[];
+  productLabel?: string | null;
+  paperFamily?: string | null;
+  sessionStatus?: string | null;
+  sessionReason?: string | null;
 };
 
 export type WatchlistRow = {
@@ -152,6 +165,144 @@ export type EquityHistory = {
 export type Snapshot = {
   serverTime: string;
   venue: "PAPER";
+  execution?: {
+    mode: "PAPER" | "SANDBOX" | "REFUSED" | string;
+    liveAllowed: boolean;
+    refuseReason: string | null;
+    pauseNewEntries: boolean;
+    allowDemoPaperEntries: boolean;
+    multiMarketPaperIngest: boolean;
+    tradingEnvironment?: "FIXTURE" | "REPLAY" | "MARKET_DATA_PAPER" | "EXTERNAL_DEMO" | string;
+    fixtureMode?: boolean;
+    replayMode?: boolean;
+    metricsAccountId?: string;
+    unresolvedProtection?: number;
+    unresolvedActions?: Array<{
+      id: string;
+      ocoGroupId: string;
+      legId: string;
+      reason: string;
+      attempts: number;
+      retryAfter: string | null;
+    }>;
+    providerReadiness?: Record<string, string>;
+    entriesSuspended: boolean;
+    circuitBreakerOpen?: boolean;
+    circuitBreakerReasons?: string[];
+    riskDominantHard?: string | null;
+    riskBlocksNewEntries?: boolean;
+  };
+  riskDiagnostics?: {
+    hierarchy: Array<{
+      kind: string;
+      rank: number;
+      hard: boolean;
+      reasonCodes: string[];
+      detail: string | null;
+    }>;
+    dominantHard: string | null;
+    blocksNewEntries: boolean;
+    circuitBreakerOpen: boolean;
+    circuitBreakerReasons: string[];
+    ackDoesNotClear: string[];
+    unresolvedProtection: number;
+    providerReadiness: Record<string, string>;
+  };
+  instanceAttribution?: {
+    portfolioNetPnlUsd: string;
+    portfolioFeesUsd: string;
+    sampleSize: number;
+    instances: Array<{
+      strategyInstanceId: string;
+      trades: number;
+      netPnlUsd: string;
+      feesUsd: string;
+      winRate: string | null;
+      netShare: string | null;
+    }>;
+    unattributedTrades: number;
+  };
+  opsControls?: {
+    engineStatus: string;
+    allowedActions: string[];
+    flattenRequested: boolean;
+    pauseNewEntries: boolean;
+    allowDemoPaperEntries: boolean;
+    multiMarketPaperIngest: boolean;
+    entriesSuspended: boolean;
+    unresolvedProtection: number;
+    unresolvedActions: Array<{
+      id: string;
+      ocoGroupId: string;
+      legId: string;
+      reason: string;
+      attempts: number;
+      retryAfter: string | null;
+    }>;
+    circuitBreakerOpen: boolean;
+    riskDominantHard: string | null;
+    providerReadiness: Record<string, string>;
+    note: string;
+  };
+  strategyInstances?: Array<{
+    id: string;
+    name: string;
+    version: string;
+    status: string;
+    health: string;
+    instrumentIds: string[];
+    budgetUsd: string;
+    timeframe: string;
+    artifactHash: string | null;
+    updatedAt: string;
+  }>;
+  activeStrategy?: {
+    strategyId: string;
+    strategyVersion: string;
+    sourceHash: string;
+    artifactHash: string;
+  } | null;
+  funnel?: {
+    summary: Record<string, number>;
+    recent: Array<{
+      id: string;
+      cycleId: string;
+      pairAddress: string;
+      instrumentId: string | null;
+      stage: string;
+      reasonCodes: string[];
+      createdAt: string;
+    }>;
+  };
+  alerts?: Array<{
+    id: string;
+    severity: string;
+    code: string;
+    message: string;
+    acked: boolean;
+    createdAt: string;
+    ackClearsSafety?: boolean;
+  }>;
+  whyBlocked?: Array<{
+    agent: string;
+    pairAddress: string;
+    decision: string;
+    reasonCodes: string[];
+    reasonText: string[];
+    hardBlocks?: string[];
+    advisories?: string[];
+    createdAt: string;
+  }>;
+  observability?: {
+    recent: Array<{
+      id: string;
+      category: string;
+      name: string;
+      value: string | null;
+      unit: string | null;
+      createdAt: string;
+    }>;
+  };
   engine: {
     status: "STOPPED" | "RUNNING" | "PAUSED" | "EMERGENCY_STOP";
     flattenRequested: boolean;
@@ -226,6 +377,8 @@ export type Snapshot = {
     status: string;
     qty: string;
     rejectReason: string | null;
+    executionMode?: string;
+    strategyVersion?: string | null;
     createdAt: string;
     fills: Array<{
       id?: string;

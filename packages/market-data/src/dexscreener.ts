@@ -2,7 +2,12 @@ import type { NormalizedPair } from "@odin/shared";
 import { decimalStringFromJson, intFromJson } from "./numbers.js";
 import type { ProviderResult } from "./provider.js";
 
+/** Paid/promoted boosts — optional supplement only; never the sole discovery source. */
 export const DEXSCREENER_BOOSTS_URL = "https://api.dexscreener.com/token-boosts/top/v1";
+/** Organic latest token profiles (not paid boosts). */
+export const DEXSCREENER_PROFILES_URL = "https://api.dexscreener.com/token-profiles/latest/v1";
+/** Public search — used for organic Solana quote-anchored discovery. */
+export const DEXSCREENER_SEARCH_URL = "https://api.dexscreener.com/latest/dex/search?q=solana";
 export const WSOL_MINT = "So11111111111111111111111111111111111111112";
 
 export function dexscreenerTokensUrl(addresses: string[]): string {
@@ -62,18 +67,53 @@ function pairCreatedAtIso(value: unknown): string | null {
   }
 }
 
+/**
+ * Solana universe discovery.
+ * Primary sources: organic token profiles + public search pairs.
+ * Boosts are optional supplement only — discovery must succeed when boosts fail/empty.
+ */
 export async function fetchSolanaUniverse(options: {
   limit: number;
   fetchImpl?: typeof fetch;
   now?: Date;
+  /** When false, skip paid boosts endpoint entirely. Default true (supplement only). */
+  includeBoosts?: boolean;
 }): Promise<ProviderResult<NormalizedPair[]>> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const fetchedAt = (options.now ?? new Date()).toISOString();
-  const boosts = await readJson(fetchImpl, DEXSCREENER_BOOSTS_URL);
-  const discovered = boosts.ok ? solanaMints(boosts.body).slice(0, 29) : [];
-  const mints = unique([WSOL_MINT, ...discovered]).slice(0, 30);
+  const includeBoosts = options.includeBoosts !== false;
+
+  const [profiles, search, boosts] = await Promise.all([
+    readJson(fetchImpl, DEXSCREENER_PROFILES_URL),
+    readJson(fetchImpl, DEXSCREENER_SEARCH_URL),
+    includeBoosts ? readJson(fetchImpl, DEXSCREENER_BOOSTS_URL) : Promise.resolve({ ok: false as const, error: "boosts_skipped" }),
+  ]);
+
+  const organicMints = [
+    ...solanaMints(profiles.ok ? profiles.body : null),
+    ...solanaMintsFromPairs(search.ok ? search.body : null),
+  ];
+  const boostMints = boosts.ok ? solanaMints(boosts.body) : [];
+  // Prefer organic, then optional boosts; WSOL always anchored.
+  const mints = unique([WSOL_MINT, ...organicMints, ...boostMints]).slice(0, 30);
+
+  // Prefer ranking search pairs directly when present (already pair-shaped, no second hop).
+  const searchRanked = search.ok ? rankPairs(search.body, options.limit) : [];
+  if (searchRanked.length >= Math.min(5, options.limit)) {
+    const merged = mergeRanked(searchRanked, [], options.limit);
+    return {
+      ok: true,
+      fetchedAt,
+      data: merged,
+      // provenance meta via unused field not on ProviderResult — callers inspect pairs.source
+    };
+  }
+
   const tokens = await readJson(fetchImpl, dexscreenerTokensUrl(mints));
   if (!tokens.ok) {
+    if (searchRanked.length > 0) {
+      return { ok: true, fetchedAt, data: searchRanked.slice(0, options.limit) };
+    }
     if (mints.length > 1) {
       const anchor = await readJson(fetchImpl, dexscreenerTokensUrl([WSOL_MINT]));
       if (anchor.ok) {
@@ -82,11 +122,33 @@ export async function fetchSolanaUniverse(options: {
     }
     return { ok: false, code: "UPSTREAM", error: tokens.error };
   }
-  const ranked = rankPairs(tokens.body, options.limit);
+  const tokenRanked = rankPairs(tokens.body, options.limit);
+  const ranked = mergeRanked(searchRanked, tokenRanked, options.limit);
   if (ranked.length === 0) {
     return { ok: false, code: "INVALID", error: "DexScreener returned no Solana pairs" };
   }
   return { ok: true, fetchedAt, data: ranked };
+}
+
+/** True when discovery did not depend solely on paid boosts. */
+export function discoverySourcesUsed(calls: string[]): {
+  profiles: boolean;
+  search: boolean;
+  boosts: boolean;
+  organicPrimary: boolean;
+} {
+  const profiles = calls.some((url) => url.includes("token-profiles"));
+  const search = calls.some((url) => url.includes("/latest/dex/search"));
+  const boosts = calls.some((url) => url.includes("token-boosts"));
+  return { profiles, search, boosts, organicPrimary: profiles || search };
+}
+
+function mergeRanked(a: NormalizedPair[], b: NormalizedPair[], limit: number): NormalizedPair[] {
+  const byAddress = new Map<string, NormalizedPair>();
+  for (const pair of [...a, ...b]) byAddress.set(pair.pairAddress, pair);
+  return [...byAddress.values()]
+    .sort((left, right) => compareLiquidity(right.liquidityUsd, left.liquidityUsd))
+    .slice(0, limit);
 }
 
 function rankPairs(body: unknown, limit: number): NormalizedPair[] {
@@ -130,6 +192,17 @@ function solanaMints(body: unknown): string[] {
     if (row.chainId === "solana" && typeof row.tokenAddress === "string" && row.tokenAddress.length > 20) {
       mints.push(row.tokenAddress);
     }
+  }
+  return unique(mints);
+}
+
+function solanaMintsFromPairs(body: unknown): string[] {
+  const pairs = extractPairs(body);
+  if (!pairs) return [];
+  const mints: string[] = [];
+  for (const item of pairs) {
+    const parsed = parseDexPair(item);
+    if (parsed) mints.push(parsed.baseAddress);
   }
   return unique(mints);
 }

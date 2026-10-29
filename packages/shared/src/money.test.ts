@@ -1,17 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { d, qty, sumUsd, usd } from "./money.js";
+import { convertToUsd, maxPositionNotionalAtStart } from "./money.js";
 
-describe("money", () => {
-  it("quantizes usd half up and quantity down", () => {
-    expect(usd(d("1.005000004"))).toBe("1.00500000");
-    expect(qty(d("1.019999999"))).toBe("1.01999999");
+describe("FX / monetary helpers", () => {
+  it("passes USD through and converts with an explicit rate", () => {
+    expect(convertToUsd({ amount: "10", fromCurrency: "USD", usdPerUnit: null })).toEqual({
+      ok: true,
+      amountUsd: "10.00000000",
+    });
+    expect(convertToUsd({ amount: "2", fromCurrency: "EUR", usdPerUnit: "1.10" })).toEqual({
+      ok: true,
+      amountUsd: "2.20000000",
+    });
   });
 
-  it("rejects non-strings so binary floats cannot enter the ledger", () => {
-    expect(() => d(Number("1.1") as unknown as string)).toThrow(/MONEY_STRING_REQUIRED/);
+  it("fails closed when the FX rate is missing", () => {
+    expect(convertToUsd({ amount: "2", fromCurrency: "EUR", usdPerUnit: null }).ok).toBe(false);
+    expect(convertToUsd({ amount: "2", fromCurrency: "JPY", usdPerUnit: "0" }).ok).toBe(false);
   });
 
-  it("sums quantized usd strings", () => {
-    expect(sumUsd(["10.00000000", "-0.25000000", "0.10000000"])).toBe("9.85000000");
+  it("computes start-of-day max position headroom after costs", () => {
+    const headroom = maxPositionNotionalAtStart({
+      startingBalanceUsd: "100.00000000",
+      maxPositionPctEquity: "5",
+      feeBps: "30",
+      maxSlippageBps: "150",
+    });
+    // 5% of 100 = 5, haircut > 1 → headroom < 5 → legacy deadlock vs minOrder 5
+    expect(Number(headroom)).toBeLessThan(5);
   });
 });

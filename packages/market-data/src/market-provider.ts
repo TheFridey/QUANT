@@ -14,8 +14,15 @@ export type InstrumentQuote = {
   /** Provenance label for display (e.g. DEMO stub, DELAYED free API). */
   provenance: string;
   session: MarketSessionStatus;
+  /** Receive / ingest wall time (ISO). */
   receivedAt: string;
   providerId: MarketProviderId;
+  /** Best bid when provider supplies a two-sided quote. */
+  bid?: string | null;
+  /** Best ask when provider supplies a two-sided quote. */
+  ask?: string | null;
+  /** Exchange/event time when distinct from receive time. */
+  eventTime?: string | null;
 };
 
 export type OrderSpec = {

@@ -18,6 +18,10 @@ export type PositionView = {
   baseQty: string;
   avgCostUsd: string;
   realizedPnlUsd: string;
+  /** ISO time of opening fill when known — used for max-hold exits. */
+  openedAt?: string | null;
+  /** Peak mark since entry when known — used for trailing stops. */
+  peakMarkUsd?: string | null;
 };
 
 export type DecisionDraft = {
@@ -67,6 +71,18 @@ export type PlanInput = {
   highWaterMarkUsd?: string | null;
   /** Current marked exposure of open positions. */
   aggregateExposureUsd?: string | null;
+  /** Account-wide entry suspension after reconcile unknown exposure. */
+  entriesSuspended?: boolean;
+  /** Active strategy module id when promotion drives decisions. */
+  activeStrategyId?: string | null;
+  /**
+   * When concurrent StrategyInstances are active, ENTRY is allowed only for
+   * pairs present in this set (from allocateOpportunities). Exits always pass.
+   * Undefined = no instance gating (legacy single-pulse path).
+   */
+  concurrentEntryAllowlist?: ReadonlySet<string> | null;
+  /** Attribution map pairAddress → strategyInstanceId for stamps/funnel. */
+  concurrentInstanceByPair?: ReadonlyMap<string, string> | null;
   now?: Date;
 };
 

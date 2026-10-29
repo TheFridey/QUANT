@@ -1,6 +1,8 @@
 import { InjectQueue, OnWorkerEvent, Processor, WorkerHost } from "@nestjs/bullmq";
 import { QUEUES, stageJobId } from "@odin/shared";
+import type { DistributedLease } from "@odin/risk-engine";
 import { Job, Queue } from "bullmq";
+import { StageLeaseService } from "./stage-lease.js";
 import { StageRunner } from "./stage-runner.js";
 
 type CycleJob = { cycleId?: string; trigger?: string };
@@ -19,18 +21,41 @@ async function enqueue(queue: Queue, name: string, cycleId: string): Promise<voi
   );
 }
 
+async function withStageLease(
+  leases: StageLeaseService,
+  stage: string,
+  cycleId: string,
+  run: () => Promise<void>,
+): Promise<void> {
+  const lease = await leases.tryAcquireStage(stage, cycleId);
+  if (!lease) return;
+  try {
+    await run();
+  } finally {
+    await leases.release(lease);
+  }
+}
+
 @Processor(QUEUES.ingest, { concurrency: 1 })
 export class IngestProcessor extends WorkerHost {
   constructor(
     private readonly stages: StageRunner,
+    private readonly leases: StageLeaseService,
     @InjectQueue(QUEUES.sentinel) private readonly next: Queue,
   ) {
     super();
   }
 
   async process(job: Job<CycleJob>): Promise<void> {
-    const result = await this.stages.ingest({ cycleId: job.data.cycleId, trigger: job.data.trigger ?? "schedule" });
-    if (!result.skipped) await enqueue(this.next, "sentinel", result.cycleId);
+    let lease: DistributedLease | null = null;
+    try {
+      lease = await this.leases.tryAcquireIngest();
+      if (!lease) return;
+      const result = await this.stages.ingest({ cycleId: job.data.cycleId, trigger: job.data.trigger ?? "schedule" });
+      if (!result.skipped) await enqueue(this.next, "sentinel", result.cycleId);
+    } finally {
+      await this.leases.release(lease);
+    }
   }
 
   @OnWorkerEvent("failed")
@@ -43,6 +68,7 @@ export class IngestProcessor extends WorkerHost {
 export class SentinelProcessor extends WorkerHost {
   constructor(
     private readonly stages: StageRunner,
+    private readonly leases: StageLeaseService,
     @InjectQueue(QUEUES.pulse) private readonly next: Queue,
   ) {
     super();
@@ -50,8 +76,10 @@ export class SentinelProcessor extends WorkerHost {
 
   async process(job: Job<CycleJob>): Promise<void> {
     if (!job.data.cycleId) return;
-    await this.stages.sentinel(job.data.cycleId);
-    await enqueue(this.next, "pulse", job.data.cycleId);
+    await withStageLease(this.leases, "sentinel", job.data.cycleId, async () => {
+      await this.stages.sentinel(job.data.cycleId!);
+      await enqueue(this.next, "pulse", job.data.cycleId!);
+    });
   }
 
   @OnWorkerEvent("failed")
@@ -64,6 +92,7 @@ export class SentinelProcessor extends WorkerHost {
 export class PulseProcessor extends WorkerHost {
   constructor(
     private readonly stages: StageRunner,
+    private readonly leases: StageLeaseService,
     @InjectQueue(QUEUES.aegis) private readonly next: Queue,
   ) {
     super();
@@ -71,8 +100,10 @@ export class PulseProcessor extends WorkerHost {
 
   async process(job: Job<CycleJob>): Promise<void> {
     if (!job.data.cycleId) return;
-    await this.stages.pulse(job.data.cycleId);
-    await enqueue(this.next, "aegis", job.data.cycleId);
+    await withStageLease(this.leases, "pulse", job.data.cycleId, async () => {
+      await this.stages.pulse(job.data.cycleId!);
+      await enqueue(this.next, "aegis", job.data.cycleId!);
+    });
   }
 
   @OnWorkerEvent("failed")
@@ -85,6 +116,7 @@ export class PulseProcessor extends WorkerHost {
 export class AegisProcessor extends WorkerHost {
   constructor(
     private readonly stages: StageRunner,
+    private readonly leases: StageLeaseService,
     @InjectQueue(QUEUES.atlas) private readonly next: Queue,
   ) {
     super();
@@ -92,8 +124,10 @@ export class AegisProcessor extends WorkerHost {
 
   async process(job: Job<CycleJob>): Promise<void> {
     if (!job.data.cycleId) return;
-    await this.stages.aegis(job.data.cycleId);
-    await enqueue(this.next, "atlas", job.data.cycleId);
+    await withStageLease(this.leases, "aegis", job.data.cycleId, async () => {
+      await this.stages.aegis(job.data.cycleId!);
+      await enqueue(this.next, "atlas", job.data.cycleId!);
+    });
   }
 
   @OnWorkerEvent("failed")
@@ -106,6 +140,7 @@ export class AegisProcessor extends WorkerHost {
 export class AtlasProcessor extends WorkerHost {
   constructor(
     private readonly stages: StageRunner,
+    private readonly leases: StageLeaseService,
     @InjectQueue(QUEUES.executor) private readonly next: Queue,
   ) {
     super();
@@ -113,8 +148,10 @@ export class AtlasProcessor extends WorkerHost {
 
   async process(job: Job<CycleJob>): Promise<void> {
     if (!job.data.cycleId) return;
-    await this.stages.atlas(job.data.cycleId);
-    await enqueue(this.next, "executor", job.data.cycleId);
+    await withStageLease(this.leases, "atlas", job.data.cycleId, async () => {
+      await this.stages.atlas(job.data.cycleId!);
+      await enqueue(this.next, "executor", job.data.cycleId!);
+    });
   }
 
   @OnWorkerEvent("failed")
@@ -127,6 +164,7 @@ export class AtlasProcessor extends WorkerHost {
 export class ExecutorProcessor extends WorkerHost {
   constructor(
     private readonly stages: StageRunner,
+    private readonly leases: StageLeaseService,
     @InjectQueue(QUEUES.archivist) private readonly next: Queue,
   ) {
     super();
@@ -134,8 +172,10 @@ export class ExecutorProcessor extends WorkerHost {
 
   async process(job: Job<CycleJob>): Promise<void> {
     if (!job.data.cycleId) return;
-    await this.stages.executor(job.data.cycleId);
-    await enqueue(this.next, "archivist", job.data.cycleId);
+    await withStageLease(this.leases, "executor", job.data.cycleId, async () => {
+      await this.stages.executor(job.data.cycleId!);
+      await enqueue(this.next, "archivist", job.data.cycleId!);
+    });
   }
 
   @OnWorkerEvent("failed")
@@ -146,13 +186,18 @@ export class ExecutorProcessor extends WorkerHost {
 
 @Processor(QUEUES.archivist, { concurrency: 1 })
 export class ArchivistProcessor extends WorkerHost {
-  constructor(private readonly stages: StageRunner) {
+  constructor(
+    private readonly stages: StageRunner,
+    private readonly leases: StageLeaseService,
+  ) {
     super();
   }
 
   async process(job: Job<CycleJob>): Promise<void> {
     if (!job.data.cycleId) return;
-    await this.stages.archivist(job.data.cycleId);
+    await withStageLease(this.leases, "archivist", job.data.cycleId, async () => {
+      await this.stages.archivist(job.data.cycleId!);
+    });
   }
 
   @OnWorkerEvent("failed")

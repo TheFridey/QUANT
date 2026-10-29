@@ -26,15 +26,19 @@ model EngineControl {
 }
 
 model PaperAccount {
-  id                 String         @id @default("primary")
-  cashUsd            Decimal        @db.Decimal(24, 8)
-  startingBalanceUsd Decimal        @db.Decimal(24, 8)
-  highWaterMarkUsd   Decimal?       @db.Decimal(24, 8)
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
-  positions          Position[]
-  orders             Order[]
-  ledger             LedgerEntry[]
+  id                    String         @id @default("primary")
+  cashUsd               Decimal        @db.Decimal(24, 8)
+  startingBalanceUsd    Decimal        @db.Decimal(24, 8)
+  highWaterMarkUsd      Decimal?       @db.Decimal(24, 8)
+  sessionStartEquityUsd Decimal?       @db.Decimal(24, 8)
+  sessionStartedAt      DateTime?
+  /// FIXTURE | REPLAY | MARKET_DATA_PAPER | EXTERNAL_DEMO — isolation boundary
+  tradingEnvironment    String         @default("MARKET_DATA_PAPER")
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  positions             Position[]
+  orders                Order[]
+  ledger                LedgerEntry[]
 }
 
 model MarketObservation {
@@ -122,6 +126,8 @@ model SecurityAssessment {
 
 model EquitySnapshot {
   id               String   @id @default(cuid())
+  /// Account / environment isolation for REPLAY vs paper metrics.
+  accountId        String   @default("primary")
   cycleId          String?
   cashUsd          Decimal  @db.Decimal(24, 8)
   equityUsd        Decimal? @db.Decimal(24, 8)
@@ -136,6 +142,7 @@ model EquitySnapshot {
 
   @@index([createdAt])
   @@index([cycleId])
+  @@index([accountId, createdAt])
 }
 
 model ResearchProposal {
@@ -308,30 +315,35 @@ model AgentDecision {
 }
 
 model Order {
-  id            String    @id @default(cuid())
-  clientOrderId String    @unique
-  cycleId       String
-  accountId     String
-  pairAddress   String
-  baseSymbol    String
-  side          String
-  intent        String
-  status        String
-  qty           Decimal   @db.Decimal(24, 8)
-  filledQty     Decimal   @default(0) @db.Decimal(24, 8)
-  reasonCodes   String[]
-  rejectReason  String?
-  observationId String?
-  submittedAt   DateTime  @default(now())
-  eligibleAt    DateTime?
-  expiresAt     DateTime?
-  createdAt     DateTime  @default(now())
-  account       PaperAccount @relation(fields: [accountId], references: [id])
-  fills         Fill[]
+  id              String    @id @default(cuid())
+  clientOrderId   String    @unique
+  cycleId         String
+  accountId       String
+  pairAddress     String
+  baseSymbol      String
+  side            String
+  intent          String
+  status          String
+  qty             Decimal   @db.Decimal(24, 8)
+  filledQty       Decimal   @default(0) @db.Decimal(24, 8)
+  reasonCodes     String[]
+  rejectReason    String?
+  observationId   String?
+  executionMode   String    @default("PAPER")
+  venue           String    @default("PAPER")
+  instrumentId    String?
+  strategyVersion String?
+  submittedAt     DateTime  @default(now())
+  eligibleAt      DateTime?
+  expiresAt       DateTime?
+  createdAt       DateTime  @default(now())
+  account         PaperAccount @relation(fields: [accountId], references: [id])
+  fills           Fill[]
 
   @@index([createdAt])
   @@index([cycleId])
   @@index([status, eligibleAt])
+  @@index([executionMode, venue])
 }
 
 model Fill {
@@ -540,4 +552,139 @@ model AutonomyControl {
   timeoutMs                  Int      @default(120000)
   updatedAt                  DateTime @updatedAt
   updatedBy                  String?
+}
+
+model RiskReservation {
+  id                     String   @id @default(cuid())
+  accountId              String
+  mode                   String   @default("PAPER")
+  clientOrderId          String
+  status                 String
+  cashUsd                Decimal  @db.Decimal(24, 8)
+  exposureUsd            Decimal  @db.Decimal(24, 8)
+  slots                  Int
+  riskUsd                Decimal  @db.Decimal(24, 8)
+  remainingCashUsd       Decimal  @db.Decimal(24, 8) @default(0)
+  remainingExposureUsd   Decimal  @db.Decimal(24, 8) @default(0)
+  remainingRiskUsd       Decimal  @db.Decimal(24, 8) @default(0)
+  remainingSlots         Int      @default(0)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  events                 RiskReservationEvent[]
+
+  @@unique([accountId, mode, clientOrderId])
+  @@index([accountId, status])
+}
+
+model RiskReservationEvent {
+  id            String   @id @default(cuid())
+  reservationId String
+  accountId     String
+  mode          String
+  clientOrderId String
+  type          String
+  payload       Json
+  createdAt     DateTime @default(now())
+  reservation   RiskReservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+  @@index([reservationId, createdAt])
+}
+
+model ProtectionOrder {
+  id                       String   @id @default(cuid())
+  accountId                String
+  positionKey              String
+  ocoGroupId               String
+  kind                     String
+  origin                   String
+  direction                String   @default("LONG")
+  protectedQty             Decimal  @db.Decimal(24, 8) @default(0)
+  remainingQty             Decimal  @db.Decimal(24, 8) @default(0)
+  triggerPriceUsd          Decimal? @db.Decimal(24, 8)
+  /// Last confirmed (acked) trigger — retained when amendment fails.
+  confirmedTriggerPriceUsd Decimal? @db.Decimal(24, 8)
+  /// Desired trigger during amend/submit (may diverge until ACK).
+  desiredTriggerPriceUsd   Decimal? @db.Decimal(24, 8)
+  trailPct                 Decimal? @db.Decimal(16, 6)
+  extremePriceUsd          Decimal? @db.Decimal(24, 8)
+  status                   String
+  /// DESIRED_ONLY | SUBMITTED | ACKED | REJECTED | CANCELLED | UNKNOWN
+  ackState                 String   @default("ACKED")
+  claimWorkerId            String?
+  strategyInstanceId       String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@index([ocoGroupId])
+  @@index([positionKey, status])
+  @@index([status, updatedAt])
+  @@index([accountId, status])
+}
+
+model ProtectionIntent {
+  id          String    @id @default(cuid())
+  accountId   String
+  ocoGroupId  String
+  legId       String
+  status      String
+  reason      String
+  attempts    Int       @default(0)
+  retryAfter  DateTime?
+  resolvedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status, retryAfter])
+  @@index([ocoGroupId])
+}
+
+model StrategyInstance {
+  id              String   @id @default(cuid())
+  name            String
+  version         String
+  accountId       String
+  instrumentIds   String[]
+  timeframe       String   @default("M5")
+  params          Json
+  budgetUsd       Decimal  @db.Decimal(24, 8)
+  health          String   @default("HEALTHY")
+  status          String   @default("ACTIVE")
+  artifactHash    String?
+  sourceHash      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([accountId, status])
+  @@index([status, updatedAt])
+}
+
+model OpportunityFunnelEvent {
+  id           String   @id @default(cuid())
+  /// Account / environment isolation — REPLAY funnel must not mix into paper.
+  accountId    String   @default("primary")
+  cycleId      String
+  pairAddress  String
+  instrumentId String?
+  stage        String
+  reasonCodes  String[]
+  detail       Json?
+  createdAt    DateTime @default(now())
+
+  @@index([cycleId])
+  @@index([stage, createdAt])
+  @@index([accountId, createdAt])
+}
+
+model DurableAlert {
+  id        String    @id @default(cuid())
+  severity  String    @default("INFO")
+  code      String
+  message   String
+  acked     Boolean   @default(false)
+  payload   Json?
+  createdAt DateTime  @default(now())
+  ackedAt   DateTime?
+
+  @@index([acked, createdAt])
 }

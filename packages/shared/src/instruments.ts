@@ -2,13 +2,15 @@ import { z } from "zod";
 
 export const ASSET_CLASSES = [
   "SPOT_CRYPTO_PAIR",
+  "FX_SPOT",
   "EQUITY_INDEX",
   "EQUITY_ETF_PROXY",
   "FUTURES_PROXY",
+  "COMMODITY_PROXY",
 ] as const;
 export type AssetClass = (typeof ASSET_CLASSES)[number];
 
-export const VENUES = ["SOLANA_DEX", "INDEX_REFERENCE", "PAPER"] as const;
+export const VENUES = ["SOLANA_DEX", "INDEX_REFERENCE", "FX_REFERENCE", "PAPER", "EXTERNAL_DEMO"] as const;
 export type Venue = (typeof VENUES)[number];
 
 export const MARKET_PROVIDER_IDS = [
@@ -16,17 +18,25 @@ export const MARKET_PROVIDER_IDS = [
   "birdeye",
   "index_stub",
   "index_yahoo_delayed",
+  "fx_stub",
+  "commodity_stub",
+  "external_demo",
+  "frankfurter_fx",
+  "alpaca_paper",
+  "oanda_practice",
 ] as const;
 export type MarketProviderId = (typeof MARKET_PROVIDER_IDS)[number];
 
 export const EXECUTION_CAPABILITIES = [
   "PAPER_SPOT",
+  "PAPER_FX",
   "RESEARCH_ONLY",
   "NO_EXECUTION",
+  "EXTERNAL_DEMO",
 ] as const;
 export type ExecutionCapability = (typeof EXECUTION_CAPABILITIES)[number];
 
-export const SESSION_KINDS = ["CRYPTO_24x7", "INDEX_RTH", "INDEX_EXTENDED"] as const;
+export const SESSION_KINDS = ["CRYPTO_24x7", "INDEX_RTH", "INDEX_EXTENDED", "FX_WEEKDAY"] as const;
 export type SessionKind = (typeof SESSION_KINDS)[number];
 
 export const instrumentSchema = z
@@ -60,7 +70,7 @@ export const marketSelectionSchema = z
 
 export type MarketSelection = z.infer<typeof marketSelectionSchema>;
 
-/** Seed registry: Solana pair template + major equity indices (non-tradable). */
+/** Seed registry: Solana + FX pairs + equity indices (research) + ETF proxies (paper). */
 export const SEED_INSTRUMENTS: Instrument[] = [
   {
     id: "solana:spot:universe",
@@ -78,6 +88,91 @@ export const SEED_INSTRUMENTS: Instrument[] = [
     executionCapabilities: ["PAPER_SPOT"],
     enabledByDefault: true,
     notes: "Live paper path. Pair addresses discovered at ingest time.",
+  },
+  {
+    id: "fx:EURUSD",
+    symbol: "EURUSD",
+    displayName: "Euro / US Dollar",
+    venue: "FX_REFERENCE",
+    assetClass: "FX_SPOT",
+    base: "EUR",
+    quote: "USD",
+    tickSize: "0.00001",
+    lotSize: "0.01",
+    session: "FX_WEEKDAY",
+    providerId: "fx_stub",
+    providerSymbol: "EURUSD",
+    executionCapabilities: ["PAPER_FX"],
+    enabledByDefault: true,
+    notes: "Currency pair. Internal paper FX; live feed may be BLOCKED_EXTERNAL.",
+  },
+  {
+    id: "fx:GBPUSD",
+    symbol: "GBPUSD",
+    displayName: "British Pound / US Dollar",
+    venue: "FX_REFERENCE",
+    assetClass: "FX_SPOT",
+    base: "GBP",
+    quote: "USD",
+    tickSize: "0.00001",
+    lotSize: "0.01",
+    session: "FX_WEEKDAY",
+    providerId: "fx_stub",
+    providerSymbol: "GBPUSD",
+    executionCapabilities: ["PAPER_FX"],
+    enabledByDefault: true,
+    notes: "Currency pair for multi-market paper.",
+  },
+  {
+    id: "fx:USDJPY",
+    symbol: "USDJPY",
+    displayName: "US Dollar / Japanese Yen",
+    venue: "FX_REFERENCE",
+    assetClass: "FX_SPOT",
+    base: "USD",
+    quote: "JPY",
+    tickSize: "0.001",
+    lotSize: "0.01",
+    session: "FX_WEEKDAY",
+    providerId: "fx_stub",
+    providerSymbol: "USDJPY",
+    executionCapabilities: ["PAPER_FX"],
+    enabledByDefault: false,
+    notes: "Quote is JPY — convert via FX helper before USD risk accounting.",
+  },
+  {
+    id: "etf:SPY",
+    symbol: "SPY",
+    displayName: "SPDR S&P 500 ETF Trust",
+    venue: "PAPER",
+    assetClass: "EQUITY_ETF_PROXY",
+    base: "SPY",
+    quote: "USD",
+    tickSize: "0.01",
+    lotSize: "0.001",
+    session: "INDEX_RTH",
+    providerId: "index_yahoo_delayed",
+    providerSymbol: "SPY",
+    executionCapabilities: ["PAPER_SPOT"],
+    enabledByDefault: true,
+    notes: "Executable ETF proxy for S&P 500 exposure. Not the index level.",
+  },
+  {
+    id: "etf:QQQ",
+    symbol: "QQQ",
+    displayName: "Invesco QQQ Trust",
+    venue: "PAPER",
+    assetClass: "EQUITY_ETF_PROXY",
+    base: "QQQ",
+    quote: "USD",
+    tickSize: "0.01",
+    lotSize: "0.001",
+    session: "INDEX_RTH",
+    providerId: "index_yahoo_delayed",
+    providerSymbol: "QQQ",
+    executionCapabilities: ["PAPER_SPOT"],
+    enabledByDefault: true,
+    notes: "Executable Nasdaq-100 ETF proxy. Not NDX.",
   },
   {
     id: "index:SPX",
@@ -147,13 +242,48 @@ export const SEED_INSTRUMENTS: Instrument[] = [
     enabledByDefault: false,
     notes: "Index level — not DIA. No paper fills.",
   },
+  {
+    id: "commodity:XAUUSD",
+    symbol: "XAUUSD",
+    displayName: "Gold / US Dollar (paper proxy)",
+    venue: "PAPER",
+    assetClass: "COMMODITY_PROXY",
+    base: "XAU",
+    quote: "USD",
+    tickSize: "0.01",
+    lotSize: "0.001",
+    session: "FX_WEEKDAY",
+    providerId: "commodity_stub",
+    providerSymbol: "XAUUSD",
+    executionCapabilities: ["PAPER_SPOT"],
+    enabledByDefault: true,
+    notes: "Paper gold/USD spot proxy (multiplier=1). Not exchange-cleared XAU futures.",
+  },
+  {
+    id: "commodity:WTI",
+    symbol: "WTI",
+    displayName: "WTI Crude Oil (paper proxy)",
+    venue: "PAPER",
+    assetClass: "COMMODITY_PROXY",
+    base: "WTI",
+    quote: "USD",
+    tickSize: "0.01",
+    lotSize: "0.001",
+    session: "INDEX_EXTENDED",
+    providerId: "commodity_stub",
+    providerSymbol: "CL",
+    executionCapabilities: ["PAPER_SPOT"],
+    enabledByDefault: true,
+    notes: "Paper WTI spot proxy units (multiplier=1). CL futures contract size is NOT modelled.",
+  },
 ];
 
 /** Asset classes that may share a single strategy module. */
 const COMPATIBLE_GROUPS: AssetClass[][] = [
   ["SPOT_CRYPTO_PAIR"],
+  ["FX_SPOT"],
   ["EQUITY_INDEX"],
-  ["EQUITY_ETF_PROXY", "FUTURES_PROXY"],
+  ["EQUITY_ETF_PROXY", "FUTURES_PROXY", "COMMODITY_PROXY"],
 ];
 
 export function assertCompatibleInstruments(instruments: Instrument[]): {
@@ -171,12 +301,15 @@ export function assertCompatibleInstruments(instruments: Instrument[]): {
   }
   return {
     ok: false,
-    reason: `Incompatible instrument mix: ${[...classes].join(", ")}. Strategies cannot mix crypto spot with equity indices.`,
+    reason: `Incompatible instrument mix: ${[...classes].join(", ")}. Strategies cannot mix crypto spot with equity indices or FX without an explicit multi-asset allocator.`,
   };
 }
 
 export function canPaperExecute(instrument: Instrument): boolean {
-  return instrument.executionCapabilities.includes("PAPER_SPOT");
+  return (
+    instrument.executionCapabilities.includes("PAPER_SPOT") ||
+    instrument.executionCapabilities.includes("PAPER_FX")
+  );
 }
 
 export function isResearchOnly(instrument: Instrument): boolean {
@@ -185,4 +318,8 @@ export function isResearchOnly(instrument: Instrument): boolean {
     instrument.executionCapabilities.includes("NO_EXECUTION") ||
     instrument.assetClass === "EQUITY_INDEX"
   );
+}
+
+export function findInstrument(id: string): Instrument | undefined {
+  return SEED_INSTRUMENTS.find((item) => item.id === id);
 }

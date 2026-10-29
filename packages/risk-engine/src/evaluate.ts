@@ -9,6 +9,12 @@ export type RiskContext = {
   intent: OrderIntent;
   freshness: DataState;
   allowDelayedExits: boolean;
+  /** When true, DEMO freshness may open paper risk (never relabelled LIVE). */
+  allowDemoPaperEntries?: boolean;
+  /** Hard advisory: block buys while exits remain allowed. */
+  pauseNewEntries?: boolean;
+  /** Account-wide suspension after unknown exposure / reconcile failure. */
+  entriesSuspended?: boolean;
   openPositions: number;
   maxPositions: number;
   dailyPnlUsd: string | null;
@@ -49,8 +55,15 @@ export function evaluateRisk(input: RiskContext): RiskGate {
   if (freshness) return freshness;
 
   if (input.side === "BUY") {
+    if (input.pauseNewEntries) {
+      return gate("REJECT", ["PAUSE_NEW_ENTRIES"], 1);
+    }
+    if (input.entriesSuspended) {
+      return gate("REJECT", ["ENTRIES_SUSPENDED"], 1);
+    }
     if (input.valuation === "INCOMPLETE") return gate("REJECT", ["MARK_UNAVAILABLE"], 0);
-    if (input.valuation !== "LIVE" && input.valuation !== "CASH_ONLY") {
+    const demoOk = input.allowDemoPaperEntries === true && (input.valuation === "DEMO" || input.freshness === "DEMO");
+    if (input.valuation !== "LIVE" && input.valuation !== "CASH_ONLY" && !demoOk) {
       return gate("REJECT", ["VALUATION_NOT_LIVE"], 1);
     }
     if (input.dailyPnlUsd === null) return gate("REJECT", ["DAILY_PNL_UNAVAILABLE"], 0);
@@ -117,7 +130,12 @@ function aggregateExposureGate(input: RiskContext): RiskGate | null {
 function freshnessGate(input: RiskContext): RiskGate | null {
   if (input.freshness === "STALE") return gate("REJECT", ["DATA_STALE"], 1);
   if (input.freshness === "REPLAY") return gate("REJECT", ["DATA_REPLAY"], 1);
-  if (input.freshness === "DEMO") return gate("REJECT", ["DATA_DEMO"], 1);
+  if (input.freshness === "DEMO") {
+    const demoEntry = input.side === "BUY" && input.allowDemoPaperEntries === true;
+    const demoExit = input.side === "SELL" && (input.allowDemoPaperEntries === true || input.allowDelayedExits);
+    if (!demoEntry && !demoExit) return gate("REJECT", ["DATA_DEMO"], 1);
+    return null;
+  }
   if (input.freshness === "DELAYED" && !(input.side === "SELL" && input.allowDelayedExits)) {
     return gate("REJECT", ["DATA_DELAYED"], 1);
   }

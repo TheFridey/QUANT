@@ -21,6 +21,7 @@
     "@odin/backtest": "workspace:*",
     "@odin/evolution": "workspace:*",
     "@odin/market-data": "workspace:*",
+    "@odin/risk-engine": "workspace:*",
     "@odin/shared": "workspace:*",
     "@odin/trading-engine": "workspace:*",
     "bullmq": "^5.61.0",

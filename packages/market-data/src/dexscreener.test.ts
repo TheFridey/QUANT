@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { fetchSolanaUniverse, parseDexPair } from "./dexscreener.js";
+import {
+  discoverySourcesUsed,
+  fetchSolanaUniverse,
+  parseDexPair,
+} from "./dexscreener.js";
 
 const fixture = JSON.parse(
   readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../fixtures/sol-usdc.json"), "utf8"),
@@ -28,25 +32,52 @@ describe("DexScreener parser", () => {
     if (!result.ok) expect(result.code).toBe("UPSTREAM");
   });
 
-  it("discovers solana mints and keeps the WSOL anchor", async () => {
+  it("discovers via organic profiles/search without requiring paid boosts", async () => {
     const calls: string[] = [];
     const result = await fetchSolanaUniverse({
       limit: 5,
+      includeBoosts: true,
       fetchImpl: async (input) => {
         const url = String(input);
         calls.push(url);
         if (url.includes("token-boosts")) {
+          // Boosts fail — organic must still succeed.
+          return new Response("no", { status: 503 });
+        }
+        if (url.includes("token-profiles")) {
           return Response.json([
             { chainId: "solana", tokenAddress: "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN" },
-            { chainId: "ethereum", tokenAddress: "0x0000000000000000000000000000000000000000" },
           ]);
+        }
+        if (url.includes("/latest/dex/search")) {
+          return Response.json({ pairs: [fixture] });
         }
         return Response.json([fixture]);
       },
     });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.data).toHaveLength(1);
-    expect(calls.some((url) => url.includes("So11111111111111111111111111111111111111112"))).toBe(true);
-    expect(calls.some((url) => url.includes("JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"))).toBe(true);
+    if (result.ok) expect(result.data.length).toBeGreaterThan(0);
+    const sources = discoverySourcesUsed(calls);
+    expect(sources.organicPrimary).toBe(true);
+    expect(sources.profiles).toBe(true);
+    expect(sources.search).toBe(true);
+  });
+
+  it("succeeds with includeBoosts=false using search pairs alone", async () => {
+    const calls: string[] = [];
+    const result = await fetchSolanaUniverse({
+      limit: 5,
+      includeBoosts: false,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.includes("token-boosts")) throw new Error("boosts must not be called");
+        if (url.includes("token-profiles")) return Response.json([]);
+        if (url.includes("/latest/dex/search")) return Response.json({ pairs: [fixture, fixture] });
+        return Response.json([fixture]);
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(calls.some((url) => url.includes("token-boosts"))).toBe(false);
   });
 });
