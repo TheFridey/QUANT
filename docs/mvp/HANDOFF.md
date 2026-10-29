@@ -6,7 +6,7 @@
 - Base: `main`
 - PR: https://github.com/TheFridey/QUANT/pull/2
 - Baseline reviewed: `05143f1`
-- HEAD: `61bddb3`
+- HEAD: `253634f` (feature `61bddb3`)
 
 ## What works end-to-end
 
