@@ -885,7 +885,7 @@ export class TerminalService {
       notionalUsd: { toString(): string };
       feeUsd: { toString(): string };
       slippageBps: { toString(): string };
-      observationId: string;
+      observationId: string | null;
     }>;
   }) {
     return {

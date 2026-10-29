@@ -359,6 +359,22 @@ model Order {
   strategyVersion String?
   /// Durable concurrent StrategyInstance owner (§5/§8) — not only a version stamp.
   strategyInstanceId String?
+  /// Canonical TradeIntent that produced this order (null for legacy rows).
+  intentId        String?
+  /// Who owns the economic consequence: STRATEGY | OPERATOR | PROTECTION | ACCOUNT_FLATTEN | NET_CLOSE | LEGACY.
+  ownerScope      String    @default("LEGACY")
+  /// External venue order id (SANDBOX). Null for local PAPER.
+  brokerOrderId   String?
+  /// LOCAL | PRE_SUBMIT | SUBMITTING | ACKED | UNKNOWN | TERMINAL — durable submission outbox state.
+  submissionState String    @default("LOCAL")
+  submitAttempts  Int       @default(0)
+  nextSyncAt      DateTime?
+  lastBrokerSyncAt DateTime?
+  lastBrokerStatus String?
+  lastSubmitError String?
+  /// NONE | REQUESTED | PENDING | CONFIRMED | REJECTED | FILLED_DURING_CANCEL | UNKNOWN
+  cancelState     String    @default("NONE")
+  cancelRequestedAt DateTime?
   submittedAt     DateTime  @default(now())
   eligibleAt      DateTime?
   expiresAt       DateTime?
@@ -372,12 +388,24 @@ model Order {
   @@index([executionMode, venue])
   @@index([strategyInstanceId])
   @@index([accountId, createdAt])
+  @@index([accountId, submissionState])
+  @@index([intentId])
+  @@index([brokerOrderId])
 }
 
 model Fill {
   id            String   @id @default(cuid())
   orderId       String
-  observationId String
+  /// Local simulation observation. Null for broker executions (never fabricated).
+  observationId String?
+  /// LOCAL_SIM | BROKER
+  source        String   @default("LOCAL_SIM")
+  /// Broker execution/activity id — dedupe key with orderId.
+  brokerExecutionId String?
+  executedAt    DateTime?
+  currency      String   @default("USD")
+  /// True when fee is known (local model or broker-reported). False = fee unknown, feeUsd stored as 0 and labelled.
+  feeKnown      Boolean  @default(true)
   pairAddress   String
   side          String
   qty           Decimal  @db.Decimal(24, 8)
@@ -392,6 +420,7 @@ model Fill {
 
   @@index([pairAddress, createdAt])
   @@index([strategyInstanceId])
+  @@unique([orderId, brokerExecutionId])
 }
 
 model Position {
@@ -604,12 +633,16 @@ model RiskReservation {
   remainingExposureUsd   Decimal  @db.Decimal(24, 8) @default(0)
   remainingRiskUsd       Decimal  @db.Decimal(24, 8) @default(0)
   remainingSlots         Int      @default(0)
+  /// Instance capacity owner — instance pending commitment = sum of HELD remainingCashUsd.
+  strategyInstanceId     String?
+  intentId               String?
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
   events                 RiskReservationEvent[]
 
   @@unique([accountId, mode, clientOrderId])
   @@index([accountId, status])
+  @@index([accountId, strategyInstanceId, status])
 }
 
 model RiskReservationEvent {
@@ -720,7 +753,16 @@ model StrategyAllocation {
   avgCostUsd         Decimal  @db.Decimal(24, 8)
   realizedPnlUsd     Decimal  @db.Decimal(24, 8) @default(0)
   committedCapitalUsd Decimal @db.Decimal(24, 8) @default(0)
+  /// Derived display mirror of HELD RiskReservation remainders for this instance+pair. Authority is RiskReservation.
   pendingCapitalUsd  Decimal  @db.Decimal(24, 8) @default(0)
+  /// Quantity committed to in-flight exit orders (prevents concurrent oversell).
+  reservedExitQty    Decimal  @db.Decimal(24, 8) @default(0)
+  /// Cumulative fees attributed to this allocation.
+  feesUsd            Decimal  @db.Decimal(24, 8) @default(0)
+  /// STRATEGY | UNATTRIBUTED | LEGACY
+  ownership          String   @default("STRATEGY")
+  /// False when cost basis is unknown (unattributed/legacy remainder) — never reported as strategy performance.
+  costBasisKnown     Boolean  @default(true)
   updatedAt          DateTime @updatedAt
   createdAt          DateTime @default(now())
 
@@ -778,4 +820,96 @@ model AccountSafetyState {
 
   @@unique([accountId, code])
   @@index([accountId, status])
+}
+
+/// Canonical attributed intent (Stage 2). One row per independent economic intent.
+model TradeIntent {
+  id                 String    @id
+  /// Deterministic identity: retries of the same intent collide here, independent owners never do.
+  idempotencyKey     String    @unique
+  cycleId            String
+  accountId          String
+  tradingEnvironment String
+  executionMode      String    @default("PAPER")
+  venue              String    @default("PAPER")
+  /// STRATEGY | OPERATOR | PROTECTION | ACCOUNT_FLATTEN | NET_CLOSE | RECOVERY
+  source             String
+  strategyInstanceId String?
+  moduleRef          String?
+  strategyVersion    String?
+  configHash         String?
+  artifactHash       String?
+  sourceHash         String?
+  instrumentId       String
+  pairAddress        String
+  /// ENTER | EXIT | REDUCE | CLOSE_NET | FLATTEN
+  action             String
+  side               String
+  requestedQty       Decimal?  @db.Decimal(24, 8)
+  sizedQty           Decimal?  @db.Decimal(24, 8)
+  sizedNotionalUsd   Decimal?  @db.Decimal(24, 8)
+  observationId      String?
+  observationAt      DateTime?
+  reasonCodes        String[]
+  /// PROPOSED | DEFERRED | REJECTED | ADMITTED | SUBMITTED | PENDING | FILLED | PARTIALLY_FILLED | CANCELLED | EXPIRED | UNKNOWN
+  status             String
+  statusReason       String?
+  eligibleAt         DateTime?
+  expiresAt          DateTime?
+  clientOrderId      String?   @unique
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([accountId, createdAt])
+  @@index([cycleId])
+  @@index([accountId, status, createdAt])
+  @@index([strategyInstanceId, createdAt])
+}
+
+/// Durable operator-visible recovery / discrepancy record (Stages 8, 11, 19).
+model RecoveryCase {
+  id            String    @id @default(cuid())
+  /// Idempotent dedupe — repeated detection updates the same case.
+  dedupeKey     String    @unique
+  accountId     String
+  /// ALLOCATION_SETTLEMENT | ALLOCATION_DRIFT | UNKNOWN_SUBMISSION | BROKER_DRIFT | FILL_INCOMPLETE | PROTECTION_GAP | CANCEL_UNKNOWN
+  kind          String
+  severity      String    @default("ERROR")
+  pairAddress   String?
+  strategyInstanceId String?
+  orderId       String?
+  fillId        String?
+  clientOrderId String?
+  detail        Json
+  /// OPEN | RESOLVED
+  status        String    @default("OPEN")
+  resolution    String?
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  resolvedAt    DateTime?
+
+  @@index([accountId, status, createdAt])
+  @@index([kind, status])
+}
+
+/// One reconciliation pass with explicit coverage (Stages 11, 18).
+model ReconciliationRun {
+  id          String    @id @default(cuid())
+  accountId   String
+  /// LOCAL_ALLOCATION | BROKER
+  scope       String
+  venue       String
+  startedAt   DateTime
+  completedAt DateTime?
+  /// CLEAN | DRIFT | INCOMPLETE | FAILED
+  status      String
+  /// True only when every compared list was fully paginated.
+  complete    Boolean   @default(false)
+  coverage    Json
+  differences Json
+  createdAt   DateTime  @default(now())
+
+  @@index([accountId, scope, startedAt])
 }
