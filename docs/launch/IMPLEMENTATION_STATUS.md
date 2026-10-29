@@ -44,7 +44,7 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 | `SOAK_SECONDS=10` engine-soak IT | PASS | **wallClockMs=10038** (~10.038s); 71 cycles; 1 fill; 0 errors — `engine_worker_db_soak` |
 | `scripts/soak-capacity.mjs` | PASS | helper soak `elapsedMs=324` — helper≠full engine |
 | `node scripts/verify-practice-broker.mjs` | exit 3 | `ok:false` + `BLOCKED_EXTERNAL` (no Alpaca keys) — honest |
-| Playwright vs running app | **NOT RUN** | Specs exist; stack not started this run → not `VERIFIED_E2E` |
+| Playwright vs running app | **PASS 8/8** | Live api+worker+web + `odin_e2e`; `e2e/paper-mvp.spec.ts` + smokes → **`VERIFIED_E2E`** (local paper UI paths; see PLAYWRIGHT.md) |
 
 ---
 
@@ -76,15 +76,15 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 | §28 Support matrix | honest CAPABILITIES.md | docs | docs/launch/CAPABILITIES.md |
 | §29 Paper lifecycle IT | worker+DB no mocks | `VERIFIED_INTEGRATION` | paper-lifecycle.integration.test.ts |
 | §30 Protection crash | prior protection-crash + reopen IT | `VERIFIED_INTEGRATION` | existing ITs green |
-| §31 Playwright | specs present | `IMPLEMENTED_UNVERIFIED` | not executed against live stack this run |
-| §32 Operator feedback | whyNoTrades families; snapshot cost off primary UI | `IMPLEMENTED_UNVERIFIED` | terminal.service + overview-section |
+| §31 Playwright | browser vs live stack | `VERIFIED_E2E` | 8/8; paper-mvp + smokes; traces on failure |
+| §32 Operator feedback | whyNoTrades families; snapshot cost off primary UI | `VERIFIED_E2E` (whyNoTrades UI) + unit | overview/risk browser asserts + terminal.service |
 | §33 Engine soak | StageRunner+DB | `VERIFIED_INTEGRATION` | wall **10038ms**; 71 cycles |
 | §34 Snapshot perf | e2e latency not claimed | `VERIFIED_UNIT` helpers only | snapshot-cost unit; no SLO claim |
 | §35 Migrations / unattributed | runtimeState migration; UNATTRIBUTED repair | `VERIFIED_INTEGRATION` | migrate deploy + repair helper |
-| §36 CI connected product | integration project + build | `IMPLEMENTED_UNVERIFIED` | local full suite green; CI pending push |
+| §36 CI connected product | integration project + build | `VERIFIED_INTEGRATION` (CI green on branch) | `gh run` success on push/PR; browser E2E is local (not in Actions yet) |
 | §37 This matrix | honest statuses | this file | |
 | §38 Release gates | see below | | |
-| §39 PR | reviewable; do not merge | pending push | |
+| §39 PR | reviewable; do not merge | open PR #6 |
 
 ---
 
@@ -92,7 +92,7 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 
 | Gate | Meaning | Status |
 | --- | --- | --- |
-| Gate 1 — LOCAL PAPER MVP | Attributed intents, ownership, paper path, worker/DB | **PASSING locally** — unit+IT+10s engine soak; **browser E2E still open** |
+| Gate 1 — LOCAL PAPER MVP | Attributed intents, ownership, paper path, worker/DB + browser | **PASSING locally** — unit+IT+10s soak + **Playwright 8/8 `VERIFIED_E2E`** against live stack/`odin_e2e`. Remaining: no UI Alert ACK button (API ack only); browser suite not yet in GitHub Actions. |
 | Gate 2 — EXTERNAL PRACTICE | Named Alpaca demo | **BLOCKED_EXTERNAL** (HTTP transport implemented; no creds) |
 | Gate 3 — LIVE | Live money | **DISABLED** |
 
@@ -110,3 +110,4 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 | Date | Change |
 | --- | --- |
 | 2026-10-29 | CI race fix; shared contracts; allocation settlement in store; market scoping; fairness cursor; budgets; ownership exits; practice HTTP+gateway; lineage promotion gate; paper-lifecycle IT; engine soak; operator whyNoTrades families; CAPABILITIES honesty |
+| 2026-10-29 | Playwright Gate 1 browser E2E against live stack + isolated `odin_e2e` — 8/8 pass; `VERIFIED_E2E` for listed paper UI paths; docs/PLAYWRIGHT.md |

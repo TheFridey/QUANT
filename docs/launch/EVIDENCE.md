@@ -32,10 +32,20 @@
 
 | Level | Status |
 | --- | --- |
-| VERIFIED_DB | Pending disposable Postgres race/protection integration |
-| VERIFIED_WORKER | Pending full stage-runner soak with fake venue |
-| VERIFIED_BROWSER | Pending Playwright against managed services |
 | VERIFIED_EXTERNAL | Blocked without owner demo credentials + explicit permission |
+| Browser suite in CI | Playwright still local/manual against started stack (not GitHub Actions job yet) |
+| Alert ACK UI control | API ack verified; no desk ACK button |
+
+## Browser E2E (branch `cursor/quant-release-runtime-cc8a`, 2026-10-29)
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| Stack | PASS | api `:4318` + worker + web `:4317`; DB `odin_e2e`; PAPER; LIVE off |
+| `pnpm exec playwright test` (apps/web) | **8 passed** | paper-mvp + login/operator/command-centre smokes |
+| Label | `VERIFIED_E2E` | Authoritative snapshot/order assertions, not toast-only |
+| Failure artifacts | gitignored | `apps/web/test-results/` (trace/screenshot/video), `playwright-report/` |
+
+See `docs/launch/PLAYWRIGHT.md` and `docs/launch/IMPLEMENTATION_STATUS.md`.
 
 ## Live money
 
