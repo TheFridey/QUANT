@@ -158,9 +158,20 @@ export const operatorOrderSchema = z.discriminatedUnion("side", [
       side: z.literal("SELL"),
       pairAddress: z.string().min(1).max(128),
       clientIntentId: clientIntentIdSchema.optional(),
+      /**
+       * NET (default): close the whole local net position, distributed pro-rata across owners.
+       * ALLOCATION: close only `strategyInstanceId`'s owned quantity (optionally partial `qty`).
+       */
+      scope: z.enum(["NET", "ALLOCATION"]).optional(),
+      strategyInstanceId: z.string().min(1).max(128).optional(),
+      qty: z.string().regex(/^\d+(\.\d{1,8})?$/).optional(),
     })
     .strict(),
-]);
+]).superRefine((order, ctx) => {
+  if (order.side === "SELL" && order.scope === "ALLOCATION" && !order.strategyInstanceId) {
+    ctx.addIssue({ code: "custom", message: "ALLOCATION scope requires strategyInstanceId", path: ["strategyInstanceId"] });
+  }
+});
 
 export type OperatorOrder = z.infer<typeof operatorOrderSchema>;
 
