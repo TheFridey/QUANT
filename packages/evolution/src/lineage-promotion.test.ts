@@ -65,7 +65,62 @@ describe("validateLineageForPromotion (§19–§20)", () => {
     if (!bad.ok) expect(bad.reason).toMatch(/report-hash-as-executable|APPROVAL|executable/i);
   });
 
-  it("accepts distinct hashes with matching approval", () => {
+  it("refuses a report that lacks the hypothesis→dataset→experiment chain", () => {
+    const hashes = buildDistinctHashes({
+      source: "src",
+      executable: "exe",
+      config: "cfg",
+      dataset: "ds",
+      report: "rpt",
+      protocol: "proto",
+      deps: "deps",
+    });
+    let chain: LineageChain = { nodes: [] };
+    chain = appendLineageNode(chain, {
+      id: "rpt1",
+      kind: "REPORT",
+      at: new Date().toISOString(),
+      parentId: null,
+      hashes,
+      evaluation: evaluationPartitions({
+        aggregateReturnPct: "1.2",
+        measuredUntouched: true,
+        untouchedTestReturnPct: "0.8",
+        untouchedSampleSize: 30,
+      }),
+    });
+    chain = appendLineageNode(chain, {
+      id: "appr1",
+      kind: "APPROVAL",
+      at: new Date().toISOString(),
+      parentId: "rpt1",
+      hashes: {
+        sourceHash: hashes.sourceHash,
+        executableHash: hashes.executableHash,
+        configHash: hashes.configHash,
+        reportHash: hashes.reportHash,
+      },
+      evaluation: evaluationPartitions({
+        aggregateReturnPct: "1.2",
+        measuredUntouched: true,
+        untouchedTestReturnPct: "0.8",
+        untouchedSampleSize: 30,
+      }),
+      meta: { decision: "APPROVED", reviewer: "operator@odin.local" },
+    });
+    const bad = validateLineageForPromotion({
+      chain,
+      reportId: "rpt1",
+      sourceHash: hashes.sourceHash,
+      artifactHash: hashes.executableHash,
+      configHash: hashes.configHash,
+      approvalId: "appr1",
+    });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.reason).toMatch(/incomplete|HYPOTHESIS|DATASET|EXPERIMENT/i);
+  });
+
+  it("accepts a full HYPOTHESIS→DATASET→EXPERIMENT→REPORT→APPROVAL chain", () => {
     const hashes = buildDistinctHashes({
       source: "src",
       executable: "exe",
