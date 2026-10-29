@@ -281,6 +281,7 @@ export type Snapshot = {
     filled: number;
     rejected: number;
     dropped: number;
+    families?: Array<{ family: string; count: number }>;
     decisiveBlocks: Array<{ agent: string; pairAddress: string; reasonCodes: string[] }>;
     note: string;
   };

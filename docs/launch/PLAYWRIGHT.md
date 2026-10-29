@@ -17,4 +17,6 @@ pnpm exec playwright test               # all e2e
 pnpm exec playwright test e2e/login.spec.ts e2e/operator-desk.spec.ts
 ```
 
-These are **smoke** tests (login gate / paper-only copy). They are **not** full paper lifecycle E2E and must not be labelled VERIFIED_E2E for trading until flows cover entry→fill→protection against a live stack.
+These are **smoke** tests (login gate / paper-only copy / operator desk text). They are **not** full paper lifecycle E2E and must not be labelled VERIFIED_E2E for trading until flows cover entry→fill→protection against a live stack.
+
+**This release run:** Playwright was **not** executed against a running api+web stack. Prefer `apps/worker` paper-lifecycle + engine-soak ITs for trading path evidence until browser E2E is green.

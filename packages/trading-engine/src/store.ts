@@ -4,6 +4,7 @@ import { findEligibleFillObservation } from "./eligible-observation.js";
 import { applyFill, type BookState } from "./ledger.js";
 import { quoteFill } from "./fill.js";
 import { ensurePositionLifecycleOnOpen, reduceProtectionForFill } from "./position-lifecycle.js";
+import { applyAllocationFill } from "./strategy-allocations.js";
 
 export type CommitOrder = {
   clientOrderId: string;
@@ -372,6 +373,14 @@ async function fillExistingPending(
       reduceQty: quoted.fill.qty,
     });
   }
+  await settleStrategyAllocation(tx, {
+    accountId: input.accountId,
+    order: input.order,
+    fillQty: quoted.fill.qty,
+    priceUsd: quoted.fill.priceUsd,
+    feeUsd: quoted.fill.feeUsd,
+    lifecycleId,
+  });
   await tx.paperAccount.update({
     where: { id: input.accountId },
     data: { cashUsd: applied.state.cashUsd },
@@ -559,11 +568,56 @@ async function fillCommittedOrder(
       reduceQty: quoted.fill.qty,
     });
   }
+  await settleStrategyAllocation(tx, {
+    accountId: input.accountId,
+    order: input.order,
+    fillQty: quoted.fill.qty,
+    priceUsd: quoted.fill.priceUsd,
+    feeUsd: quoted.fill.feeUsd,
+    lifecycleId,
+  });
   await tx.paperAccount.update({
     where: { id: input.accountId },
     data: { cashUsd: applied.state.cashUsd },
   });
   return { status: "FILLED", reason: "FILLED" };
+}
+
+/**
+ * Connect strategy-allocations into every fill settlement path (§9).
+ * Unattributed fills (no strategyInstanceId) are skipped — legacy/operator may remain unowned
+ * until reconcile creates an explicit UNATTRIBUTED bucket.
+ */
+async function settleStrategyAllocation(
+  tx: Prisma.TransactionClient,
+  input: {
+    accountId: string;
+    order: CommitOrder;
+    fillQty: string;
+    priceUsd: string;
+    feeUsd: string;
+    lifecycleId: string | null;
+  },
+): Promise<void> {
+  const strategyInstanceId = input.order.strategyInstanceId;
+  if (!strategyInstanceId) return;
+  const result = await applyAllocationFill(tx, {
+    accountId: input.accountId,
+    strategyInstanceId,
+    instrumentId: input.order.instrumentId ?? input.order.pairAddress,
+    pairAddress: input.order.pairAddress,
+    lifecycleId: input.lifecycleId,
+    side: input.order.side,
+    qty: input.fillQty,
+    priceUsd: input.priceUsd,
+    feeUsd: input.feeUsd,
+    forceNetClose: input.order.intent === "FLATTEN",
+  });
+  if (!result.ok && input.order.side === "SELL" && !input.order.intent.includes("FLATTEN")) {
+    // Ownership-aware exit: do not invent allocation; surface via order reason on next reconcile.
+    // Immediate fills already booked venue net — durable alert path is separate.
+    return;
+  }
 }
 
 function resolveObservationFreshness(

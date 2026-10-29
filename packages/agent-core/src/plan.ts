@@ -251,7 +251,20 @@ export function planCycle(input: PlanInput): {
       continue;
     }
 
-    const sized = sizeOrder(pair, book, input, side, intent, valued.equityUsd, aggregateExposure);
+    const strategyInstanceId =
+      (typeof pulse.output.strategyInstanceId === "string" ? pulse.output.strategyInstanceId : null) ??
+      input.concurrentInstanceByPair?.get(pair.pairAddress) ??
+      null;
+    const sized = sizeOrder(
+      pair,
+      book,
+      input,
+      side,
+      intent,
+      valued.equityUsd,
+      aggregateExposure,
+      strategyInstanceId,
+    );
     decisions.push({
       ...sized.decision,
       inputSource: sized.decision.inputSource ?? "portfolio:sizing",
@@ -261,10 +274,6 @@ export function planCycle(input: PlanInput): {
       decisions.push(row("EXECUTOR", pair.pairAddress, "HOLD", ["NO_ORDER"], "1.000000"));
       continue;
     }
-    const strategyInstanceId =
-      (typeof pulse.output.strategyInstanceId === "string" ? pulse.output.strategyInstanceId : null) ??
-      input.concurrentInstanceByPair?.get(pair.pairAddress) ??
-      null;
     const executed = executeOrder(
       input.cycleId,
       pair,
@@ -335,6 +344,7 @@ function sizeOrder(
   intent: OrderIntent,
   equityUsd: string | null,
   aggregateExposureUsd: string,
+  strategyInstanceId: string | null = null,
 ): { decision: DecisionDraft; qty: string | null } {
   const started = Date.now();
   if (side === "SELL") {
@@ -343,6 +353,41 @@ function sizeOrder(
       return {
         qty: null,
         decision: row("ATLAS", pair, "REJECT", ["NO_POSITION"], "1.000000", {}, {}, "portfolio:sizing", Date.now() - started),
+      };
+    }
+    // §11 ownership-aware exit: size to this instance's allocation, not venue net.
+    if (strategyInstanceId && intent !== "FLATTEN" && input.allocationQtyByKey) {
+      const owned = input.allocationQtyByKey.get(`${strategyInstanceId}::${pair.pairAddress}`);
+      if (owned == null || d(owned).lte(0)) {
+        return {
+          qty: null,
+          decision: row(
+            "ATLAS",
+            pair,
+            "REJECT",
+            ["ALLOCATION_NOT_OWNED"],
+            "1.000000",
+            { side, intent, strategyInstanceId },
+            {},
+            "portfolio:sizing",
+            Date.now() - started,
+          ),
+        };
+      }
+      const exitQty = d(owned).lte(d(position.baseQty)) ? owned : position.baseQty;
+      return {
+        qty: exitQty,
+        decision: row(
+          "ATLAS",
+          pair,
+          "ACT",
+          ["SIZE_COMPUTED", "ALLOCATION_EXIT"],
+          "1.000000",
+          { side, intent, qty: exitQty, strategyInstanceId, venueQty: position.baseQty },
+          {},
+          "portfolio:sizing",
+          Date.now() - started,
+        ),
       };
     }
     return {

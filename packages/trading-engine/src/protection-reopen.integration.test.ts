@@ -14,7 +14,7 @@ describe.skipIf(!enabled)("protection reopen lifecycle (R01)", () => {
 
   beforeAll(async () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
-    await prisma.$executeRaw`SELECT pg_advisory_lock(641201)`;
+    await prisma.$executeRaw`SELECT pg_advisory_lock(641099)`;
     await prisma.protectionIntent.deleteMany({ where: { accountId } });
     await prisma.protectionOrder.deleteMany({ where: { accountId } });
     await prisma.paperAccount.upsert({
@@ -32,7 +32,7 @@ describe.skipIf(!enabled)("protection reopen lifecycle (R01)", () => {
   afterAll(async () => {
     await prisma.protectionIntent.deleteMany({ where: { accountId } });
     await prisma.protectionOrder.deleteMany({ where: { accountId } });
-    await prisma.$executeRaw`SELECT pg_advisory_unlock(641201)`;
+    await prisma.$executeRaw`SELECT pg_advisory_unlock(641099)`;
     await prisma.$disconnect();
   });
 

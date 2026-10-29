@@ -13,7 +13,7 @@ describe.skipIf(!enabled)("pending fill uses eligible observation (R04)", () => 
 
   beforeAll(async () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
-    await prisma.$executeRaw`SELECT pg_advisory_lock(641204)`;
+    await prisma.$executeRaw`SELECT pg_advisory_lock(641099)`;
     await prisma.fill.deleteMany({ where: { order: { accountId } } });
     await prisma.ledgerEntry.deleteMany({ where: { accountId } });
     await prisma.order.deleteMany({ where: { accountId } });
@@ -36,7 +36,7 @@ describe.skipIf(!enabled)("pending fill uses eligible observation (R04)", () => 
     await prisma.ledgerEntry.deleteMany({ where: { accountId } });
     await prisma.order.deleteMany({ where: { accountId } });
     await prisma.position.deleteMany({ where: { accountId } });
-    await prisma.$executeRaw`SELECT pg_advisory_unlock(641204)`;
+    await prisma.$executeRaw`SELECT pg_advisory_unlock(641099)`;
     await prisma.$disconnect();
   });
 

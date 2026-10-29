@@ -1,12 +1,13 @@
 import type { ProviderReadiness } from "@odin/shared";
 import { resolveExecutionMode, type ExecutionMode } from "@odin/shared";
+import { AlpacaPracticeBroker, type PracticeBrokerAdapter } from "./practice-broker.js";
 import { inventoryAlpacaCredentials } from "./providers/alpaca-paper.js";
 import { inventoryOandaCredentials } from "./providers/oanda-practice.js";
 
 /**
- * Execution gateway (D09): separates local PAPER booking from external SANDBOX/demo.
- * SANDBOX must never silently stamp local PAPER fills. Prefer NOT_IMPLEMENTED /
- * MISSING_CREDENTIALS over a fake READY. This slice does not place real/demo broker orders.
+ * Execution gateway (D09/§22–§23): separates local PAPER booking from external SANDBOX/demo.
+ * SANDBOX must never silently stamp local PAPER fills. Practice adapter is wired when
+ * Alpaca paper credentials + host are valid; otherwise MISSING_CREDENTIALS / NOT_IMPLEMENTED.
  */
 
 export type GatewayOrderRequest = {
@@ -21,7 +22,7 @@ export type GatewayOrderAck =
   | {
       ok: true;
       brokerOrderId: string;
-      status: "ACKED" | "FILLED" | "REJECTED" | "PENDING";
+      status: "ACKED" | "FILLED" | "REJECTED" | "PENDING" | "UNKNOWN";
       venue: string;
       filledQty: string;
     }
@@ -42,6 +43,14 @@ export type GatewayPositionSnapshot = {
   instrumentId: string;
   qty: string;
   avgPrice: string | null;
+};
+
+export type LocalPaperBook = {
+  getOrder(
+    clientOrderId: string,
+  ): Promise<{ brokerOrderId: string; status: GatewayOrderAck extends { ok: true } ? GatewayOrderAck["status"] : never; filledQty: string } | null>;
+  getPositions(): Promise<GatewayPositionSnapshot[]>;
+  getBalances(): Promise<GatewayBalanceSnapshot[]>;
 };
 
 export interface ExecutionGateway {
@@ -73,71 +82,99 @@ export interface ExecutionGateway {
 export class LocalPaperExecutionGateway implements ExecutionGateway {
   readonly id = "local_paper" as const;
   readonly mode = "PAPER" as const;
+  private readonly submitted = new Map<
+    string,
+    { brokerOrderId: string; status: "ACKED" | "FILLED" | "REJECTED" | "PENDING" | "UNKNOWN"; filledQty: string }
+  >();
+
+  constructor(private readonly book: LocalPaperBook | null = null) {}
 
   readiness(): ProviderReadiness {
     return "READY";
   }
 
   capabilities() {
+    const hasBook = this.book != null;
     return {
       submit: true,
       cancel: true,
       lookup: true,
-      positions: true,
-      balances: true,
+      positions: hasBook,
+      balances: hasBook,
       protection: true,
-      reconcile: true,
+      reconcile: hasBook,
     };
   }
 
   async submitOrder(request: GatewayOrderRequest): Promise<GatewayOrderAck> {
-    // Caller (worker) performs durable local commitProposedOrder — gateway only admits.
-    return {
-      ok: true,
+    const existing = this.submitted.get(request.clientOrderId);
+    if (existing) {
+      return { ok: true, ...existing, venue: "PAPER" };
+    }
+    // Caller (worker) performs durable local commitProposedOrder — gateway admits + tracks id.
+    const row = {
       brokerOrderId: `paper:${request.clientOrderId}`,
-      status: "ACKED",
-      venue: "PAPER",
+      status: "ACKED" as const,
       filledQty: "0",
     };
+    this.submitted.set(request.clientOrderId, row);
+    return { ok: true, ...row, venue: "PAPER" };
   }
 
   async getOrder(clientOrderId: string): Promise<GatewayOrderAck> {
+    if (this.book) {
+      const row = await this.book.getOrder(clientOrderId);
+      if (row) return { ok: true, ...row, venue: "PAPER" };
+    }
+    const mem = this.submitted.get(clientOrderId);
+    if (mem) return { ok: true, ...mem, venue: "PAPER" };
     return {
-      ok: true,
-      brokerOrderId: `paper:${clientOrderId}`,
-      status: "ACKED",
-      venue: "PAPER",
-      filledQty: "0",
+      ok: false,
+      code: "NOT_FOUND",
+      error: `No local paper order for clientOrderId=${clientOrderId}`,
+      readiness: "READY",
     };
   }
 
   async cancelOrder(clientOrderId: string): Promise<GatewayOrderAck> {
-    return {
-      ok: true,
-      brokerOrderId: `paper:${clientOrderId}`,
-      status: "ACKED",
-      venue: "PAPER",
-      filledQty: "0",
+    const current = await this.getOrder(clientOrderId);
+    if (!current.ok) return current;
+    const row = {
+      brokerOrderId: current.brokerOrderId,
+      status: "ACKED" as const,
+      filledQty: current.filledQty,
     };
+    this.submitted.set(clientOrderId, row);
+    return { ok: true, ...row, venue: "PAPER" };
   }
 
   async getPositions() {
-    return { ok: true as const, positions: [] as GatewayPositionSnapshot[] };
+    if (!this.book) {
+      return {
+        ok: false as const,
+        readiness: "READY" as const,
+        error: "positions require LocalPaperBook wiring — empty in-memory stub is not a ledger",
+      };
+    }
+    return { ok: true as const, positions: await this.book.getPositions() };
   }
 
   async getBalances() {
-    return {
-      ok: true as const,
-      balances: [] as GatewayBalanceSnapshot[],
-    };
+    if (!this.book) {
+      return {
+        ok: false as const,
+        readiness: "READY" as const,
+        error: "balances require LocalPaperBook wiring — empty in-memory stub is not a ledger",
+      };
+    }
+    return { ok: true as const, balances: await this.book.getBalances() };
   }
 }
 
 /**
- * SANDBOX / named demo gateway stub.
- * - Missing credentials → MISSING_CREDENTIALS (blocks credentialed verification only).
- * - Credentials present but lifecycle not wired → NOT_IMPLEMENTED (never fake READY).
- * - Never books local PAPER fills and never places broker orders from this stub.
+ * SANDBOX / named demo gateway.
+ * Wires AlpacaPracticeBroker HTTP transport when credentials exist.
+ * Never books local PAPER fills. LIVE refused at createExecutionGateway.
  */
 export class SandboxExecutionGateway implements ExecutionGateway {
   readonly id = "sandbox_demo" as const;
@@ -151,27 +188,44 @@ export class SandboxExecutionGateway implements ExecutionGateway {
       alpacaKeyPresent: false,
       oandaTokenPresent: false,
     },
+    private readonly practice: PracticeBrokerAdapter | null = null,
   ) {}
 
   static fromEnv(env: NodeJS.ProcessEnv = process.env): SandboxExecutionGateway {
     const alpaca = inventoryAlpacaCredentials(env);
     const oanda = inventoryOandaCredentials(env);
-    return new SandboxExecutionGateway({
-      alpacaKeyPresent: alpaca.apiKeyPresent && alpaca.apiSecretPresent,
-      oandaTokenPresent: oanda.tokenPresent && oanda.accountIdPresent,
-    });
+    const alpacaKeyPresent = alpaca.apiKeyPresent && alpaca.apiSecretPresent;
+    const practice = alpacaKeyPresent ? AlpacaPracticeBroker.fromEnv(env) : null;
+    return new SandboxExecutionGateway(
+      {
+        alpacaKeyPresent,
+        oandaTokenPresent: oanda.tokenPresent && oanda.accountIdPresent,
+      },
+      practice,
+    );
   }
 
   readiness(): ProviderReadiness {
+    if (this.practice) return this.practice.readiness();
     if (!this.inventory.alpacaKeyPresent && !this.inventory.oandaTokenPresent) {
       return "MISSING_CREDENTIALS";
     }
-    // Keys may exist for quote verification, but the full submit/protect/reconcile
-    // lifecycle is not yet an integrated gateway — do not claim READY.
     return "NOT_IMPLEMENTED";
   }
 
   capabilities() {
+    if (this.practice) {
+      const caps = this.practice.capabilities();
+      return {
+        submit: caps.orders,
+        cancel: caps.cancel,
+        lookup: caps.lookup,
+        positions: caps.positions,
+        balances: caps.balances,
+        protection: false, // synthetic disclosed — native protection not claimed
+        reconcile: caps.reconcile,
+      };
+    }
     return {
       submit: false,
       cancel: false,
@@ -191,44 +245,131 @@ export class SandboxExecutionGateway implements ExecutionGateway {
       error:
         readiness === "MISSING_CREDENTIALS"
           ? `${op} blocked: missing named demo credentials (verification only)`
-          : `${op} not implemented: SANDBOX must not book local PAPER; full demo lifecycle pending`,
+          : `${op} not implemented: SANDBOX must not book local PAPER; practice adapter unavailable`,
       readiness,
     };
   }
 
-  async submitOrder(_request: GatewayOrderRequest): Promise<GatewayOrderAck> {
-    return this.blocked("submitOrder");
+  async submitOrder(request: GatewayOrderRequest): Promise<GatewayOrderAck> {
+    if (!this.practice) return this.blocked("submitOrder");
+    const result = await this.practice.submitOrder({
+      clientOrderId: request.clientOrderId,
+      symbol: request.instrumentId.replace(/^etf:/, "").replace(/^fx:/, ""),
+      side: request.side === "BUY" ? "buy" : "sell",
+      qty: request.qty,
+      type: "market",
+      timeInForce: "day",
+    });
+    if (!result.ok) {
+      return {
+        ok: false,
+        code: result.code,
+        error: result.error,
+        readiness: this.readiness(),
+      };
+    }
+    return {
+      ok: true,
+      brokerOrderId: result.value.brokerOrderId,
+      status:
+        result.value.status === "filled"
+          ? "FILLED"
+          : result.value.status === "rejected"
+            ? "REJECTED"
+            : result.value.status === "unknown"
+              ? "UNKNOWN"
+              : "PENDING",
+      venue: this.practice.venue,
+      filledQty: "0",
+    };
   }
 
-  async getOrder(_clientOrderId: string): Promise<GatewayOrderAck> {
-    return this.blocked("getOrder");
+  async getOrder(clientOrderId: string): Promise<GatewayOrderAck> {
+    if (!this.practice) return this.blocked("getOrder");
+    const result = await this.practice.lookupOrder(clientOrderId);
+    if (!result.ok) {
+      return { ok: false, code: result.code, error: result.error, readiness: this.readiness() };
+    }
+    return {
+      ok: true,
+      brokerOrderId: result.value.brokerOrderId,
+      status:
+        result.value.status === "filled"
+          ? "FILLED"
+          : result.value.status === "rejected" || result.value.status === "canceled"
+            ? "REJECTED"
+            : result.value.status === "unknown"
+              ? "UNKNOWN"
+              : "PENDING",
+      venue: this.practice.venue,
+      filledQty: result.value.filledQty,
+    };
   }
 
-  async cancelOrder(_clientOrderId: string): Promise<GatewayOrderAck> {
-    return this.blocked("cancelOrder");
+  async cancelOrder(clientOrderId: string): Promise<GatewayOrderAck> {
+    if (!this.practice) return this.blocked("cancelOrder");
+    const result = await this.practice.cancelOrder(clientOrderId);
+    if (!result.ok) {
+      return { ok: false, code: result.code, error: result.error, readiness: this.readiness() };
+    }
+    return {
+      ok: true,
+      brokerOrderId: `cancel:${clientOrderId}`,
+      status: "ACKED",
+      venue: this.practice.venue,
+      filledQty: "0",
+    };
   }
 
   async getPositions() {
-    const readiness = this.readiness();
+    if (!this.practice) {
+      const readiness = this.readiness();
+      return {
+        ok: false as const,
+        readiness,
+        error:
+          readiness === "MISSING_CREDENTIALS"
+            ? "positions blocked: missing credentials"
+            : "positions not implemented on SANDBOX stub",
+      };
+    }
+    const result = await this.practice.getPositions();
+    if (!result.ok) {
+      return { ok: false as const, readiness: this.readiness(), error: result.error };
+    }
     return {
-      ok: false as const,
-      readiness,
-      error:
-        readiness === "MISSING_CREDENTIALS"
-          ? "positions blocked: missing credentials"
-          : "positions not implemented on SANDBOX stub",
+      ok: true as const,
+      positions: result.value.map((p) => ({
+        instrumentId: p.symbol,
+        qty: p.qty,
+        avgPrice: p.avgEntry,
+      })),
     };
   }
 
   async getBalances() {
-    const readiness = this.readiness();
+    if (!this.practice) {
+      const readiness = this.readiness();
+      return {
+        ok: false as const,
+        readiness,
+        error:
+          readiness === "MISSING_CREDENTIALS"
+            ? "balances blocked: missing credentials"
+            : "balances not implemented on SANDBOX stub",
+      };
+    }
+    const result = await this.practice.getBalances();
+    if (!result.ok) {
+      return { ok: false as const, readiness: this.readiness(), error: result.error };
+    }
     return {
-      ok: false as const,
-      readiness,
-      error:
-        readiness === "MISSING_CREDENTIALS"
-          ? "balances blocked: missing credentials"
-          : "balances not implemented on SANDBOX stub",
+      ok: true as const,
+      balances: result.value.map((b) => ({
+        cash: b.cash,
+        currency: b.currency,
+        asOf: new Date().toISOString(),
+      })),
     };
   }
 }
@@ -236,13 +377,14 @@ export class SandboxExecutionGateway implements ExecutionGateway {
 export function createExecutionGateway(
   mode: ExecutionMode = resolveExecutionMode(),
   env: NodeJS.ProcessEnv = process.env,
+  book: LocalPaperBook | null = null,
 ): ExecutionGateway {
   if (mode === "SANDBOX") return SandboxExecutionGateway.fromEnv(env);
   if (mode === "LIVE") {
-    // Live is refused elsewhere; still expose an honest stub.
-    return new SandboxExecutionGateway({ alpacaKeyPresent: false, oandaTokenPresent: false });
+    // Live is refused elsewhere; still expose an honest stub without practice keys.
+    return new SandboxExecutionGateway({ alpacaKeyPresent: false, oandaTokenPresent: false }, null);
   }
-  return new LocalPaperExecutionGateway();
+  return new LocalPaperExecutionGateway(book);
 }
 
 /** True when the worker may perform local PAPER commitProposedOrder. */

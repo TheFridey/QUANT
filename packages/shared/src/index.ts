@@ -20,3 +20,4 @@ export * from "./clock.js";
 export * from "./product-semantics.js";
 export * from "./blocks.js";
 export * from "./evolution.js";
+export * from "./runtime-contracts.js";

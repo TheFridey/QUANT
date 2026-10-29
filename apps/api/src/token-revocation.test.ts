@@ -13,7 +13,8 @@ describe("token revocation store", () => {
   });
 
   it("revokes by id until expiry", async () => {
-    const id = "jti-test-1";
+    // Unique id — Redis-backed revocation survives process memory reset across tests.
+    const id = `jti-test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     expect(await isTokenRevoked(id)).toBe(false);
     await revokeToken(id, Date.now() + 60_000);
     expect(await isTokenRevoked(id)).toBe(true);

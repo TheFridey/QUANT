@@ -45,7 +45,7 @@ describe.skipIf(!enabled)("release1 executor regressions", () => {
 
   beforeAll(async () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
-    await prisma.$executeRaw`SELECT pg_advisory_lock(641299)`;
+    await prisma.$executeRaw`SELECT pg_advisory_lock(641099)`;
     await prisma.$executeRawUnsafe(
       `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "ResearchProposal", "CycleRun", "PaperAccount", "EngineControl", "User", "RiskReservationEvent", "RiskReservation", "ProtectionIntent", "ProtectionOrder", "StrategyInstance", "OpportunityFunnelEvent", "DurableAlert", "AccountSafetyState" RESTART IDENTITY CASCADE`,
     );
@@ -69,7 +69,7 @@ describe.skipIf(!enabled)("release1 executor regressions", () => {
   });
 
   afterAll(async () => {
-    await prisma.$executeRaw`SELECT pg_advisory_unlock(641299)`;
+    await prisma.$executeRaw`SELECT pg_advisory_unlock(641099)`;
     await prisma.$disconnect();
   });
 

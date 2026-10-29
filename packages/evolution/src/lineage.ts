@@ -113,3 +113,47 @@ export function findRollbackTarget(chain: LineageChain, promotionNodeId: string)
   if (!promotion?.parentId) return null;
   return chain.nodes.find((n) => n.id === promotion.parentId) ?? null;
 }
+
+/**
+ * Server-side lineage gate for validated promotion (§19–§20).
+ * Report hash is never treated as executable hash; unknown evaluation stays unknown.
+ */
+export function validateLineageForPromotion(input: {
+  chain: LineageChain;
+  reportId: string;
+  sourceHash: string;
+  artifactHash: string;
+  configHash: string;
+}): { ok: true } | { ok: false; reason: string } {
+  const report = input.chain.nodes.find((n) => n.kind === "REPORT" && n.id === input.reportId);
+  if (!report) {
+    return { ok: false, reason: `Lineage missing durable REPORT node for ${input.reportId}` };
+  }
+  if (report.hashes.reportHash && report.hashes.executableHash && report.hashes.reportHash === report.hashes.executableHash) {
+    return { ok: false, reason: "Lineage refuses report-hash-as-executable" };
+  }
+  if (report.evaluation.unknown && report.evaluation.untouchedTestReturnPct != null) {
+    return { ok: false, reason: "Lineage forbids forged untouched metrics while unknown=true" };
+  }
+  const approval = [...input.chain.nodes].reverse().find((n) => n.kind === "APPROVAL");
+  if (!approval) {
+    return { ok: false, reason: "Validated promotion requires a durable APPROVAL lineage node" };
+  }
+  if (
+    !approvalStillValid({
+      approvedHashes: {
+        sourceHash: approval.hashes.sourceHash ?? "",
+        executableHash: approval.hashes.executableHash ?? "",
+        configHash: approval.hashes.configHash ?? "",
+      },
+      currentHashes: {
+        sourceHash: input.sourceHash,
+        executableHash: input.artifactHash,
+        configHash: input.configHash,
+      },
+    })
+  ) {
+    return { ok: false, reason: "Approval hashes no longer match source/executable/config" };
+  }
+  return { ok: true };
+}
