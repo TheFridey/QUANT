@@ -42,9 +42,9 @@ See also `docs/launch/IMPLEMENTATION_STATUS.md` for Gate 1 programme status.
 
 | Status | Count |
 | --- | --- |
-| IMPLEMENTED | 28 (D01–D27, D30) |
+| IMPLEMENTED | 29 (D01–D28, D30; D28 partial lineage) |
 | OPEN | 1 (D29) |
-| DESIGN | 1 (D28) |
+| DESIGN | 0 |
 | **Total** | **30** |
 
 ### Notes
@@ -52,5 +52,5 @@ See also `docs/launch/IMPLEMENTATION_STATUS.md` for Gate 1 programme status.
 - Gate A code paths updated on this branch; full worker/DB verification still pending for D01/D02/D07.
 - Gate B (local): D08 multi-route mandatory refresh, D09 ExecutionGateway SANDBOX stub (no local PAPER masquerade; full demo lifecycle follow-on), D10 practice URL/readiness, D11 instance ownership, D12 HOLD≠bypass exits, D13 promotion evidence, D15 MarketSelection admission.
 - Gate C (operator UX): D16 ops vs strategy immutability, D17 draft preservation, D18 socket≠market-live refresh hygiene, D19 ticket intent/preview/async receipt, D20 position protection/close actions.
-- Gate D (partial): D14 analytics window labels; D22 history pagination hooks; D23 readiness checklist; D24 nav hierarchy; D25 single-operator auth/socket hardening; D26 loopback compose + rotation note; D27 CI production build; D30 focus-visible/live-region. Remainders: D28 research lineage, D29 snapshot cost, multi-user rooms, tested restore, full-engine/browser soak, CSV export / full onboarding wizard.
+- Gate D (partial): D14 analytics window labels; D22 history pagination hooks; D23 readiness checklist; D24 nav hierarchy; D25 single-operator auth/socket hardening; D26 loopback compose + rotation note; D27 CI production build; D28 lineage helpers (lab UX open); D30 focus-visible/live-region. Remainders: D29 snapshot cost, multi-user rooms, tested restore, full-engine/browser soak, CSV export / full onboarding wizard.
 - Live money remains disabled.
