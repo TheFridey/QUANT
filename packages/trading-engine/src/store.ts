@@ -152,6 +152,8 @@ export async function settlePendingOrder(
       observationId: fillObservation.id,
       reasonCodes: order.reasonCodes as ReasonCode[],
       instrumentId: order.instrumentId,
+      strategyInstanceId: order.strategyInstanceId,
+      strategyVersion: order.strategyVersion,
     },
     config: input.config,
     mode: input.mode,
@@ -326,6 +328,7 @@ async function fillExistingPending(
       feeUsd: quoted.fill.feeUsd,
       slippageBps: quoted.fill.slippageBps,
       liquidityUsd: quoted.fill.liquidityUsd,
+      strategyInstanceId: input.order.strategyInstanceId ?? null,
     },
   });
   await tx.ledgerEntry.createMany({
@@ -343,8 +346,17 @@ async function fillExistingPending(
   if (!nextPosition) throw new Error("POSITION_MISSING_AFTER_FILL");
   await tx.position.upsert({
     where: { accountId_pairAddress: { accountId: input.accountId, pairAddress: input.order.pairAddress } },
-    create: { accountId: input.accountId, ...nextPosition },
-    update: nextPosition,
+    create: {
+      accountId: input.accountId,
+      ...nextPosition,
+      strategyInstanceId: input.order.strategyInstanceId ?? null,
+    },
+    update: {
+      ...nextPosition,
+      ...(input.order.side === "BUY" && input.order.strategyInstanceId
+        ? { strategyInstanceId: input.order.strategyInstanceId }
+        : {}),
+    },
   });
   const lifecycleId = await ensurePositionLifecycleOnOpen(tx, {
     accountId: input.accountId,
@@ -521,8 +533,17 @@ async function fillCommittedOrder(
   if (!nextPosition) throw new Error("POSITION_MISSING_AFTER_FILL");
   await tx.position.upsert({
     where: { accountId_pairAddress: { accountId: input.accountId, pairAddress: input.order.pairAddress } },
-    create: { accountId: input.accountId, ...nextPosition },
-    update: nextPosition,
+    create: {
+      accountId: input.accountId,
+      ...nextPosition,
+      strategyInstanceId: input.order.strategyInstanceId ?? null,
+    },
+    update: {
+      ...nextPosition,
+      ...(input.order.side === "BUY" && input.order.strategyInstanceId
+        ? { strategyInstanceId: input.order.strategyInstanceId }
+        : {}),
+    },
   });
   const lifecycleId = await ensurePositionLifecycleOnOpen(tx, {
     accountId: input.accountId,
