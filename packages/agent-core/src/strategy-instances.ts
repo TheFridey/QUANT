@@ -101,24 +101,52 @@ export async function upsertStrategyInstance(
 
   const existing = await prisma.strategyInstance.findUnique({ where: { id } });
   if (!existing) {
-    const row = await prisma.strategyInstance.create({
-      data: {
-        id,
-        name: input.name,
-        version: input.version,
-        accountId: input.accountId,
-        instrumentIds: input.instrumentIds,
-        timeframe: input.timeframe ?? "M5",
-        params: toJson(input.params ?? {}),
-        budgetUsd: input.budgetUsd,
-        health: input.health ?? "HEALTHY",
-        status: input.status ?? "ACTIVE",
-        moduleRef,
-        artifactHash: input.artifactHash ?? null,
-        sourceHash: input.sourceHash ?? null,
-      },
-    });
-    return mapRow(row);
+    try {
+      const row = await prisma.strategyInstance.create({
+        data: {
+          id,
+          name: input.name,
+          version: input.version,
+          accountId: input.accountId,
+          instrumentIds: input.instrumentIds,
+          timeframe: input.timeframe ?? "M5",
+          params: toJson(input.params ?? {}),
+          budgetUsd: input.budgetUsd,
+          health: input.health ?? "HEALTHY",
+          status: input.status ?? "ACTIVE",
+          moduleRef,
+          artifactHash: input.artifactHash ?? null,
+          sourceHash: input.sourceHash ?? null,
+        },
+      });
+      return mapRow(row);
+    } catch (error) {
+      // Concurrent api+worker (or dual ensureDefault) boot: treat unique races as create-if-absent.
+      const code =
+        error && typeof error === "object" && "code" in error ? String((error as { code: unknown }).code) : "";
+      if (code !== "P2002") throw error;
+      const raced = await prisma.strategyInstance.findUnique({ where: { id } });
+      if (!raced) throw error;
+      if (!input.overwriteOperatorFields) return mapRow(raced);
+      // Operator overwrite lost the race to create — update the row that won.
+      const row = await prisma.strategyInstance.update({
+        where: { id },
+        data: {
+          name: input.name,
+          version: input.version,
+          instrumentIds: input.instrumentIds,
+          timeframe: input.timeframe ?? raced.timeframe,
+          params: input.params !== undefined ? toJson(input.params) : undefined,
+          budgetUsd: input.budgetUsd,
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.health !== undefined ? { health: input.health } : {}),
+          ...(moduleRef !== null ? { moduleRef } : {}),
+          artifactHash: input.artifactHash ?? raced.artifactHash,
+          sourceHash: input.sourceHash ?? raced.sourceHash,
+        },
+      });
+      return mapRow(row);
+    }
   }
 
   // Existing row: seed / default init must preserve operator state.
