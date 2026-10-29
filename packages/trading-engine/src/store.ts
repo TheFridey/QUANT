@@ -1,7 +1,9 @@
 import { classifyFreshness, type DataMode, type ReasonCode, type StrategyConfig } from "@odin/shared";
 import { Prisma, type PrismaClient } from "@odin/shared/db";
+import { findEligibleFillObservation } from "./eligible-observation.js";
 import { applyFill, type BookState } from "./ledger.js";
 import { quoteFill } from "./fill.js";
+import { ensurePositionLifecycleOnOpen, reduceProtectionForFill } from "./position-lifecycle.js";
 
 export type CommitOrder = {
   clientOrderId: string;
@@ -56,6 +58,7 @@ export async function commitProposedOrder(
         qty: input.order.qty,
         filledQty: 0,
         observationId: input.order.observationId,
+        decisionObservationId: input.order.observationId,
         reasonCodes: [...input.order.reasonCodes, "ORDER_PENDING"],
         executionMode: input.order.executionMode ?? "PAPER",
         venue: input.order.venue ?? "PAPER",
@@ -86,8 +89,16 @@ export async function settlePendingOrder(
     config: StrategyConfig;
     mode: DataMode;
     now: Date;
+    tradingEnvironment?: string | null;
   },
-): Promise<{ status: "FILLED" | "PENDING" | "REJECTED" | "EXPIRED" | "SKIP"; reason: ReasonCode | null }> {
+): Promise<{
+  status: "FILLED" | "PENDING" | "REJECTED" | "EXPIRED" | "SKIP";
+  reason: ReasonCode | null;
+  filledQty?: string;
+  side?: "BUY" | "SELL";
+  pairAddress?: string;
+  fillObservationId?: string;
+}> {
   const order = await tx.order.findUnique({ where: { id: input.orderId } });
   if (!order) return { status: "SKIP", reason: null };
   if (order.status !== "PENDING") return { status: "SKIP", reason: "IDEMPOTENT_REPLAY" };
@@ -109,6 +120,18 @@ export async function settlePendingOrder(
     return { status: "REJECTED", reason: "MISSING_PRICE" };
   }
 
+  const eligibleAt = order.eligibleAt ?? input.now;
+  // R04: fill against same-instrument observation at/after eligibility — not the decision quote.
+  const fillObservation = await findEligibleFillObservation(tx, {
+    pairAddress: order.pairAddress,
+    eligibleAt,
+    tradingEnvironment: input.tradingEnvironment ?? input.config.tradingEnvironment ?? null,
+  });
+  if (!fillObservation || fillObservation.priceUsd === null) {
+    // No eligible event yet — keep pending (do not fill on stale pre-eligibility quote).
+    return { status: "PENDING", reason: "ORDER_PENDING" };
+  }
+
   const commitInput = {
     accountId: input.accountId,
     cycleId: order.cycleId,
@@ -119,17 +142,33 @@ export async function settlePendingOrder(
       side: order.side as CommitOrder["side"],
       intent: order.intent as CommitOrder["intent"],
       qty: order.qty.toString(),
-      observationId: order.observationId,
+      observationId: fillObservation.id,
       reasonCodes: order.reasonCodes as ReasonCode[],
+      instrumentId: order.instrumentId,
     },
     config: input.config,
     mode: input.mode,
     now: input.now,
   };
 
-  // Re-use fill path by deleting pending shell then filling under same clientOrderId —
-  // but unique constraint: update in place instead.
-  return fillExistingPending(tx, commitInput, order.id, order.eligibleAt ?? input.now, order.expiresAt);
+  const result = await fillExistingPending(
+    tx,
+    commitInput,
+    order.id,
+    eligibleAt,
+    order.expiresAt,
+    {
+      decisionObservationId: order.decisionObservationId ?? order.observationId,
+      fillObservationId: fillObservation.id,
+    },
+  );
+  return {
+    ...result,
+    filledQty: order.qty.toString(),
+    side: order.side as "BUY" | "SELL",
+    pairAddress: order.pairAddress,
+    fillObservationId: fillObservation.id,
+  };
 }
 
 async function fillExistingPending(
@@ -145,6 +184,7 @@ async function fillExistingPending(
   orderId: string,
   eligibleAt: Date,
   expiresAt: Date | null,
+  provenance?: { decisionObservationId: string | null; fillObservationId: string },
 ): Promise<{ status: "FILLED" | "REJECTED" | "EXPIRED"; reason: ReasonCode | null }> {
   const observation = await tx.marketObservation.findUnique({ where: { id: input.order.observationId } });
   if (!observation || observation.priceUsd === null) {
@@ -233,6 +273,8 @@ async function fillExistingPending(
       realizedPnlUsd: position.realizedPnlUsd.toString(),
     })),
   };
+  const priorPosition = positions.find((p) => p.pairAddress === input.order.pairAddress);
+  const priorQty = priorPosition?.baseQty.toString() ?? "0";
   const applied = applyFill(state, {
     pairAddress: input.order.pairAddress,
     baseSymbol: input.order.baseSymbol,
@@ -247,12 +289,19 @@ async function fillExistingPending(
     return { status: "REJECTED", reason: applied.reason };
   }
 
+  const fillObservationId = provenance?.fillObservationId ?? observation.id;
+  const decisionObservationId =
+    provenance?.decisionObservationId ?? input.order.observationId ?? observation.id;
+
   await tx.order.update({
     where: { id: orderId },
     data: {
       status: "FILLED",
       qty: quoted.fill.qty,
       filledQty: quoted.fill.qty,
+      observationId: decisionObservationId,
+      decisionObservationId,
+      fillObservationId,
       reasonCodes: [...input.order.reasonCodes, "COST_ESTIMATED", "SPREAD_APPLIED", "FILLED"],
       eligibleAt,
       expiresAt,
@@ -261,7 +310,7 @@ async function fillExistingPending(
   const fill = await tx.fill.create({
     data: {
       orderId,
-      observationId: observation.id,
+      observationId: fillObservationId,
       pairAddress: input.order.pairAddress,
       side: input.order.side,
       qty: quoted.fill.qty,
@@ -290,6 +339,20 @@ async function fillExistingPending(
     create: { accountId: input.accountId, ...nextPosition },
     update: nextPosition,
   });
+  const lifecycleId = await ensurePositionLifecycleOnOpen(tx, {
+    accountId: input.accountId,
+    pairAddress: input.order.pairAddress,
+    nextBaseQty: nextPosition.baseQty,
+    priorBaseQty: priorQty,
+  });
+  if (input.order.side === "SELL") {
+    await reduceProtectionForFill(tx, {
+      accountId: input.accountId,
+      pairAddress: input.order.pairAddress,
+      lifecycleId,
+      reduceQty: quoted.fill.qty,
+    });
+  }
   await tx.paperAccount.update({
     where: { id: input.accountId },
     data: { cashUsd: applied.state.cashUsd },
@@ -382,6 +445,8 @@ async function fillCommittedOrder(
       realizedPnlUsd: position.realizedPnlUsd.toString(),
     })),
   };
+  const priorPosition = positions.find((p) => p.pairAddress === input.order.pairAddress);
+  const priorQty = priorPosition?.baseQty.toString() ?? "0";
   const applied = applyFill(state, {
     pairAddress: input.order.pairAddress,
     baseSymbol: input.order.baseSymbol,
@@ -406,6 +471,8 @@ async function fillCommittedOrder(
       qty: quoted.fill.qty,
       filledQty: quoted.fill.qty,
       observationId: observation.id,
+      decisionObservationId: observation.id,
+      fillObservationId: observation.id,
       reasonCodes: [...input.order.reasonCodes, "COST_ESTIMATED", "SPREAD_APPLIED"],
       executionMode: input.order.executionMode ?? "PAPER",
       venue: input.order.venue ?? "PAPER",
@@ -448,6 +515,20 @@ async function fillCommittedOrder(
     create: { accountId: input.accountId, ...nextPosition },
     update: nextPosition,
   });
+  const lifecycleId = await ensurePositionLifecycleOnOpen(tx, {
+    accountId: input.accountId,
+    pairAddress: input.order.pairAddress,
+    nextBaseQty: nextPosition.baseQty,
+    priorBaseQty: priorQty,
+  });
+  if (input.order.side === "SELL") {
+    await reduceProtectionForFill(tx, {
+      accountId: input.accountId,
+      pairAddress: input.order.pairAddress,
+      lifecycleId,
+      reduceQty: quoted.fill.qty,
+    });
+  }
   await tx.paperAccount.update({
     where: { id: input.accountId },
     data: { cashUsd: applied.state.cashUsd },
@@ -465,8 +546,9 @@ function resolveObservationFreshness(
     delayedMaxAgeMs: number;
   },
 ) {
-  // Honour explicit DEMO provenance on stub FX/ETF rows — never promote to LIVE.
+  // Honour explicit DEMO / DELAYED / REPLAY provenance — never promote to LIVE.
   if (stored === "DEMO") return "DEMO" as const;
+  if (stored === "DELAYED") return "DELAYED" as const;
   if (stored === "REPLAY") return "REPLAY" as const;
   return classifyFreshness(input);
 }

@@ -19,7 +19,10 @@ export type DurableProtectionClaim =
   | { ok: false; reason: "RACE_LOST" | "NOT_ARMED" | "GROUP_MISSING" };
 
 /**
- * Persist OCO legs for a position. Idempotent on ocoGroupId.
+ * Persist OCO legs for a position.
+ * Idempotent only while the same ocoGroupId still has ARMED legs (R01).
+ * Terminal historical rows for a reused permanent id must NOT block a new open lot —
+ * callers should mint lifecycle-scoped group ids (`oco_<account>_<pair>_<lifecycleId>`).
  */
 export async function persistOcoGroup(
   prisma: Db,
@@ -27,10 +30,22 @@ export async function persistOcoGroup(
     accountId: string;
     group: OcoGroup;
     strategyInstanceId?: string | null;
+    lifecycleId?: string | null;
   },
 ): Promise<void> {
-  const existing = await prisma.protectionOrder.count({ where: { ocoGroupId: input.group.id } });
-  if (existing > 0) return;
+  const armed = await prisma.protectionOrder.count({
+    where: { ocoGroupId: input.group.id, status: "ARMED" },
+  });
+  if (armed > 0) return;
+  // Drop terminal leftover rows for this group id so reopen can insert fresh legs.
+  await prisma.protectionOrder.deleteMany({
+    where: {
+      ocoGroupId: input.group.id,
+      status: { in: ["CANCELLED", "FILLED", "FAILED"] },
+    },
+  });
+  const stillPresent = await prisma.protectionOrder.count({ where: { ocoGroupId: input.group.id } });
+  if (stillPresent > 0) return;
   for (const leg of input.group.legs) {
     await prisma.protectionOrder.create({
       data: {
@@ -38,6 +53,7 @@ export async function persistOcoGroup(
         accountId: input.accountId,
         positionKey: input.group.positionKey,
         ocoGroupId: input.group.id,
+        lifecycleId: input.lifecycleId ?? null,
         kind: leg.kind,
         origin: leg.origin,
         direction: input.group.direction,

@@ -1,7 +1,6 @@
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import {
-  ALERT_CODES,
   alertAckDoesNotClearSafety,
   parseActiveStrategyIdentity,
   sortAlertsForOps,
@@ -24,14 +23,16 @@ import {
   classifyFreshness,
   classifyReasonCodes,
   d,
+  derivePositionProtectionCoverage,
   emergencyStopSchema,
+  entriesSuspendedFromSafety,
   findInstrument,
   isReasonCode,
   mergeStrategy,
-  metricsAccountIdFor,
   newId,
   operatorOrderSchema,
   productSemanticsFor,
+  resolveExecutionContext,
   stageJobId,
   parseStrategyConfig,
   strategyPatchSchema,
@@ -42,7 +43,12 @@ import {
   type StrategyConfig,
 } from "@odin/shared";
 import { PrismaClient, toJson } from "@odin/shared/db";
-import { allowedActions, compareDesiredVsConfirmed, transition } from "@odin/trading-engine";
+import {
+  allowedActions,
+  compareDesiredVsConfirmed,
+  loadActiveSafetyStates,
+  transition,
+} from "@odin/trading-engine";
 import { Queue } from "bullmq";
 
 @Injectable()
@@ -86,12 +92,18 @@ export class TerminalService {
     const engineRow = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     const configEarly = this.readConfig(engineRow?.config);
     const tradingEnvironment = configEarly?.tradingEnvironment ?? "MARKET_DATA_PAPER";
-    const metricsAccountId = metricsAccountIdFor(tradingEnvironment);
-    // Prefer environment-scoped account; fall back to primary only for MARKET_DATA_PAPER.
-    const account =
-      (await this.prisma.paperAccount.findUnique({ where: { id: metricsAccountId } })) ??
-      (await this.prisma.paperAccount.findUnique({ where: { id: "primary" } }));
-    if (!engineRow || !account) throw new NotFoundException("Paper account is not initialised");
+    const ctx = resolveExecutionContext({
+      config: { tradingEnvironment },
+      dataMode: this.mode(),
+    });
+    const metricsAccountId = ctx.metricsAccountId;
+    // R03: no cross-environment fallback — missing env account is an error, not silent primary bleed.
+    const account = await this.prisma.paperAccount.findUnique({ where: { id: ctx.accountId } });
+    if (!engineRow || !account) {
+      throw new NotFoundException(
+        `Paper account is not initialised for ${tradingEnvironment} (${ctx.accountId})`,
+      );
+    }
     const config = configEarly;
     const latestBatch = await this.prisma.cycleRun.findFirst({
       where: { observationCount: { gt: 0 } },
@@ -179,7 +191,13 @@ export class TerminalService {
       losses: report.losses,
       breakeven: report.breakeven,
     };
-    const openedAtByPair = await this.positionOpenedAt(positions.map((position) => position.pairAddress));
+    const openedAtByPair = await this.positionOpenedAt(
+      account.id,
+      positions.map((position) => ({
+        pairAddress: position.pairAddress,
+        lifecycleId: position.lifecycleId,
+      })),
+    );
     const stopLossPct = config?.stopLossPct ?? null;
     const takeProfitPct = config?.takeProfitPct ?? null;
     const exposureUsd =
@@ -214,7 +232,10 @@ export class TerminalService {
       })),
     );
     const alertsRaw = await this.prisma.durableAlert.findMany({
-      where: { acked: false },
+      where: {
+        acked: false,
+        OR: [{ accountId: account.id }, { accountId: null }],
+      },
       orderBy: { createdAt: "desc" },
       take: 40,
     });
@@ -224,21 +245,34 @@ export class TerminalService {
         createdAt: alert.createdAt,
       })),
     );
-    const protections = await this.prisma.protectionOrder.findMany({
-      where: {
-        accountId: account.id,
-        status: { in: ["ARMED", "TRIGGERED", "SUBMITTED", "CONFIRMED", "FAILED"] },
-      },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-    });
-    const protectedKeys = new Set(protections.map((row) => row.positionKey));
+    // R12: paginate all account protection rows — never truncate active ARMED coverage with take:100.
+    const protections: Awaited<ReturnType<typeof this.prisma.protectionOrder.findMany>> = [];
+    {
+      let cursor: string | undefined;
+      for (;;) {
+        const batch = await this.prisma.protectionOrder.findMany({
+          where: {
+            accountId: account.id,
+            status: { in: ["ARMED", "TRIGGERED", "SUBMITTED", "CONFIRMED", "FAILED"] },
+          },
+          orderBy: { id: "asc" },
+          take: 200,
+          ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+        });
+        protections.push(...batch);
+        if (batch.length < 200) break;
+        cursor = batch[batch.length - 1]!.id;
+      }
+    }
     const unresolvedIntents = await this.prisma.protectionIntent.findMany({
       where: { accountId: account.id, status: "UNRESOLVED" },
       orderBy: { createdAt: "desc" },
       take: 40,
     });
     const unresolvedProtection = unresolvedIntents.length;
+    // R06: suspension from AccountSafetyState — ACK of DurableAlert never clears this.
+    const safetyStates = await loadActiveSafetyStates(this.prisma, account.id);
+    const entriesSuspendedFlag = entriesSuspendedFromSafety(safetyStates);
     const alpacaCreds = inventoryAlpacaCredentials();
     const oandaCreds = inventoryOandaCredentials();
     const providerReadiness = {
@@ -257,7 +291,6 @@ export class TerminalService {
       highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,
       maxTotalDrawdownPct: config?.maxTotalDrawdownPct ?? "10",
     });
-    const entriesSuspendedFlag = alertsSorted.some((alert) => alert.code === ALERT_CODES.ENTRIES_SUSPENDED);
     const riskHierarchy = evaluateRiskHierarchy({
       engineStatus: engineRow.status,
       circuitBreakerOpen: breaker.open,
@@ -489,17 +522,43 @@ export class TerminalService {
               ? null
               : d(position.marketValueUsd).div(d(report.valuation.equityUsd)).mul(100).toFixed(4);
           const positionKey = `${account.id}:${position.pairAddress}`;
-          const protectedLegs = protections.filter(
-            (row) =>
-              row.positionKey === positionKey ||
-              row.positionKey === `primary:${position.pairAddress}` ||
-              row.positionKey.endsWith(`:${position.pairAddress}`),
+          const posRow = positions.find((p) => p.pairAddress === position.pairAddress);
+          const coverage = derivePositionProtectionCoverage({
+            positionKey,
+            lifecycleId: posRow?.lifecycleId ?? null,
+            baseQty: position.baseQty,
+            legs: protections.map((row) => ({
+              positionKey: row.positionKey,
+              lifecycleId: row.lifecycleId,
+              kind: row.kind,
+              origin: row.origin,
+              status: row.status,
+              remainingQty: row.remainingQty.toString(),
+              protectedQty: row.protectedQty.toString(),
+              ackState: row.ackState,
+              triggerPriceUsd: row.triggerPriceUsd?.toString() ?? null,
+              confirmedTriggerPriceUsd: row.confirmedTriggerPriceUsd?.toString() ?? null,
+            })),
+          });
+          const protectedLegs = protections.filter((row) => {
+            const pair = row.positionKey.includes(":")
+              ? row.positionKey.slice(row.positionKey.indexOf(":") + 1)
+              : row.positionKey;
+            if (pair !== position.pairAddress && row.positionKey !== positionKey) return false;
+            if (posRow?.lifecycleId && row.lifecycleId && row.lifecycleId !== posRow.lifecycleId) {
+              return false;
+            }
+            return true;
+          });
+          const stopLeg = protectedLegs.find((row) => row.kind === "STOP" && row.status === "ARMED");
+          const tpLeg = protectedLegs.find((row) => row.kind === "TAKE_PROFIT" && row.status === "ARMED");
+          const effectiveLegs = protectedLegs.filter((row) =>
+            ["ARMED", "TRIGGERED", "SUBMITTED", "CONFIRMED"].includes(row.status),
           );
-          const stopLeg = protectedLegs.find((row) => row.kind === "STOP");
-          const tpLeg = protectedLegs.find((row) => row.kind === "TAKE_PROFIT");
           const confirmed =
-            protectedLegs.length > 0 &&
-            protectedLegs.every(
+            coverage.protected &&
+            effectiveLegs.length > 0 &&
+            effectiveLegs.every(
               (row) =>
                 row.ackState === "ACKED" ||
                 row.origin === "SYNTHETIC_ENGINE" ||
@@ -507,14 +566,13 @@ export class TerminalService {
                 row.status === "ARMED",
             );
           const helperOnly =
-            protectedLegs.length > 0 &&
-            protectedLegs.every((row) => row.origin === "SYNTHETIC_ENGINE");
-          const venueNativeLegs = protectedLegs.filter((row) => row.origin === "VENUE_NATIVE");
+            effectiveLegs.length > 0 &&
+            effectiveLegs.every((row) => row.origin === "SYNTHETIC_ENGINE");
+          const venueNativeLegs = effectiveLegs.filter((row) => row.origin === "VENUE_NATIVE");
           const venueConfirmed =
             venueNativeLegs.length > 0 &&
             venueNativeLegs.every((row) => row.ackState === "ACKED" && row.confirmedTriggerPriceUsd != null);
-          const durableConfirmedStop =
-            stopLeg?.confirmedTriggerPriceUsd?.toString() ?? stopLeg?.triggerPriceUsd?.toString() ?? null;
+          const durableConfirmedStop = coverage.stopTriggerUsd;
           const durableConfirmedTarget =
             tpLeg?.confirmedTriggerPriceUsd?.toString() ?? tpLeg?.triggerPriceUsd?.toString() ?? null;
           const instrument = findInstrument(position.pairAddress);
@@ -549,15 +607,18 @@ export class TerminalService {
             stopLossPct,
             takeProfitPct,
             exposurePct,
-            protected: protectedKeys.has(positionKey) || protectedLegs.length > 0,
-            protectionOrigin: protectedLegs[0]?.origin ?? null,
-            protectionKinds: protectedLegs.map((row) => row.kind),
+            // R12: only active current-lot stop coverage counts as protected — never FAILED/historical.
+            protected: coverage.protected,
+            protectionStatus: coverage.status,
+            protectionRecoveryNeeded: coverage.recoveryNeeded,
+            protectionOrigin: coverage.origin,
+            protectionKinds: coverage.kinds,
             protectionAckState: stopLeg?.ackState ?? tpLeg?.ackState ?? null,
             protectionConfirmed: confirmed,
             protectionHelper: helperOnly,
             protectionVenueConfirmed: venueConfirmed,
             protectionDesireDiverges: desireReport?.desireDivergesFromConfirmed ?? false,
-            protectionStatuses: protectedLegs.map((row) => row.status),
+            protectionStatuses: coverage.statuses,
             productLabel: semantics?.productLabel ?? null,
             paperFamily: semantics?.paperFamily ?? null,
             sessionStatus: session?.status ?? null,
@@ -615,6 +676,10 @@ export class TerminalService {
     };
   }
 
+  /**
+   * ACK is notification-only (R06). Never resolves AccountSafetyState —
+   * worker suspension continues until clean reconcile activates resolveSafetyState.
+   */
   async ackAlert(id: string, actor: string) {
     const row = await this.prisma.durableAlert.findUnique({ where: { id } });
     if (!row) throw new NotFoundException("Alert not found");
@@ -625,7 +690,15 @@ export class TerminalService {
         : {};
     return this.prisma.durableAlert.update({
       where: { id },
-      data: { acked: true, ackedAt: new Date(), payload: toJson({ ...prior, ackedBy: actor }) },
+      data: {
+        acked: true,
+        ackedAt: new Date(),
+        payload: toJson({
+          ...prior,
+          ackedBy: actor,
+          ackDoesNotClearSafety: alertAckDoesNotClearSafety(row.code),
+        }),
+      },
     });
   }
 
@@ -642,12 +715,21 @@ export class TerminalService {
       ? rangeRaw.toUpperCase()
       : "24H";
     const since = equityRangeStart(range);
+    const engineRow = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
+    const config = this.readConfig(engineRow?.config);
+    const ctx = resolveExecutionContext({
+      config: { tradingEnvironment: config?.tradingEnvironment ?? "MARKET_DATA_PAPER" },
+      dataMode: this.mode(),
+    });
     const rows = await this.prisma.equitySnapshot.findMany({
-      where: since ? { createdAt: { gte: since } } : undefined,
+      where: {
+        accountId: ctx.metricsAccountId,
+        ...(since ? { createdAt: { gte: since } } : {}),
+      },
       orderBy: { createdAt: "asc" },
       take: 2_000,
     });
-    const account = await this.prisma.paperAccount.findUnique({ where: { id: "primary" } });
+    const account = await this.prisma.paperAccount.findUnique({ where: { id: ctx.accountId } });
     const points = rows.map((row) => {
       const equity = row.equityUsd?.toString() ?? null;
       const hwm = row.highWaterMarkUsd?.toString() ?? null;
@@ -1297,14 +1379,32 @@ export class TerminalService {
     return { avgSlippageBps, totalSlippageUsd, fillCount: fills.length };
   }
 
-  private async positionOpenedAt(pairAddresses: string[]) {
+  /** Opened-at scoped to account + current lifecycle (R01) — never first BUY ever for the pair. */
+  private async positionOpenedAt(
+    accountId: string,
+    positions: Array<{ pairAddress: string; lifecycleId: string | null }>,
+  ) {
     const result = new Map<string, string>();
-    for (const pairAddress of pairAddresses) {
+    for (const position of positions) {
+      let since: Date | null = null;
+      if (position.lifecycleId) {
+        const lifecycleStart = await this.prisma.protectionOrder.findFirst({
+          where: { accountId, lifecycleId: position.lifecycleId },
+          orderBy: { createdAt: "asc" },
+          select: { createdAt: true },
+        });
+        since = lifecycleStart?.createdAt ?? null;
+      }
       const fill = await this.prisma.fill.findFirst({
-        where: { pairAddress, order: { side: "BUY" } },
+        where: {
+          pairAddress: position.pairAddress,
+          side: "BUY",
+          order: { accountId, side: "BUY" },
+          ...(since ? { createdAt: { gte: since } } : {}),
+        },
         orderBy: { createdAt: "asc" },
       });
-      if (fill) result.set(pairAddress, fill.createdAt.toISOString());
+      if (fill) result.set(position.pairAddress, fill.createdAt.toISOString());
     }
     return result;
   }
