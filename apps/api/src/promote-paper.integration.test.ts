@@ -133,8 +133,9 @@ describe.skipIf(!enabled)("promoted strategy persisted in PostgreSQL", () => {
     await runner.sentinel(ingested.cycleId);
     await runner.pulse(ingested.cycleId);
     const pulse = await prisma.agentDecision.findFirst({ where: { cycleId: ingested.cycleId, agent: "PULSE" } });
-    // With no ACTIVE instances, concurrent gating HOLDs entries (STRATEGY_INSTANCE_GATING).
-    // Promoted NO_EDGE remains valid when gating is inactive; accept either honest HOLD reason.
+    // With no ACTIVE instances, concurrent gating HOLDs entries (STRATEGY_INSTANCE_GATING / NO_INTENT).
+    // Promoted NO_EDGE remains valid when gating is inactive; accept either honest HOLD path.
+    expect(pulse?.decision).toBe("HOLD");
     expect(
       pulse?.reasonCodes.some((c) => c === "NO_EDGE" || c === "STRATEGY_INSTANCE_GATING" || c === "NO_INTENT"),
     ).toBe(true);
