@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   funnelEventsFromPlan,
+  funnelThroughputMetrics,
   recordFunnelEvent,
   summarizeFunnel,
   uniqueFunnelEvents,
@@ -104,5 +105,41 @@ describe("opportunity funnel", () => {
     expect(unique).toHaveLength(2);
     expect(unique.find((e) => e.stage === "DISCOVERED")?.reasonCodes).toContain("DISCOVERY_FILTERED");
     expect(summarizeFunnel(unique).DISCOVERED).toBe(1);
+  });
+
+  it("exposes throughput metrics without inventing a trade quota (§9)", () => {
+    const events = [
+      {
+        cycleId: "c1",
+        pairAddress: "fx:EURUSD",
+        stage: "DISCOVERED" as const,
+        reasonCodes: ["DISCOVERY_RANKED"],
+        at: "t",
+        detail: { strategyInstanceId: "i1" },
+      },
+      {
+        cycleId: "c1",
+        pairAddress: "fx:EURUSD",
+        stage: "REJECTED" as const,
+        reasonCodes: ["SESSION_CLOSED"],
+        at: "t",
+        detail: { strategyInstanceId: "i1" },
+      },
+      {
+        cycleId: "c1",
+        pairAddress: "etf:SPY",
+        stage: "DISCOVERED" as const,
+        reasonCodes: ["DISCOVERY_RANKED"],
+        at: "t",
+        detail: { strategyInstanceId: "i2" },
+      },
+    ];
+    const metrics = funnelThroughputMetrics({ events, capacityRemainingEntries: 3 });
+    expect(metrics.discovered).toBe(2);
+    expect(metrics.rejected).toBe(1);
+    expect(metrics.uniquePairs).toBe(2);
+    expect(metrics.uniqueInstances).toBe(2);
+    expect(metrics.capacityRemainingEntries).toBe(3);
+    expect(metrics.decisiveBlocks[0]?.reason).toBe("SESSION_CLOSED");
   });
 });

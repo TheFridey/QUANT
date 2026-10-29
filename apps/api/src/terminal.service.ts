@@ -7,7 +7,15 @@ import {
   summarizeFunnel,
   type FunnelStage,
 } from "@odin/agent-core";
-import { attributeNetPerformance, performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
+import {
+  attributeNetPerformance,
+  performanceReport,
+  SNAPSHOT_BOUNDS,
+  summarizeSnapshotCost,
+  valuePortfolio,
+  type Mark,
+  type SnapshotQueryPhase,
+} from "@odin/analytics";
 import { BirdeyeClient } from "@odin/market-data";
 import {
   inventoryAlpacaCredentials,
@@ -96,6 +104,14 @@ export class TerminalService {
 
   async snapshot() {
     const now = new Date();
+    const costPhases: SnapshotQueryPhase[] = [];
+    const timed = async <T>(name: string, bounded: boolean, run: () => Promise<T>): Promise<T> => {
+      const started = Date.now();
+      const value = await run();
+      const rows = Array.isArray(value) ? value.length : undefined;
+      costPhases.push({ name, elapsedMs: Date.now() - started, rows, bounded });
+      return value;
+    };
     const engineRow = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     const configEarly = this.readConfig(engineRow?.config);
     const tradingEnvironment = configEarly?.tradingEnvironment ?? "MARKET_DATA_PAPER";
@@ -164,21 +180,25 @@ export class TerminalService {
       where: { accountId: account.id, type: "FEE" },
       _sum: { amountUsd: true },
     });
-    const closedTradeLimit = 200;
-    const equitySeriesLimit = 500;
-    const funnelEventLimit = 200;
-    const closed = await this.prisma.ledgerEntry.findMany({
-      where: { accountId: account.id, type: "REALIZED_PNL" },
-      orderBy: { createdAt: "desc" },
-      take: closedTradeLimit, // analyticsWindows.closedTrades — latest N, not calendar ALL
-    });
+    const closedTradeLimit = SNAPSHOT_BOUNDS.closedTrades;
+    const equitySeriesLimit = SNAPSHOT_BOUNDS.equitySeries;
+    const funnelEventLimit = SNAPSHOT_BOUNDS.funnelEvents;
+    const closed = await timed("closed_trades", true, () =>
+      this.prisma.ledgerEntry.findMany({
+        where: { accountId: account.id, type: "REALIZED_PNL" },
+        orderBy: { createdAt: "desc" },
+        take: closedTradeLimit, // analyticsWindows.closedTrades — latest N, not calendar ALL
+      }),
+    );
     // D14: equity curve sample is earliest N snapshots (asc), not a calendar window.
-    const equitySeriesRows = await this.prisma.equitySnapshot.findMany({
-      where: { accountId: metricsAccountId, equityUsd: { not: null } },
-      orderBy: { createdAt: "asc" },
-      take: equitySeriesLimit,
-      select: { equityUsd: true },
-    });
+    const equitySeriesRows = await timed("equity_series", true, () =>
+      this.prisma.equitySnapshot.findMany({
+        where: { accountId: metricsAccountId, equityUsd: { not: null } },
+        orderBy: { createdAt: "asc" },
+        take: equitySeriesLimit,
+        select: { equityUsd: true },
+      }),
+    );
     const report = performanceReport({
       valuation,
       startingBalanceUsd: account.startingBalanceUsd.toString(),
@@ -215,21 +235,35 @@ export class TerminalService {
     };
     const cycle = await this.prisma.cycleRun.findFirst({ orderBy: { startedAt: "desc" } });
     const decisions = cycle
-      ? await this.prisma.agentDecision.findMany({ where: { cycleId: cycle.id }, orderBy: { createdAt: "asc" }, take: 120 })
+      ? await timed("cycle_decisions", true, () =>
+          this.prisma.agentDecision.findMany({
+            where: { cycleId: cycle.id },
+            orderBy: { createdAt: "asc" },
+            take: SNAPSHOT_BOUNDS.cycleDecisions,
+          }),
+        )
       : [];
-    const recentAgentDecisions = await this.prisma.agentDecision.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 60,
-    });
-    const orders = await this.prisma.order.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 40,
-      include: { fills: true },
-    });
-    const [orderTotal, fillTotal] = await Promise.all([
-      this.prisma.order.count(),
-      this.prisma.fill.count(),
-    ]);
+    const recentAgentDecisions = await timed("recent_agent_decisions", true, () =>
+      this.prisma.agentDecision.findMany({
+        orderBy: { createdAt: "desc" },
+        take: SNAPSHOT_BOUNDS.recentAgentDecisions,
+      }),
+    );
+    const orders = await timed("recent_orders", true, () =>
+      this.prisma.order.findMany({
+        where: { accountId: account.id },
+        orderBy: { createdAt: "desc" },
+        take: SNAPSHOT_BOUNDS.recentOrders,
+        include: { fills: true },
+      }),
+    );
+    // D29: scoped counts (account) instead of global table scans.
+    const [orderTotal, fillTotal] = await timed("order_fill_counts", true, () =>
+      Promise.all([
+        this.prisma.order.count({ where: { accountId: account.id } }),
+        this.prisma.fill.count({ where: { order: { accountId: account.id } } }),
+      ]),
+    );
     const fillStats = await this.fillsStats();
     const closedPnls = closed.map((entry) => entry.amountUsd.toString());
     const largestGainUsd = closedPnls.length === 0 ? null : usd(closedPnls.reduce((best, value) => (d(value).gt(best) ? d(value) : best), d(closedPnls[0]!)));
@@ -264,11 +298,13 @@ export class TerminalService {
     const activeStrategy = parseActiveStrategyIdentity(engineRow.activeStrategy);
     const liveGate = assertPaperOrSandboxOnly(process.env);
     const executionMode = !liveGate.ok ? "REFUSED" : liveGate.mode === "SANDBOX" ? "SANDBOX" : "PAPER";
-    const funnelRows = await this.prisma.opportunityFunnelEvent.findMany({
-      where: { accountId: metricsAccountId },
-      orderBy: { createdAt: "desc" },
-      take: funnelEventLimit,
-    });
+    const funnelRows = await timed("funnel_events", true, () =>
+      this.prisma.opportunityFunnelEvent.findMany({
+        where: { accountId: metricsAccountId },
+        orderBy: { createdAt: "desc" },
+        take: funnelEventLimit,
+      }),
+    );
     analyticsWindows.funnel.sampleSize = funnelRows.length;
     const funnelSummary = summarizeFunnel(
       funnelRows.map((row) => ({
@@ -383,18 +419,40 @@ export class TerminalService {
           createdAt: decision.createdAt.toISOString(),
         };
       });
-    const observabilityRows = await this.prisma.observabilityEvent.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 40,
-    });
-    const strategyInstances = await this.prisma.strategyInstance.findMany({
-      where: { accountId: account.id },
-      orderBy: { updatedAt: "desc" },
-      take: 20,
-    });
+    const observabilityRows = await timed("observability", true, () =>
+      this.prisma.observabilityEvent.findMany({
+        orderBy: { createdAt: "desc" },
+        take: SNAPSHOT_BOUNDS.observability,
+      }),
+    );
+    const strategyInstances = await timed("strategy_instances", true, () =>
+      this.prisma.strategyInstance.findMany({
+        where: { accountId: account.id },
+        orderBy: { updatedAt: "desc" },
+        take: SNAPSHOT_BOUNDS.strategyInstances,
+      }),
+    );
+    const snapshotCost = summarizeSnapshotCost(costPhases);
+    const whyNoTrades = {
+      ordered: funnelSummary.ORDERED ?? 0,
+      filled: funnelSummary.FILLED ?? 0,
+      rejected: funnelSummary.REJECTED ?? 0,
+      dropped: funnelSummary.DROPPED ?? 0,
+      decisiveBlocks: whyBlocked.slice(0, 8).map((row) => ({
+        agent: row.agent,
+        pairAddress: row.pairAddress,
+        reasonCodes: row.reasonCodes,
+      })),
+      note:
+        (funnelSummary.FILLED ?? 0) === 0
+          ? "Zero fills in latest funnel sample — quiet market or blocked admission; not a mandatory trade quota miss."
+          : "Fills present in latest funnel sample.",
+    };
     return {
       serverTime: now.toISOString(),
       venue: "PAPER",
+      snapshotCost,
+      whyNoTrades,
       execution: {
         mode: executionMode,
         liveAllowed: liveGate.ok,

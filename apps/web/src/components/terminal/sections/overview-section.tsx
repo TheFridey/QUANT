@@ -77,6 +77,71 @@ export function OverviewSection() {
         </div>
       ) : null}
       <ReadinessChecklist compact />
+      <Panel title="Operator desk" extra="What is trading / blocked / needs attention">
+        <dl className="grid gap-3 p-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Environment</dt>
+            <dd className="mono">{snapshot.execution?.tradingEnvironment ?? "MARKET_DATA_PAPER"}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Engine</dt>
+            <dd>{snapshot.engine.status}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Freshness</dt>
+            <dd className="mono uppercase">{snapshot.market.mode}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Exec mode</dt>
+            <dd className="mono uppercase">{snapshot.execution?.mode ?? "PAPER"}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Protection debt</dt>
+            <dd className="mono">{unresolved}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Why blocked</dt>
+            <dd className="mono text-[10px]">{dominantHard ?? (breakerOpen ? "CIRCUIT_BREAKER" : "—")}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Open positions</dt>
+            <dd className="mono">{(snapshot.portfolio?.positions ?? []).filter((p) => Number(p.baseQty) > 0).length}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Attention</dt>
+            <dd className="mono">{(snapshot.alerts ?? []).length + unresolved}</dd>
+          </div>
+          <div className="sm:col-span-2 lg:col-span-4">
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Funnel (latest sample)</dt>
+            <dd className="mono text-[10px]">
+              D:{snapshot.funnel?.summary?.DISCOVERED ?? 0} · S:{snapshot.funnel?.summary?.SIGNALLED ?? 0} · O:
+              {snapshot.funnel?.summary?.ORDERED ?? 0} · F:{snapshot.funnel?.summary?.FILLED ?? 0} · R:
+              {snapshot.funnel?.summary?.REJECTED ?? 0}
+            </dd>
+          </div>
+          <div className="sm:col-span-2 lg:col-span-4">
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Why no trades</dt>
+            <dd className="text-[11px] text-muted">
+              {snapshot.whyNoTrades?.note ??
+                "Funnel sample explains quiet days — no mandatory trade quota."}
+              {snapshot.whyNoTrades?.decisiveBlocks?.[0] ? (
+                <span className="mono ml-2 text-[10px]">
+                  top block: {snapshot.whyNoTrades.decisiveBlocks[0].reasonCodes?.join(",") ?? "—"}
+                </span>
+              ) : null}
+            </dd>
+          </div>
+          {snapshot.snapshotCost ? (
+            <div className="sm:col-span-2 lg:col-span-4">
+              <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Snapshot cost (D29)</dt>
+              <dd className="mono text-[10px]">
+                {snapshot.snapshotCost.totalMs}ms · bounded={String(snapshot.snapshotCost.allBounded)} · phases=
+                {snapshot.snapshotCost.phases?.length ?? 0}
+              </dd>
+            </div>
+          ) : null}
+        </dl>
+      </Panel>
       <PortfolioSection />
       <Panel title="Agent pipeline" extra="Click a card for inputs / outputs">
         <div className="grid gap-2 p-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">

@@ -35,6 +35,11 @@ describe.skipIf(!enabled)("paper cycle persistence", () => {
   });
 
   it("turns a live-shaped observation into one paper fill and a ledger that matches cash", async () => {
+    // Isolate from parallel suites that may leave RUNNING cycles on the shared test DB.
+    await prisma.cycleRun.updateMany({
+      where: { status: "RUNNING" },
+      data: { status: "FAILED", error: "TEST_RESET", finishedAt: new Date() },
+    });
     const feed: MarketFeed = {
       async fetchUniverse() {
         return {

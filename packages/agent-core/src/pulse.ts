@@ -140,6 +140,53 @@ export function runPulse(
     );
   }
 
+  // §5: attributed instance ENTER reaches planning directly — HOLD from global/promoted
+  // must not suppress an accepted concurrent ENTER. Empty instance output does not
+  // invent unrelated auto-entry (only pairs present in concurrentEntryByPair).
+  const instanceEntry = input.concurrentEntryByPair?.get(pair.pairAddress);
+  if (instanceEntry && !held) {
+    if (surveillance.decision === "REJECT") {
+      return draft(
+        pair,
+        "HOLD",
+        ["BLOCKED_BY_SENTINEL", "STRATEGY_INSTANCE_ENTRY"],
+        "1.000000",
+        {
+          strategyInstanceId: instanceEntry.strategyInstanceId,
+          strategyVersion: instanceEntry.strategyVersion,
+          moduleRef: instanceEntry.moduleRef ?? null,
+          signal,
+        },
+        signal,
+        started,
+        `strategy-instance:${instanceEntry.strategyInstanceId}`,
+      );
+    }
+    return draft(
+      pair,
+      "ACT",
+      ["STRATEGY_INSTANCE_ENTRY", ...(instanceEntry.reasonCodes as ReasonCode[])],
+      "1.000000",
+      {
+        side: "BUY",
+        intent: "ENTRY",
+        strategyInstanceId: instanceEntry.strategyInstanceId,
+        strategyVersion: instanceEntry.strategyVersion,
+        moduleRef: instanceEntry.moduleRef ?? null,
+        artifactHash: instanceEntry.artifactHash ?? null,
+        sourceHash: instanceEntry.sourceHash ?? null,
+        signal,
+      },
+      signal,
+      started,
+      `strategy-instance:${instanceEntry.strategyInstanceId}`,
+    );
+  }
+
+  // When concurrent instances are the authority, do not fall through to unrelated
+  // global PULSE auto-entry for pairs they did not accept (empty ≠ ungated).
+  const instanceGatingActive = input.concurrentEntryAllowlist != null || input.concurrentEntryByPair != null;
+
   // Promoted strategy modules can drive intents when an activeStrategyId is set.
   const promoted = evaluatePromotedStrategy({
     strategyId: input.activeStrategyId,
@@ -174,6 +221,18 @@ export function runPulse(
       );
     }
     if (promoted.intent === "ENTER_LONG" && !held && surveillance.decision !== "REJECT") {
+      if (instanceGatingActive) {
+        return draft(
+          pair,
+          "HOLD",
+          ["NO_INTENT", "STRATEGY_INSTANCE_GATING"],
+          "1.000000",
+          { strategyId: input.activeStrategyId, signal },
+          signal,
+          started,
+          `strategy:${input.activeStrategyId}`,
+        );
+      }
       return draft(
         pair,
         "ACT",
@@ -265,6 +324,20 @@ export function runPulse(
   if (d(pair.priceChangeM5Pct).abs().gt(input.config.maxEntryM5ChangePct)) {
     return draft(pair, "HOLD", ["PRICE_ANOMALY"], "1.000000", { priceChangeM5Pct: pair.priceChangeM5Pct, signal }, signal, started, baseMeta.inputSource);
   }
+  // When concurrent instances gate entries, empty/missing attributed ENTER ≠ global auto-entry.
+  if (instanceGatingActive) {
+    return draft(
+      pair,
+      "HOLD",
+      ["NO_INTENT", "STRATEGY_INSTANCE_GATING", ...signal.reasonCodes.filter((code) => code !== "PULSE_SIGNAL")],
+      "1.000000",
+      { signal },
+      signal,
+      started,
+      baseMeta.inputSource,
+    );
+  }
+
   // Paper FX/ETF: momentum thresholds without Solana buy/sell txn counts.
   const multiMarket = isPaperMultiMarketPair(pair);
   if (multiMarket) {
