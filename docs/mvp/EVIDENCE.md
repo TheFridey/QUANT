@@ -20,11 +20,11 @@
 ## Latest local run
 
 ```text
-pnpm test             # 267 passed / 1 skipped
+pnpm test             # 279 passed / 1 skipped
 pnpm typecheck        # clean
 pnpm lint             # clean
 pnpm build            # api/worker/web clean
-pnpm db:deploy        # prior migrations; additive only this increment (no new migration)
+pnpm db:deploy        # no new migration this increment (additive-only)
 node scripts/verify-external-providers.mjs  # exit 2 BLOCKED_EXTERNAL_TEST
 node scripts/soak-capacity.mjs              # fixture_shaped_soak (not live SLO)
 ```
@@ -33,21 +33,16 @@ node scripts/soak-capacity.mjs              # fixture_shaped_soak (not live SLO)
 
 | Area | Command | Result |
 | --- | --- | --- |
-| Sessions holidays/DST/FX weekend | `vitest run packages/shared/src/sessions.test.ts` | pass |
-| Held multi-market marks | `vitest run packages/shared/src/held-marks.test.ts` | pass |
-| Product semantics labels/pip | `vitest run packages/shared/src/product-semantics.test.ts` | pass |
-| Risk hierarchy / breakers | `vitest run packages/risk-engine/src/risk-hierarchy.test.ts` | pass |
-| Worker leases | `vitest run packages/risk-engine/src/worker-lease.test.ts` | pass |
-| Desired vs ACK / order ack | `vitest run packages/trading-engine/src/venue-protection.test.ts` | pass |
-| Data integrity windows | `vitest run packages/evolution/src/data-integrity.test.ts` | pass |
-| Instance attribution | `vitest run packages/analytics/src/attribution.test.ts` | pass |
-| Alerts ops depth | `vitest run packages/agent-core/src/alerts.test.ts` | pass |
-| Multi-market held+session E2E | `vitest run packages/agent-core/src/multi-market.e2e.test.ts` | pass |
-| Sandbox skip/pass honesty | `vitest run packages/evolution/src/research-artifact-honesty.test.ts` | pass |
+| Distributed Redis-shaped leases | `vitest run packages/risk-engine/src/redis-worker-lease.test.ts` | pass |
+| BullMQ lease wiring | `vitest run apps/worker/src/stage-lease.wiring.test.ts` | pass |
+| Product catalog / futures refuse | `vitest run packages/shared/src/product-semantics.test.ts` | pass |
+| Frankfurter/ETF offline honesty | `vitest run packages/market-data/src/fx-feed.test.ts` | pass |
+| Contract map D54 | `vitest run packages/agent-core/src/acceptance-contract-map.test.ts` | pass |
+| Multi-market E2E deepen | `vitest run packages/agent-core/src/multi-market.e2e.test.ts` | pass |
 
 ### Migrations
 
-- No new migration this increment (additive-only rule respected; prior `20261029070000` unchanged).
+- No new migration this increment.
 
 ### Capacity / soak
 
@@ -55,4 +50,4 @@ node scripts/soak-capacity.mjs              # fixture_shaped_soak (not live SLO)
 
 ### Security sandbox
 
-- Bubblewrap-dependent evolution tests may skip — environment skip reported honestly as `SKIP_ISOLATION_UNAVAILABLE`, not a trading regression.
+- Bubblewrap-dependent evolution tests may skip — reported as `SKIP_ISOLATION_UNAVAILABLE`, not a trading regression.

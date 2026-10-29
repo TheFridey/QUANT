@@ -64,6 +64,23 @@ export function StrategySection() {
 
   if (!snapshot) return null;
 
+  const ops = snapshot.opsControls;
+  const instances = snapshot.strategyInstances ?? [];
+
+  async function patchOpsFlag(flag: "pauseNewEntries" | "allowDemoPaperEntries" | "multiMarketPaperIngest", value: boolean) {
+    setMessage(null);
+    try {
+      await api("/engine/config", {
+        method: "PATCH",
+        body: JSON.stringify({ [flag]: value }),
+      });
+      await refresh();
+      setMessage(`Ops flag ${flag}=${value} saved (engine must be paused).`);
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Ops flag rejected");
+    }
+  }
+
   async function saveEngine(event: FormEvent) {
     event.preventDefault();
     setMessage(null);
@@ -121,7 +138,102 @@ export function StrategySection() {
   const selected = versions.find((row) => row.id === selectedId) ?? null;
 
   return (
-    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+    <div className="grid gap-3">
+      <Panel title="Operating controls" extra={ops?.engineStatus ?? snapshot.engine.status} className="animate-odin-fade">
+        <div className="grid gap-4 p-4 lg:grid-cols-2">
+          <dl className="grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Allowed actions</dt>
+              <dd className="mono">{(ops?.allowedActions ?? snapshot.engine.allowedActions).join(", ") || "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Flatten requested</dt>
+              <dd className="mono">{ops?.flattenRequested || snapshot.engine.flattenRequested ? "yes" : "no"}</dd>
+            </div>
+            <div>
+              <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Entries suspended</dt>
+              <dd className="mono">{ops?.entriesSuspended ? "yes" : "no"}</dd>
+            </div>
+            <div>
+              <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Circuit breaker</dt>
+              <dd className="mono">{ops?.circuitBreakerOpen ? "OPEN" : "closed"}</dd>
+            </div>
+            <div>
+              <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Risk dominant</dt>
+              <dd className="mono text-[10px]">{ops?.riskDominantHard ?? "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Unresolved protection</dt>
+              <dd className="mono">{ops?.unresolvedProtection ?? 0}</dd>
+            </div>
+          </dl>
+          <div className="space-y-2 text-xs">
+            <p className="text-muted">{ops?.note ?? "Alert ACK does not clear safety suspensions."}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={() => void patchOpsFlag("pauseNewEntries", !(ops?.pauseNewEntries ?? false))}
+              >
+                {ops?.pauseNewEntries ? "Resume new entries" : "Pause new entries"}
+              </Button>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={() => void patchOpsFlag("allowDemoPaperEntries", !(ops?.allowDemoPaperEntries ?? false))}
+              >
+                DEMO entries: {ops?.allowDemoPaperEntries ? "on" : "off"}
+              </Button>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={() => void patchOpsFlag("multiMarketPaperIngest", !(ops?.multiMarketPaperIngest ?? false))}
+              >
+                Multi-market ingest: {ops?.multiMarketPaperIngest ? "on" : "off"}
+              </Button>
+            </div>
+            {(ops?.unresolvedActions?.length ?? 0) > 0 ? (
+              <ul className="mt-2 max-h-28 overflow-auto divide-y divide-border/70 text-[11px]">
+                {ops!.unresolvedActions.slice(0, 6).map((action) => (
+                  <li key={action.id} className="py-1 mono">
+                    {action.reason} · attempts={action.attempts}
+                    {action.retryAfter ? ` · retry ${action.retryAfter}` : ""}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-[11px] text-muted">No unresolved protection intents.</p>
+            )}
+          </div>
+        </div>
+      </Panel>
+
+      <Panel title="Strategy instances" extra={`${instances.length} durable`} className="animate-odin-fade">
+        {instances.length === 0 ? (
+          <p className="p-4 text-xs text-muted">No StrategyInstance rows yet — worker seeds defaults on loadPlan.</p>
+        ) : (
+          <ul className="divide-y divide-border/70 text-xs">
+            {instances.map((row) => (
+              <li key={row.id} className="flex flex-wrap items-start justify-between gap-2 px-4 py-2">
+                <div>
+                  <div className="font-medium">
+                    {row.name} <span className="mono text-[10px] text-muted">@{row.version}</span>
+                  </div>
+                  <div className="mono text-[10px] text-muted">
+                    {row.status}/{row.health} · {row.instrumentIds.join(", ") || "—"} · budget {row.budgetUsd}
+                  </div>
+                </div>
+                <div className="mono text-[10px] text-muted">{row.timeframe}</div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
       <Panel title="Strategy laboratory" extra={`Engine ${snapshot.engine.status}`} className="animate-odin-fade">
         <form className="grid max-w-xl gap-3 p-4" onSubmit={(event) => void saveEngine(event)}>
           <p className="text-xs text-muted">
@@ -197,6 +309,7 @@ export function StrategySection() {
           </p>
         </div>
       </Panel>
+      </div>
     </div>
   );
 }

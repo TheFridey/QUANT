@@ -1,5 +1,11 @@
 import { d } from "./money.js";
-import { findInstrument, type AssetClass, type Instrument, type SessionKind } from "./instruments.js";
+import {
+  SEED_INSTRUMENTS,
+  findInstrument,
+  type AssetClass,
+  type Instrument,
+  type SessionKind,
+} from "./instruments.js";
 
 /**
  * Product economics for sizing / PnL / costs.
@@ -141,6 +147,25 @@ export function productSemanticsFor(instrumentIdOrPair: string): ProductSemantic
       paperFamily: "INDEX_RESEARCH",
     };
   }
+  if (instrument.assetClass === "FUTURES_PROXY") {
+    return {
+      instrumentId: instrument.id,
+      assetClass: instrument.assetClass,
+      currency: instrument.quote,
+      multiplier: "1",
+      tickSize: instrument.tickSize,
+      lotSize: instrument.lotSize,
+      spreadBpsEstimate: "0",
+      feeBps: "0",
+      executionSupported: false,
+      unsupportedReason: "FUTURES_MULTIPLIER_UNSUPPORTED",
+      notes: "Futures contract multiplier not modelled — refuse rather than invent economics",
+      productLabel: `${instrument.symbol} futures proxy (unsupported)`,
+      session: instrument.session,
+      pipSize: null,
+      paperFamily: "UNSUPPORTED",
+    };
+  }
   const executionSupported =
     !instrument.executionCapabilities.includes("NO_EXECUTION") &&
     !instrument.executionCapabilities.includes("RESEARCH_ONLY");
@@ -196,6 +221,67 @@ function unsupportedCommodity(id: string, reason: string): ProductSemantics {
 /** Ops-facing product label for seed instruments (never invents CL futures size). */
 export function productLabelFor(instrumentIdOrPair: string): string | null {
   return productSemanticsFor(instrumentIdOrPair)?.productLabel ?? null;
+}
+
+/**
+ * Honest product catalog roll-up for registry instruments (A09).
+ * FUTURES_PROXY / unknown futures never invent contract multipliers.
+ */
+export type ProductCatalogRow = {
+  instrumentId: string;
+  paperFamily: ProductSemantics["paperFamily"];
+  executionSupported: boolean;
+  productLabel: string;
+  session: SessionKind | null;
+  pipSize: string | null;
+  /** True when quote is non-USD and risk accounting must convert before USD caps. */
+  quoteConversionRequired: boolean;
+  refusesFuturesMultiplier: boolean;
+};
+
+export function productCatalogForSeeds(): ProductCatalogRow[] {
+  return SEED_INSTRUMENTS.map((instrument) => {
+    const semantics = productSemanticsFor(instrument.id);
+    const notes = semantics?.notes.toLowerCase() ?? "";
+    const refusesFutures =
+      instrument.assetClass === "FUTURES_PROXY" ||
+      (instrument.id.startsWith("commodity:") && notes.includes("futures"));
+    return {
+      instrumentId: instrument.id,
+      paperFamily: semantics?.paperFamily ?? "UNSUPPORTED",
+      executionSupported: semantics?.executionSupported ?? false,
+      productLabel: semantics?.productLabel ?? instrument.symbol,
+      session: semantics?.session ?? instrument.session,
+      pipSize: semantics?.pipSize ?? null,
+      quoteConversionRequired: instrument.quote !== "USD",
+      refusesFuturesMultiplier: refusesFutures,
+    };
+  });
+}
+
+/** Refuse sizing for futures-style ids that lack registry/multiplier support. */
+export function refuseUnsupportedFutures(instrumentId: string): {
+  refused: boolean;
+  reason: string | null;
+} {
+  if (instrumentId.startsWith("futures:")) {
+    return { refused: true, reason: "FUTURES_MULTIPLIER_UNSUPPORTED" };
+  }
+  const semantics = productSemanticsFor(instrumentId);
+  if (!semantics) {
+    if (instrumentId.startsWith("commodity:") || instrumentId.startsWith("futures:")) {
+      return { refused: true, reason: "PRODUCT_SEMANTICS_UNSUPPORTED" };
+    }
+    return { refused: false, reason: null };
+  }
+  if (semantics.assetClass === "FUTURES_PROXY") {
+    return { refused: true, reason: semantics.unsupportedReason ?? "FUTURES_MULTIPLIER_UNSUPPORTED" };
+  }
+  if (!semantics.executionSupported && semantics.paperFamily === "UNSUPPORTED") {
+    return { refused: true, reason: semantics.unsupportedReason ?? "PRODUCT_SEMANTICS_UNSUPPORTED" };
+  }
+  // Paper WTI/XAU are proxies (multiplier=1) — not exchange futures; do not refuse the proxy path.
+  return { refused: false, reason: null };
 }
 
 /** Notional in quote currency: price * qty * multiplier. */

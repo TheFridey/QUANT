@@ -222,6 +222,40 @@ export type Snapshot = {
     }>;
     unattributedTrades: number;
   };
+  opsControls?: {
+    engineStatus: string;
+    allowedActions: string[];
+    flattenRequested: boolean;
+    pauseNewEntries: boolean;
+    allowDemoPaperEntries: boolean;
+    multiMarketPaperIngest: boolean;
+    entriesSuspended: boolean;
+    unresolvedProtection: number;
+    unresolvedActions: Array<{
+      id: string;
+      ocoGroupId: string;
+      legId: string;
+      reason: string;
+      attempts: number;
+      retryAfter: string | null;
+    }>;
+    circuitBreakerOpen: boolean;
+    riskDominantHard: string | null;
+    providerReadiness: Record<string, string>;
+    note: string;
+  };
+  strategyInstances?: Array<{
+    id: string;
+    name: string;
+    version: string;
+    status: string;
+    health: string;
+    instrumentIds: string[];
+    budgetUsd: string;
+    timeframe: string;
+    artifactHash: string | null;
+    updatedAt: string;
+  }>;
   activeStrategy?: {
     strategyId: string;
     strategyVersion: string;

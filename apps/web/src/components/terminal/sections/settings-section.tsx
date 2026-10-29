@@ -90,6 +90,43 @@ export function SettingsSection() {
           FIXTURE ingest never feeds MARKET_DATA_PAPER. Named providers stay MISSING_CREDENTIALS until practice keys are set — never fake LIVE.
         </p>
       </Panel>
+      <Panel title="Ops readiness (persisted)" className="lg:col-span-2">
+        <dl className="grid grid-cols-2 gap-3 p-4 text-xs sm:grid-cols-4">
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Engine</dt>
+            <dd className="mono">{snapshot?.opsControls?.engineStatus ?? snapshot?.engine.status ?? "—"}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Allowed actions</dt>
+            <dd className="mono text-[10px]">
+              {(snapshot?.opsControls?.allowedActions ?? snapshot?.engine.allowedActions ?? []).join(", ") || "—"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Unresolved protection</dt>
+            <dd className="mono">{snapshot?.opsControls?.unresolvedProtection ?? snapshot?.execution?.unresolvedProtection ?? 0}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Strategy instances</dt>
+            <dd className="mono">{snapshot?.strategyInstances?.length ?? 0}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Circuit breaker</dt>
+            <dd className="mono">{snapshot?.opsControls?.circuitBreakerOpen ? "OPEN" : "closed"}</dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Entries suspended</dt>
+            <dd className="mono">{snapshot?.opsControls?.entriesSuspended ? "yes" : "no"}</dd>
+          </div>
+          <div className="col-span-2">
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Honesty</dt>
+            <dd className="text-[11px] text-muted">
+              {snapshot?.opsControls?.note ??
+                "Alert ACK does not clear suspension, breaker, or unresolved protection. Credentialed venue ACK stays blocked without practice keys."}
+            </dd>
+          </div>
+        </dl>
+      </Panel>
     </div>
   );
 }

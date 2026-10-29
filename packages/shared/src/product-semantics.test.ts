@@ -3,7 +3,9 @@ import { findInstrument } from "./instruments.js";
 import {
   assertCommoditySemanticsHonest,
   notionalFromProduct,
+  productCatalogForSeeds,
   productSemanticsFor,
+  refuseUnsupportedFutures,
 } from "./product-semantics.js";
 
 describe("commodity product semantics", () => {
@@ -68,5 +70,19 @@ describe("commodity product semantics", () => {
     expect(wti.paperFamily).toBe("COMMODITY_PROXY");
     expect(wti.productLabel).toMatch(/not futures/i);
     expect(wti.notes).toMatch(/CL futures/i);
+  });
+
+  it("catalog marks JPY quote conversion and refuses unsupported futures multipliers", () => {
+    const catalog = productCatalogForSeeds();
+    const jpy = catalog.find((row) => row.instrumentId === "fx:USDJPY");
+    expect(jpy?.quoteConversionRequired).toBe(true);
+    expect(jpy?.executionSupported).toBe(true);
+    const wti = catalog.find((row) => row.instrumentId === "commodity:WTI");
+    expect(wti?.refusesFuturesMultiplier).toBe(true);
+    expect(wti?.executionSupported).toBe(true); // paper proxy still allowed
+    expect(refuseUnsupportedFutures("futures:CL").refused).toBe(true);
+    expect(refuseUnsupportedFutures("commodity:UNKNOWN_FUT").refused).toBe(true);
+    expect(refuseUnsupportedFutures("commodity:WTI").refused).toBe(false);
+    expect(refuseUnsupportedFutures("etf:SPY").refused).toBe(false);
   });
 });

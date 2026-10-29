@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ExternalDemoAdapter, inventoryExternalDemoCredentials } from "./external-demo.js";
 import { FxMarketProvider } from "./fx-feed.js";
 import { AlpacaPaperProvider } from "./providers/alpaca-paper.js";
+import { FrankfurterFxProvider } from "./providers/frankfurter-fx.js";
 import { OandaPracticeProvider } from "./providers/oanda-practice.js";
 
 describe("FX stub + named external providers", () => {
@@ -87,5 +88,51 @@ describe("FX stub + named external providers", () => {
     expect(quotes.ok).toBe(false);
     if (!quotes.ok) expect(quotes.error).toContain("BLOCKED_EXTERNAL_TEST");
     expect(provider.buildOrderSpec("etf:SPY", "BUY").allowed).toBe(false);
+  });
+
+  it("Frankfurter is READY without credentials and labels DELAYED ECB reference marks offline", async () => {
+    const frankfurter = new FrankfurterFxProvider({
+      now: () => new Date("2026-10-28T16:00:00.000Z"),
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ rates: { USD: 1.085 }, date: "2026-10-28" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    expect(frankfurter.readiness()).toBe("READY");
+    const quotes = await frankfurter.getQuotes(["fx:EURUSD"]);
+    expect(quotes.ok).toBe(true);
+    if (quotes.ok) {
+      expect(quotes.data[0]?.dataState).toBe("DELAYED");
+      expect(quotes.data[0]?.provenance).toMatch(/DELAYED|ECB|frankfurter/i);
+      expect(quotes.data[0]?.level).toBe("1.08500000");
+    }
+    // Market-data only — paper order allowed but never claims LIVE venue ACK.
+    expect(frankfurter.buildOrderSpec("fx:EURUSD", "BUY").allowed).toBe(true);
+  });
+
+  it("ETF offline fixture path stays DEMO and never invents LIVE without Alpaca keys", async () => {
+    const missing = new AlpacaPaperProvider({
+      apiKeyPresent: false,
+      apiSecretPresent: false,
+      baseUrl: "https://paper-api.alpaca.markets",
+      dataUrl: "https://data.alpaca.markets",
+    });
+    expect(missing.readiness()).toBe("MISSING_CREDENTIALS");
+    const readyOffline = new AlpacaPaperProvider(
+      {
+        apiKeyPresent: true,
+        apiSecretPresent: true,
+        baseUrl: "https://paper-api.alpaca.markets",
+        dataUrl: "https://data.alpaca.markets",
+      },
+      { quoteFixture: { QQQ: { bid: "440", ask: "440.2", mid: "440.10000000" } } },
+    );
+    const quotes = await readyOffline.getQuotes(["etf:QQQ"]);
+    expect(quotes.ok).toBe(true);
+    if (quotes.ok) {
+      expect(quotes.data[0]?.provenance).toContain("offline_fixture");
+      expect(quotes.data[0]?.dataState).not.toBe("LIVE");
+    }
   });
 });

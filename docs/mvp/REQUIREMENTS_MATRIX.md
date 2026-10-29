@@ -6,8 +6,8 @@ Mechanical roll-up from ACCEPTANCE_SCENARIOS (implementation ≠ verification):
 
 | Status | Count | Notes |
 | --- | --- | --- |
-| VERIFIED_OFFLINE | 48 | Includes sessions/holidays/DST, held multi-market marks, risk hierarchy, attribution, UX diagnostics |
-| PARTIAL | 9 | Credentialed feeds, venue ACK live path, BullMQ multi-process locks, capacity SLO, ops UI depth |
+| VERIFIED_OFFLINE | 52 | Includes ops controls UI, Redis stage leases, product catalog, contract map |
+| PARTIAL | 5 | Credentialed FX/ETF/venue ACK + fixture-shaped E2E/capacity SLO |
 | IMPLEMENTED_UNVERIFIED | 0 | — |
 | BLOCKED_EXTERNAL_TEST | 1 | C40 named external demo (credentialed) |
 | VERIFIED_EXTERNAL | 0 | none |
@@ -28,6 +28,8 @@ Mechanical roll-up from ACCEPTANCE_SCENARIOS (implementation ≠ verification):
 | Session equity / HWM | VERIFIED_OFFLINE | `rollSessionEquity` persisted in loadPlan |
 | Sessions holidays/DST/FX weekend | VERIFIED_OFFLINE | sessions.test + plan SESSION_CLOSED |
 | Risk hierarchy / breakers | VERIFIED_OFFLINE | risk-hierarchy + planCycle + terminal diagnostics |
+| Redis stage leases (D51) | VERIFIED_OFFLINE | StageLeaseService wired into BullMQ processors |
+| Ops controls UI (D48) | VERIFIED_OFFLINE | opsControls + strategyInstances from snapshot |
 | Capacity 50 slots | PARTIAL | PG soak fixture-shaped without live feeds |
 | External demo C40 | BLOCKED_EXTERNAL_TEST | READY only with practice keys |
 

@@ -1,5 +1,10 @@
-import { DEFAULT_STRATEGY, type CyclePair } from "@odin/shared";
-import { armOco, evaluateOco } from "@odin/trading-engine";
+import {
+  DEFAULT_STRATEGY,
+  productCatalogForSeeds,
+  refuseUnsupportedFutures,
+  type CyclePair,
+} from "@odin/shared";
+import { armOco, evaluateOco, transitionOrderAck } from "@odin/trading-engine";
 import { ReservationLedger } from "@odin/risk-engine";
 import { describe, expect, it } from "vitest";
 import { planCycle, type PlanInput } from "./plan.js";
@@ -299,6 +304,18 @@ describe("multi-market paper E2E", () => {
         (d) => d.pairAddress === "fx:EURUSD" && d.reasonCodes.includes("SESSION_CLOSED"),
       ),
     ).toBe(true);
+  });
+
+  it("refuses unsupported futures multipliers while allowing paper FX/ETF/commodity proxies", () => {
+    const catalog = productCatalogForSeeds();
+    expect(catalog.some((row) => row.instrumentId === "fx:EURUSD" && row.executionSupported)).toBe(true);
+    expect(catalog.some((row) => row.instrumentId === "etf:SPY" && row.paperFamily === "ETF_PROXY")).toBe(true);
+    expect(catalog.some((row) => row.instrumentId === "index:SPX" && !row.executionSupported)).toBe(true);
+    expect(refuseUnsupportedFutures("futures:CL").refused).toBe(true);
+    expect(transitionOrderAck("NEW", "submit")).toBe("SUBMITTED");
+    expect(transitionOrderAck("SUBMITTED", "ack")).toBe("ACKED");
+    // Offline ack modelling never invents FILLED without an explicit fill event.
+    expect(transitionOrderAck("ACKED", "ack")).toEqual({ ok: false, reason: "INVALID_TRANSITION:ACKED+ack" });
   });
 });
 

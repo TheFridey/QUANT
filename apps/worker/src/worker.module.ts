@@ -14,6 +14,7 @@ import {
 } from "./processors.js";
 import { RedisBus } from "./redis-bus.js";
 import { Scheduler } from "./scheduler.js";
+import { StageLeaseService } from "./stage-lease.js";
 import { liveFeed, StageRunner } from "./stage-runner.js";
 
 const queues = Object.values(QUEUES).map((name) => ({ name }));
@@ -31,6 +32,7 @@ const queues = Object.values(QUEUES).map((name) => ({ name }));
   ],
   providers: [
     RedisBus,
+    StageLeaseService,
     {
       provide: PrismaClient,
       useFactory: () => createPrismaClient(),

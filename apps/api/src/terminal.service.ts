@@ -305,6 +305,11 @@ export class TerminalService {
       orderBy: { createdAt: "desc" },
       take: 40,
     });
+    const strategyInstances = await this.prisma.strategyInstance.findMany({
+      where: { accountId: account.id },
+      orderBy: { updatedAt: "desc" },
+      take: 20,
+    });
     return {
       serverTime: now.toISOString(),
       venue: "PAPER",
@@ -399,6 +404,40 @@ export class TerminalService {
         allowedActions: allowedActions(engineRow.status as "STOPPED"),
         updatedAt: engineRow.updatedAt.toISOString(),
       },
+      opsControls: {
+        engineStatus: engineRow.status,
+        allowedActions: allowedActions(engineRow.status as "STOPPED"),
+        flattenRequested: engineRow.flattenRequested,
+        pauseNewEntries: config?.pauseNewEntries === true,
+        allowDemoPaperEntries: config?.allowDemoPaperEntries === true,
+        multiMarketPaperIngest: config?.multiMarketPaperIngest === true,
+        entriesSuspended: entriesSuspendedFlag,
+        unresolvedProtection,
+        unresolvedActions: unresolvedIntents.map((intent) => ({
+          id: intent.id,
+          ocoGroupId: intent.ocoGroupId,
+          legId: intent.legId,
+          reason: intent.reason,
+          attempts: intent.attempts,
+          retryAfter: intent.retryAfter?.toISOString() ?? null,
+        })),
+        circuitBreakerOpen: breaker.open,
+        riskDominantHard: riskHierarchy.dominantHard?.kind ?? null,
+        providerReadiness,
+        note: "Alert ACK does not clear suspension, breaker, or unresolved protection intents",
+      },
+      strategyInstances: strategyInstances.map((row) => ({
+        id: row.id,
+        name: row.name,
+        version: row.version,
+        status: row.status,
+        health: row.health,
+        instrumentIds: row.instrumentIds,
+        budgetUsd: row.budgetUsd.toString(),
+        timeframe: row.timeframe,
+        artifactHash: row.artifactHash,
+        updatedAt: row.updatedAt.toISOString(),
+      })),
       market: {
         dataState: worst(states),
         mode: this.mode(),
