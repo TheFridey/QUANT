@@ -21,6 +21,8 @@ model EngineControl {
   flattenRequested Boolean  @default(false)
   config           Json
   activeStrategy   Json?
+  /// Non-strategy runtime: fairnessCursor, last diagnostics (§15/§16). Not StrategyConfig.
+  runtimeState     Json?
   updatedAt        DateTime @updatedAt
   updatedBy        String?
 }

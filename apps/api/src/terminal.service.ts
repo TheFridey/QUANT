@@ -433,11 +433,36 @@ export class TerminalService {
       }),
     );
     const snapshotCost = summarizeSnapshotCost(costPhases);
+    const familyCounts = new Map<string, number>();
+    for (const row of whyBlocked) {
+      for (const code of row.reasonCodes) {
+        const family =
+          code === "NO_EDGE"
+            ? "NO_EDGE"
+            : code === "NO_INTENT" || code === "STRATEGY_INSTANCE_GATING"
+              ? "NO_INTENT"
+              : code === "BUDGET_EXHAUSTED"
+                ? "BUDGET_EXHAUSTED"
+                : code === "MARKET_ENTRY_DISABLED"
+                  ? "MARKET_ENTRY_DISABLED"
+                  : code === "ENTRIES_SUSPENDED" || code === "PAUSE_NEW_ENTRIES"
+                    ? "ENTRIES_SUSPENDED"
+                    : code === "PROTECTION_UNRESOLVED" || code === "PROTECTION_RECOVERY"
+                      ? "PROTECTION_RECOVERY"
+                      : code === "MISSING_CREDENTIALS" || code === "BLOCKED_EXTERNAL"
+                        ? "BLOCKED_EXTERNAL"
+                        : code === "ENGINE_HALTED"
+                          ? "ENGINE_NOT_RUNNING"
+                          : null;
+        if (family) familyCounts.set(family, (familyCounts.get(family) ?? 0) + 1);
+      }
+    }
     const whyNoTrades = {
       ordered: funnelSummary.ORDERED ?? 0,
       filled: funnelSummary.FILLED ?? 0,
       rejected: funnelSummary.REJECTED ?? 0,
       dropped: funnelSummary.DROPPED ?? 0,
+      families: [...familyCounts.entries()].map(([family, count]) => ({ family, count })),
       decisiveBlocks: whyBlocked.slice(0, 8).map((row) => ({
         agent: row.agent,
         pairAddress: row.pairAddress,
@@ -445,7 +470,7 @@ export class TerminalService {
       })),
       note:
         (funnelSummary.FILLED ?? 0) === 0
-          ? "Zero fills in latest funnel sample — quiet market or blocked admission; not a mandatory trade quota miss."
+          ? "Zero fills in latest funnel sample — distinguish quiet NO_EDGE from gating/budget/safety; not a trade quota miss."
           : "Fills present in latest funnel sample.",
     };
     return {

@@ -6,6 +6,7 @@ import {
   ensureDefaultStrategyInstances,
   entriesSuspendedAlert,
   evaluateConcurrentInstances,
+  filterSignalsByInstanceBudget,
   funnelEventsFromPlan,
   uniqueFunnelEvents,
   liveGateAlert,
@@ -957,20 +958,56 @@ export class StageRunner {
       },
       tradingEnvironment: ctx.tradingEnvironment,
     });
-    // One invalid instance must not abort healthy ones — errors are isolated per instance.
+    // §16: Persist strategy failure diagnostics without aborting healthy instances or flooding alerts.
     if (evaluated.errors.length > 0) {
-      // Durable funnel/audit can pick these up; never throw — healthy instances continue.
-      void cycleId;
+      const prior = (engine.runtimeState as { instanceDiagnostics?: unknown } | null) ?? {};
+      await db.engineControl.update({
+        where: { id: engine.id },
+        data: {
+          runtimeState: {
+            ...prior,
+            instanceDiagnostics: {
+              cycleId,
+              at: now.toISOString(),
+              errors: evaluated.errors.slice(0, 20),
+            },
+          },
+        },
+      });
     }
+    const runtimeState = (engine.runtimeState as { fairnessCursor?: string | null } | null) ?? {};
+    const budgetFiltered = await filterSignalsByInstanceBudget(db, ctx.accountId, instances, evaluated.signals);
     const allocated = allocateOpportunities({
-      signals: evaluated.signals,
+      signals: budgetFiltered,
       maxNewEntries: Math.max(1, config.maxPositions - positionViews.filter((p) => d(p.baseQty).gt(0)).length),
+      fairnessCursor: runtimeState.fairnessCursor ?? null,
     });
+    if (allocated.nextFairnessCursor !== (runtimeState.fairnessCursor ?? null)) {
+      await db.engineControl.update({
+        where: { id: engine.id },
+        data: {
+          runtimeState: {
+            ...runtimeState,
+            fairnessCursor: allocated.nextFairnessCursor,
+            fairnessUpdatedAt: now.toISOString(),
+          },
+        },
+      });
+    }
     // §5/D11: attributed ENTER map reaches planning directly; empty ≠ ungated global PULSE.
     const instanceGates = buildInstancePlanGates(allocated.accepted);
     // D15: MarketSelection governs new automatic ENTRY; open holdings still refresh/monitor.
     const selectionRows = await db.marketSelection.findMany();
     const marketEntryEnabled = marketSelectionMap(selectionRows);
+    const allocationRows = await db.strategyAllocation.findMany({
+      where: { accountId: ctx.accountId, qty: { gt: 0 } },
+    });
+    const allocationQtyByKey = new Map(
+      allocationRows.map((row) => [
+        `${row.strategyInstanceId}::${row.pairAddress}`,
+        row.qty.toString(),
+      ] as const),
+    );
     return {
       config,
       ctx,
@@ -997,6 +1034,7 @@ export class StageRunner {
         aggregateExposureUsd,
         entriesSuspended: suspensionActive,
         activeStrategyId: activeStrategy?.strategyId ?? null,
+        allocationQtyByKey,
         concurrentEntryAllowlist: instanceGates.entryAllowlist,
         concurrentEntryByPair: instanceGates.entryByPair,
         concurrentExitByPair: instanceGates.exitByPair,

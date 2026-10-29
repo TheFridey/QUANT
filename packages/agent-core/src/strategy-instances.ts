@@ -1,4 +1,4 @@
-import { newId } from "@odin/shared";
+import { d, newId } from "@odin/shared";
 import { toJson, type PrismaClient } from "@odin/shared/db";
 import { defaultModuleRefForSeed, resolveStrategyBinding } from "./strategy-binding.js";
 import type { StrategyModule, StrategySignal, StrategyContext, StrategyBar } from "./strategy-library.js";
@@ -234,6 +234,42 @@ export function moduleForInstance(instance: DurableStrategyInstance): StrategyMo
 }
 
 /**
+ * Exact / wildcard market scoping (§14).
+ * `solana:spot:universe` matches Solana instruments only — never EURUSD/ETF.
+ * Held-position monitoring is separate (MarketSelection still allows exits).
+ */
+export function instanceMatchesInstrument(
+  instance: Pick<DurableStrategyInstance, "instrumentIds">,
+  bar: Pick<StrategyBar, "instrumentId" | "pairAddress">,
+): boolean {
+  const id = bar.instrumentId || bar.pairAddress || "";
+  const pair = bar.pairAddress || bar.instrumentId || "";
+  if (!id && !pair) return false;
+  for (const scope of instance.instrumentIds) {
+    if (scope === id || scope === pair) return true;
+    if (scope === "*") return true;
+    if (scope.endsWith(":*")) {
+      const prefix = scope.slice(0, -1);
+      if (id.startsWith(prefix) || pair.startsWith(prefix)) return true;
+    }
+    if (scope === "solana:spot:universe") {
+      if (isSolanaInstrument(id) || isSolanaInstrument(pair)) return true;
+    }
+  }
+  return false;
+}
+
+function isSolanaInstrument(value: string): boolean {
+  if (!value) return false;
+  if (value.startsWith("solana:")) return true;
+  if (value.startsWith("fx:") || value.startsWith("etf:") || value.startsWith("commodity:") || value.startsWith("index:")) {
+    return false;
+  }
+  // Base58-ish Solana mint/pair addresses are long; reject short non-solana keys.
+  return /^[1-9A-HJ-NP-Za-km-z]{32,88}$/.test(value);
+}
+
+/**
  * Run durable instances on bars. One invalid/unhealthy binding does not abort others.
  * Exit signals sort before entries (exit priority).
  */
@@ -258,10 +294,7 @@ export function evaluateConcurrentInstances(input: {
       continue;
     }
     for (const bar of input.bars) {
-      const id = bar.instrumentId || bar.pairAddress || "";
-      if (!instance.instrumentIds.includes(id) && !instance.instrumentIds.includes(bar.pairAddress ?? "")) {
-        if (!instance.instrumentIds.some((x) => x.startsWith("solana:"))) continue;
-      }
+      if (!instanceMatchesInstrument(instance, bar)) continue;
       try {
         const signal = mod.onBar(bar, {
           ...input.context,
@@ -293,6 +326,40 @@ export function evaluateConcurrentInstances(input: {
         : 1;
   signals.sort((a, b) => rank(a.intent) - rank(b.intent) || a.strategyInstanceId.localeCompare(b.strategyInstanceId));
   return { signals, errors };
+}
+
+/**
+ * Atomic-ish budget gate for real admission (§10): drop ENTER when committed+pending
+ * capital already meets/exceeds instance budgetUsd. Pending counts toward capacity.
+ */
+export async function filterSignalsByInstanceBudget(
+  prisma: Pick<PrismaClient, "strategyAllocation">,
+  accountId: string,
+  instances: DurableStrategyInstance[],
+  signals: AttributedSignal[],
+): Promise<AttributedSignal[]> {
+  const budgets = new Map(instances.map((i) => [i.id, d(i.budgetUsd)]));
+  const allocs = await prisma.strategyAllocation.findMany({
+    where: { accountId, strategyInstanceId: { in: [...budgets.keys()] } },
+  });
+  const used = new Map<string, ReturnType<typeof d>>();
+  for (const row of allocs) {
+    const prior = used.get(row.strategyInstanceId) ?? d("0");
+    used.set(
+      row.strategyInstanceId,
+      prior.plus(d(row.committedCapitalUsd.toString())).plus(d(row.pendingCapitalUsd.toString())),
+    );
+  }
+  return signals.filter((signal) => {
+    if (signal.intent !== "ENTER_LONG") return true;
+    const budget = budgets.get(signal.strategyInstanceId);
+    if (!budget) return false;
+    const spent = used.get(signal.strategyInstanceId) ?? d("0");
+    if (spent.gte(budget)) {
+      return false;
+    }
+    return true;
+  });
 }
 
 /** Convert library signals into canonical intents for planning/risk/audit. */
@@ -330,15 +397,24 @@ export function toCanonicalIntents(
 }
 
 /**
- * Deterministic opportunity allocation with exit priority + round-robin fairness
- * across instances when multiple entries compete for the same slot budget.
- * No starvation from array insertion order; no mandatory trade quota.
+ * Deterministic opportunity allocation with exit priority + deficit round-robin fairness
+ * across instances when multiple entries compete for the same slot budget (§15).
+ * `fairnessCursor` rotates the starting instance so alphabetical order cannot permanently win.
+ * No mandatory trade quota.
  */
 export function allocateOpportunities(input: {
   signals: AttributedSignal[];
   maxNewEntries: number;
-}): { accepted: AttributedSignal[]; deferred: AttributedSignal[] } {
-  const exits = input.signals.filter((s) => s.intent === "EXIT_LONG");
+  /** Last admitted instance id from prior cycle — resume RR after that id. */
+  fairnessCursor?: string | null;
+}): {
+  accepted: AttributedSignal[];
+  deferred: AttributedSignal[];
+  nextFairnessCursor: string | null;
+} {
+  const exits = input.signals.filter(
+    (s) => s.intent === "EXIT_LONG" || (s.intent as string) === "REDUCE_LONG",
+  );
   const entries = input.signals.filter((s) => s.intent === "ENTER_LONG");
   const holds = input.signals.filter((s) => s.intent === "HOLD" || s.intent === "RESEARCH_NOTE");
   const accepted: AttributedSignal[] = [...exits];
@@ -350,21 +426,30 @@ export function allocateOpportunities(input: {
     byInstance.set(entry.strategyInstanceId, list);
   }
   const queues = [...byInstance.entries()].sort(([a], [b]) => a.localeCompare(b));
+  if (queues.length > 0 && input.fairnessCursor) {
+    const idx = queues.findIndex(([id]) => id === input.fairnessCursor);
+    if (idx >= 0) {
+      const rotated = [...queues.slice(idx + 1), ...queues.slice(0, idx + 1)];
+      queues.splice(0, queues.length, ...rotated);
+    }
+  }
   let admitted = 0;
   let progressed = true;
+  let lastAdmitted: string | null = input.fairnessCursor ?? null;
   while (admitted < input.maxNewEntries && progressed) {
     progressed = false;
-    for (const [, queue] of queues) {
+    for (const [instanceId, queue] of queues) {
       if (admitted >= input.maxNewEntries) break;
       const next = queue.shift();
       if (!next) continue;
       accepted.push(next);
       admitted += 1;
+      lastAdmitted = instanceId;
       progressed = true;
     }
   }
   for (const [, queue] of queues) deferred.push(...queue);
-  return { accepted, deferred };
+  return { accepted, deferred, nextFairnessCursor: lastAdmitted };
 }
 
 /**

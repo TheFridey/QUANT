@@ -31,10 +31,13 @@ import {
   verifyExperimentReport,
   engineControlDataFromSlot,
   evidenceFromExperimentReport,
+  hashPayload,
   promoteToPaperEngine,
   promotionBodySchema,
   slotFromEngineControl,
+  validateLineageForPromotion,
   type ExperimentReport,
+  type LineageChain,
 } from "@odin/evolution";
 import {
   IndexMarketProvider,
@@ -954,6 +957,21 @@ export class EvolutionService {
       }
       // Ignore client evidence fields entirely once a reportId is bound.
       evidence = resolved.evidence;
+
+      // §19: durable lineage validation when a chain is persisted on the report payload.
+      const lineage = (payload as { lineage?: LineageChain }).lineage;
+      if (lineage?.nodes?.length) {
+        const lineageGate = validateLineageForPromotion({
+          chain: lineage,
+          reportId: report.reportId,
+          sourceHash: evidence.sourceHash,
+          artifactHash: evidence.artifactHash,
+          configHash: hashPayload(parsed.config),
+        });
+        if (!lineageGate.ok) {
+          throw new BadRequestException(lineageGate.reason);
+        }
+      }
     }
     if (!evidence) {
       throw new BadRequestException("Promotion requires evidence or a persisted reportId");
@@ -969,15 +987,27 @@ export class EvolutionService {
     });
     if (!result.appliedToPaperEngine) return result;
     const write = engineControlDataFromSlot(slot);
+    const priorRuntime = (engine.runtimeState as Record<string, unknown> | null) ?? {};
     await this.prisma.engineControl.update({
       where: { id: "primary" },
       data: {
         config: toJson(write.config),
         activeStrategy: toJson(write.activeStrategy),
         updatedBy: operator,
+        runtimeState: {
+          ...priorRuntime,
+          lastPromotion: {
+            at: new Date().toISOString(),
+            operator,
+            reportId: parsed.reportId ?? null,
+            sourceHash: evidence.sourceHash,
+            artifactHash: evidence.artifactHash,
+            validated: Boolean(parsed.reportId),
+          },
+        },
       },
     });
-    return { ...result, reportId: parsed.reportId ?? null };
+    return { ...result, reportId: parsed.reportId ?? null, validatedPromotion: Boolean(parsed.reportId) };
   }
 
   async getReport(id: string) {

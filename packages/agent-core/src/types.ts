@@ -84,6 +84,11 @@ export type PlanInput = {
    * Undefined/null = no instance gating (legacy single-pulse path).
    * Exits always pass this gate.
    */
+  /**
+   * Owned allocation qty keyed by `${strategyInstanceId}::${pairAddress}`.
+   * EXIT/REDUCE sizes to owned qty — never the full venue net of another instance (§11).
+   */
+  allocationQtyByKey?: ReadonlyMap<string, string> | null;
   concurrentEntryAllowlist?: ReadonlySet<string> | null;
   /**
    * Attributed instance ENTER intents that reach planning directly.

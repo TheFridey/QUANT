@@ -1,24 +1,29 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { DEFAULT_STRATEGY } from "@odin/shared";
-import { createPrismaClient } from "@odin/shared/db";
+import { DEFAULT_STRATEGY, INTEGRATION_TEST_ADVISORY_LOCK } from "@odin/shared";
+import { PrismaClient } from "@odin/shared/db";
 import {
   allocateOpportunities,
   ensureDefaultStrategyInstances,
   evaluateConcurrentInstances,
+  instanceMatchesInstrument,
   listActiveStrategyInstances,
 } from "./strategy-instances.js";
 
-const hasDb = Boolean(process.env.DATABASE_URL || process.env.DATABASE_URL_TEST);
+const databaseUrl = process.env.DATABASE_URL_TEST;
+const enabled = Boolean(databaseUrl && databaseUrl.includes("odin_test"));
 
 /**
  * Call-site evidence for C32/C33: same sequence as worker loadPlan —
  * ensureDefault → evaluateConcurrent → allocateOpportunities.
+ * Uses shared advisory lock so it cannot race promote-paper / stage-runner truncates.
  */
-describe.runIf(hasDb)("strategy instances worker call-site path", () => {
-  const prisma = createPrismaClient();
+describe.skipIf(!enabled)("strategy instances worker call-site path", () => {
+  let prisma: PrismaClient;
   const accountId = "primary:strategy-instances-it";
 
   beforeAll(async () => {
+    prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+    await prisma.$executeRaw`SELECT pg_advisory_lock(${INTEGRATION_TEST_ADVISORY_LOCK})`;
     await prisma.paperAccount.upsert({
       where: { id: accountId },
       create: {
@@ -30,11 +35,14 @@ describe.runIf(hasDb)("strategy instances worker call-site path", () => {
       update: {},
     });
     await prisma.strategyInstance.deleteMany({ where: { accountId } });
+    await prisma.strategyAllocation.deleteMany({ where: { accountId } });
   });
 
   afterAll(async () => {
     await prisma.strategyInstance.deleteMany({ where: { accountId } });
+    await prisma.strategyAllocation.deleteMany({ where: { accountId } });
     await prisma.paperAccount.deleteMany({ where: { id: accountId } });
+    await prisma.$executeRaw`SELECT pg_advisory_unlock(${INTEGRATION_TEST_ADVISORY_LOCK})`;
     await prisma.$disconnect();
   });
 
@@ -45,6 +53,17 @@ describe.runIf(hasDb)("strategy instances worker call-site path", () => {
     expect(listed.map((row) => row.name).sort()).toEqual(
       expect.arrayContaining(["pulse-momentum-v1", "pulse-momentum-v1-fx", "mean-revert-fade-v1"]),
     );
+
+    const crypto = listed.find((r) => r.name === "pulse-momentum-v1")!;
+    expect(
+      instanceMatchesInstrument(crypto, { instrumentId: "fx:EURUSD", pairAddress: "fx:EURUSD" }),
+    ).toBe(false);
+    expect(
+      instanceMatchesInstrument(crypto, {
+        instrumentId: "solana:spot:universe",
+        pairAddress: "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+      }),
+    ).toBe(true);
 
     const bars = [
       {
@@ -90,12 +109,15 @@ describe.runIf(hasDb)("strategy instances worker call-site path", () => {
       },
     });
 
+    // Crypto universe must not evaluate FX/ETF bars.
+    expect(signals.every((s) => s.strategyInstanceId !== crypto.id)).toBe(true);
+
     const allocated = allocateOpportunities({
       signals,
       maxNewEntries: 2,
+      fairnessCursor: null,
     });
     expect(allocated.accepted.length + allocated.deferred.length).toBe(signals.length);
-    // Fairness: never admit more entries than maxNewEntries.
     const entries = allocated.accepted.filter((s) => s.intent === "ENTER_LONG");
     expect(entries.length).toBeLessThanOrEqual(2);
   });
@@ -111,7 +133,6 @@ describe.runIf(hasDb)("strategy instances worker call-site path", () => {
     expect(again.every((row) => row.id !== pausedId)).toBe(true);
     const row = await prisma.strategyInstance.findUniqueOrThrow({ where: { id: pausedId } });
     expect(row.status).toBe("PAUSED");
-    // Prisma Decimal may stringify without trailing zeros — compare numerically.
     expect(Number(row.budgetUsd.toString())).toBe(4242);
     expect(row.params).toMatchObject({ custom: true });
     const concurrent = await Promise.all([
@@ -119,5 +140,29 @@ describe.runIf(hasDb)("strategy instances worker call-site path", () => {
       ensureDefaultStrategyInstances(prisma, accountId),
     ]);
     expect(concurrent[0].length).toBe(concurrent[1].length);
+  });
+
+  it("fairness cursor rotates permanent alphabetical winners (§15)", async () => {
+    const mk = (id: string, instrumentId: string) => ({
+      intent: "ENTER_LONG" as const,
+      reasonCodes: ["ENTRY_MOMENTUM"],
+      instrumentId,
+      pairAddress: instrumentId,
+      strategyInstanceId: id,
+      strategyVersion: "v1",
+      moduleRef: "pulse-momentum-v1",
+      accountId,
+      artifactHash: null,
+      sourceHash: null,
+    });
+    const signals = [mk("aaa", "fx:EURUSD"), mk("bbb", "fx:GBPUSD"), mk("ccc", "fx:USDJPY")];
+    const first = allocateOpportunities({ signals, maxNewEntries: 1, fairnessCursor: null });
+    expect(first.accepted.map((s) => s.strategyInstanceId)).toEqual(["aaa"]);
+    const second = allocateOpportunities({
+      signals,
+      maxNewEntries: 1,
+      fairnessCursor: first.nextFairnessCursor,
+    });
+    expect(second.accepted.map((s) => s.strategyInstanceId)).toEqual(["bbb"]);
   });
 });

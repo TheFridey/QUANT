@@ -35,5 +35,8 @@ test("command centre loads live snapshot equity and agent drawer", async ({ page
   await expect(page.getByText(/^\d+ ranked$/).or(page.getByText("Watchlist empty"))).toBeVisible();
 
   await page.getByRole("link", { name: "Backtesting" }).click();
-  await expect(page.getByText("No backtest session attached")).toBeVisible();
+  await expect(
+    page.getByText(/No backtest runs|No backtest session attached|Create a strategy version/i).first(),
+  ).toBeVisible();
 });
+

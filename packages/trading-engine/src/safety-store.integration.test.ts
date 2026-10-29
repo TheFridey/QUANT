@@ -17,7 +17,7 @@ describe.skipIf(!enabled)("safety store ACK independence (R06)", () => {
 
   beforeAll(async () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
-    await prisma.$executeRaw`SELECT pg_advisory_lock(641206)`;
+    await prisma.$executeRaw`SELECT pg_advisory_lock(641099)`;
     await prisma.accountSafetyState.deleteMany({ where: { accountId } });
     await prisma.durableAlert.deleteMany({ where: { accountId } });
     await prisma.paperAccount.upsert({
@@ -35,7 +35,7 @@ describe.skipIf(!enabled)("safety store ACK independence (R06)", () => {
   afterAll(async () => {
     await prisma.accountSafetyState.deleteMany({ where: { accountId } });
     await prisma.durableAlert.deleteMany({ where: { accountId } });
-    await prisma.$executeRaw`SELECT pg_advisory_unlock(641206)`;
+    await prisma.$executeRaw`SELECT pg_advisory_unlock(641099)`;
     await prisma.$disconnect();
   });
 
