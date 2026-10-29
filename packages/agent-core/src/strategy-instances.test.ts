@@ -7,7 +7,16 @@ import {
   type DurableStrategyInstance,
 } from "./strategy-instances.js";
 
-function instance(partial: Partial<DurableStrategyInstance> & Pick<DurableStrategyInstance, "id" | "name" | "instrumentIds">): DurableStrategyInstance {
+function instance(
+  partial: Partial<DurableStrategyInstance> & Pick<DurableStrategyInstance, "id" | "name" | "instrumentIds">,
+): DurableStrategyInstance {
+  const moduleRef =
+    partial.moduleRef ??
+    (partial.name.includes("mean-revert")
+      ? "mean-revert-fade-v1"
+      : partial.name.includes("breakout")
+        ? "breakout-hold-v1"
+        : "pulse-momentum-v1");
   return {
     version: "1.0.0",
     accountId: "primary",
@@ -16,6 +25,7 @@ function instance(partial: Partial<DurableStrategyInstance> & Pick<DurableStrate
     budgetUsd: "10000",
     health: "HEALTHY",
     status: "ACTIVE",
+    moduleRef,
     artifactHash: `art_${partial.id}`,
     sourceHash: `src_${partial.id}`,
     ...partial,
@@ -32,6 +42,8 @@ describe("concurrent strategy instances", () => {
         pairAddress: "fx:EURUSD",
         strategyInstanceId: "i2",
         strategyVersion: "pulse@1",
+        moduleRef: "pulse-momentum-v1",
+        accountId: "primary",
         artifactHash: null,
         sourceHash: null,
       },
@@ -42,6 +54,8 @@ describe("concurrent strategy instances", () => {
         pairAddress: "fx:EURUSD",
         strategyInstanceId: "i2",
         strategyVersion: "pulse@1",
+        moduleRef: "pulse-momentum-v1",
+        accountId: "primary",
         artifactHash: null,
         sourceHash: null,
       },
@@ -52,6 +66,8 @@ describe("concurrent strategy instances", () => {
         pairAddress: "etf:SPY",
         strategyInstanceId: "i3",
         strategyVersion: "mean@1",
+        moduleRef: "mean-revert-fade-v1",
+        accountId: "primary",
         artifactHash: null,
         sourceHash: null,
       },
@@ -62,6 +78,8 @@ describe("concurrent strategy instances", () => {
         pairAddress: "crypto",
         strategyInstanceId: "i1",
         strategyVersion: "pulse@1",
+        moduleRef: "pulse-momentum-v1",
+        accountId: "primary",
         artifactHash: null,
         sourceHash: null,
       },
@@ -74,6 +92,7 @@ describe("concurrent strategy instances", () => {
     const gates = buildInstancePlanGates(allocated.accepted);
     expect(gates.exitByPair.get("fx:EURUSD")).toBe("i2");
     expect(gates.entryAllowlist.has("fx:EURUSD")).toBe(true);
+    expect(gates.entryByPair.get("fx:EURUSD")?.strategyInstanceId).toBe("i2");
     expect(gates.instanceByPair.get("fx:EURUSD")).toBeTruthy();
   });
 
@@ -86,6 +105,8 @@ describe("concurrent strategy instances", () => {
         pairAddress: "fx:EURUSD",
         strategyInstanceId: "i2",
         strategyVersion: "pulse@1",
+        moduleRef: "pulse-momentum-v1",
+        accountId: "primary",
         artifactHash: null,
         sourceHash: null,
       },
@@ -96,11 +117,14 @@ describe("concurrent strategy instances", () => {
         pairAddress: "etf:SPY",
         strategyInstanceId: "i3",
         strategyVersion: "mean@1",
+        moduleRef: "mean-revert-fade-v1",
+        accountId: "primary",
         artifactHash: null,
         sourceHash: null,
       },
     ]);
     expect(gates.entryAllowlist.size).toBe(0);
+    expect(gates.entryByPair.size).toBe(0);
     expect(gates.exitByPair.get("fx:EURUSD")).toBe("i2");
     expect(gates.instanceByPair.get("fx:EURUSD")).toBe("i2");
   });
@@ -161,7 +185,7 @@ describe("concurrent strategy instances", () => {
       },
     ];
 
-    const signals = evaluateConcurrentInstances({
+    const { signals } = evaluateConcurrentInstances({
       instances,
       bars,
       context: {

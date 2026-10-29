@@ -137,20 +137,26 @@ describe("pulse invariant exits (D12) + instance exits (D11)", () => {
     expect(plan.decisions.some((d) => d.reasonCodes.includes("STRATEGY_INSTANCE_EXIT"))).toBe(true);
   });
 
-  it("empty concurrent entry allowlist blocks automatic entries (D11)", () => {
+  it("empty concurrent entry allowlist blocks automatic entries (D11/§5)", () => {
     const plan = planCycle(
       planInput({
         cashUsd: DEFAULT_STRATEGY.startingBalanceUsd,
         positions: [],
         aggregateExposureUsd: "0",
         concurrentEntryAllowlist: new Set(),
+        concurrentEntryByPair: new Map(),
         pairs: [solPair({ priceChangeM5Pct: "3.5", priceChangeH1Pct: "1.2", txnsM5Buys: 80, txnsM5Sells: 20 })],
         marks: { [pairAddress]: { priceUsd: "100", freshness: "LIVE" } },
       }),
     );
     expect(plan.orders.filter((o) => o.side === "BUY")).toHaveLength(0);
+    // §5: gating HOLDs at PULSE (empty ≠ ungated); ATLAS allocation block remains valid if ENTRY leaked.
     expect(
-      plan.decisions.some((d) => d.output && (d.output as { blockedBy?: string }).blockedBy === "STRATEGY_INSTANCE_ALLOCATION"),
+      plan.decisions.some(
+        (d) =>
+          d.reasonCodes.includes("STRATEGY_INSTANCE_GATING") ||
+          (d.output && (d.output as { blockedBy?: string }).blockedBy === "STRATEGY_INSTANCE_ALLOCATION"),
+      ),
     ).toBe(true);
   });
 

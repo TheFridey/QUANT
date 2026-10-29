@@ -355,6 +355,8 @@ model Order {
   venue           String    @default("PAPER")
   instrumentId    String?
   strategyVersion String?
+  /// Durable concurrent StrategyInstance owner (§5/§8) — not only a version stamp.
+  strategyInstanceId String?
   submittedAt     DateTime  @default(now())
   eligibleAt      DateTime?
   expiresAt       DateTime?
@@ -366,6 +368,7 @@ model Order {
   @@index([cycleId])
   @@index([status, eligibleAt])
   @@index([executionMode, venue])
+  @@index([strategyInstanceId])
 }
 
 model Fill {
@@ -380,10 +383,12 @@ model Fill {
   feeUsd        Decimal  @db.Decimal(24, 8)
   slippageBps   Decimal  @db.Decimal(16, 6)
   liquidityUsd  Decimal  @db.Decimal(24, 8)
+  strategyInstanceId String?
   createdAt     DateTime @default(now())
   order         Order    @relation(fields: [orderId], references: [id])
 
   @@index([pairAddress, createdAt])
+  @@index([strategyInstanceId])
 }
 
 model Position {
@@ -396,11 +401,14 @@ model Position {
   realizedPnlUsd Decimal  @db.Decimal(24, 8)
   /// Current open-lot id; minted on 0→open, cleared on flat. Scopes protection + open meta (R01).
   lifecycleId    String?
+  /// Primary opening instance when a single owner; multi-strategy uses StrategyAllocation (§8).
+  strategyInstanceId String?
   updatedAt      DateTime @updatedAt
   account        PaperAccount @relation(fields: [accountId], references: [id])
 
   @@unique([accountId, pairAddress])
   @@index([accountId, lifecycleId])
+  @@index([strategyInstanceId])
 }
 
 model LedgerEntry {
@@ -685,6 +693,8 @@ model StrategyInstance {
   budgetUsd       Decimal  @db.Decimal(24, 8)
   health          String   @default("HEALTHY")
   status          String   @default("ACTIVE")
+  /// Explicit module binding (builtin ref). Never derived from display name (§7).
+  moduleRef       String?
   artifactHash    String?
   sourceHash      String?
   createdAt       DateTime @default(now())
@@ -692,6 +702,28 @@ model StrategyInstance {
 
   @@index([accountId, status])
   @@index([status, updatedAt])
+  @@index([moduleRef])
+}
+
+/// Internal strategy allocation — separate from venue net position (§8).
+model StrategyAllocation {
+  id                 String   @id @default(cuid())
+  accountId          String
+  strategyInstanceId String
+  instrumentId       String
+  pairAddress        String
+  lifecycleId        String?
+  qty                Decimal  @db.Decimal(24, 8)
+  avgCostUsd         Decimal  @db.Decimal(24, 8)
+  realizedPnlUsd     Decimal  @db.Decimal(24, 8) @default(0)
+  committedCapitalUsd Decimal @db.Decimal(24, 8) @default(0)
+  pendingCapitalUsd  Decimal  @db.Decimal(24, 8) @default(0)
+  updatedAt          DateTime @updatedAt
+  createdAt          DateTime @default(now())
+
+  @@unique([accountId, strategyInstanceId, pairAddress])
+  @@index([accountId, pairAddress])
+  @@index([strategyInstanceId])
 }
 
 model OpportunityFunnelEvent {

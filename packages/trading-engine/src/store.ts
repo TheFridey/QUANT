@@ -21,6 +21,8 @@ export type CommitOrder = {
   venue?: string;
   instrumentId?: string | null;
   strategyVersion?: string | null;
+  /** Durable StrategyInstance owner (§5/§8). */
+  strategyInstanceId?: string | null;
 };
 
 export async function lockAccount(tx: Prisma.TransactionClient, accountId: string): Promise<void> {
@@ -64,6 +66,7 @@ export async function commitProposedOrder(
         venue: input.order.venue ?? "PAPER",
         instrumentId: input.order.instrumentId ?? null,
         strategyVersion: input.order.strategyVersion ?? null,
+        strategyInstanceId: input.order.strategyInstanceId ?? null,
         submittedAt: input.now,
         eligibleAt,
         expiresAt,
@@ -482,6 +485,7 @@ async function fillCommittedOrder(
       venue: input.order.venue ?? "PAPER",
       instrumentId: input.order.instrumentId ?? null,
       strategyVersion: input.order.strategyVersion ?? null,
+      strategyInstanceId: input.order.strategyInstanceId ?? null,
       submittedAt: input.now,
       eligibleAt,
       expiresAt,
@@ -499,6 +503,7 @@ async function fillCommittedOrder(
       feeUsd: quoted.fill.feeUsd,
       slippageBps: quoted.fill.slippageBps,
       liquidityUsd: quoted.fill.liquidityUsd,
+      strategyInstanceId: input.order.strategyInstanceId ?? null,
     },
   });
   await tx.ledgerEntry.createMany({
@@ -588,6 +593,7 @@ async function reject(
       venue: input.order.venue ?? "PAPER",
       instrumentId: input.order.instrumentId ?? null,
       strategyVersion: input.order.strategyVersion ?? null,
+      strategyInstanceId: input.order.strategyInstanceId ?? null,
       eligibleAt: eligibleAt ?? undefined,
       expiresAt: expiresAt ?? undefined,
     },

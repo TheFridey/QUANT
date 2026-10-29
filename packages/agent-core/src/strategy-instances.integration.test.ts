@@ -75,7 +75,7 @@ describe.runIf(hasDb)("strategy instances worker call-site path", () => {
       },
     ];
 
-    const signals = evaluateConcurrentInstances({
+    const { signals } = evaluateConcurrentInstances({
       instances: listed,
       bars,
       context: {
@@ -98,5 +98,24 @@ describe.runIf(hasDb)("strategy instances worker call-site path", () => {
     // Fairness: never admit more entries than maxNewEntries.
     const entries = allocated.accepted.filter((s) => s.intent === "ENTER_LONG");
     expect(entries.length).toBeLessThanOrEqual(2);
+  });
+
+  it("restart after pause does not reactivate PAUSED defaults (§6)", async () => {
+    await ensureDefaultStrategyInstances(prisma, accountId);
+    const pausedId = `stratinst_${accountId}_fx`;
+    await prisma.strategyInstance.update({
+      where: { id: pausedId },
+      data: { status: "PAUSED", budgetUsd: "4242.00000000", params: { custom: true } },
+    });
+    const again = await ensureDefaultStrategyInstances(prisma, accountId);
+    expect(again.every((row) => row.id !== pausedId)).toBe(true);
+    const row = await prisma.strategyInstance.findUniqueOrThrow({ where: { id: pausedId } });
+    expect(row.status).toBe("PAUSED");
+    expect(row.budgetUsd.toString()).toBe("4242.00000000");
+    const concurrent = await Promise.all([
+      ensureDefaultStrategyInstances(prisma, accountId),
+      ensureDefaultStrategyInstances(prisma, accountId),
+    ]);
+    expect(concurrent[0].length).toBe(concurrent[1].length);
   });
 });

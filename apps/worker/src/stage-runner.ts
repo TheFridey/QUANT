@@ -444,6 +444,7 @@ export class StageRunner {
                 loaded.config.entryM5ChangePct,
                 order.strategyInstanceId,
               ),
+              strategyInstanceId: order.strategyInstanceId ?? null,
             },
             config: loaded.config,
             mode: this.dataMode,
@@ -942,7 +943,7 @@ export class StageRunner {
       txnsM5Sells: pair.txnsM5Sells,
       dataState: pair.freshness,
     }));
-    const concurrentSignals = evaluateConcurrentInstances({
+    const evaluated = evaluateConcurrentInstances({
       instances,
       bars,
       context: {
@@ -954,12 +955,18 @@ export class StageRunner {
         })),
         history: [],
       },
+      tradingEnvironment: ctx.tradingEnvironment,
     });
+    // One invalid instance must not abort healthy ones — errors are isolated per instance.
+    if (evaluated.errors.length > 0) {
+      // Durable funnel/audit can pick these up; never throw — healthy instances continue.
+      void cycleId;
+    }
     const allocated = allocateOpportunities({
-      signals: concurrentSignals,
+      signals: evaluated.signals,
       maxNewEntries: Math.max(1, config.maxPositions - positionViews.filter((p) => d(p.baseQty).gt(0)).length),
     });
-    // D11: empty ENTER allowlist means zero automatic entries — never null-fallback to global PULSE.
+    // §5/D11: attributed ENTER map reaches planning directly; empty ≠ ungated global PULSE.
     const instanceGates = buildInstancePlanGates(allocated.accepted);
     // D15: MarketSelection governs new automatic ENTRY; open holdings still refresh/monitor.
     const selectionRows = await db.marketSelection.findMany();
@@ -991,6 +998,7 @@ export class StageRunner {
         entriesSuspended: suspensionActive,
         activeStrategyId: activeStrategy?.strategyId ?? null,
         concurrentEntryAllowlist: instanceGates.entryAllowlist,
+        concurrentEntryByPair: instanceGates.entryByPair,
         concurrentExitByPair: instanceGates.exitByPair,
         concurrentInstanceByPair: instanceGates.instanceByPair,
         marketEntryEnabled,

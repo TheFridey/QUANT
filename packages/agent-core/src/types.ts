@@ -86,6 +86,22 @@ export type PlanInput = {
    */
   concurrentEntryAllowlist?: ReadonlySet<string> | null;
   /**
+   * Attributed instance ENTER intents that reach planning directly.
+   * When present for a pair, PULSE must ACT ENTRY even if the global/promoted
+   * strategy would HOLD — no second strategy ACT required (§5).
+   */
+  concurrentEntryByPair?: ReadonlyMap<
+    string,
+    {
+      strategyInstanceId: string;
+      strategyVersion: string;
+      moduleRef?: string | null;
+      reasonCodes: string[];
+      artifactHash?: string | null;
+      sourceHash?: string | null;
+    }
+  > | null;
+  /**
    * Instance EXIT_LONG intents that must reach planning as risk-reducing sells
    * even when the global/promoted PULSE path would HOLD.
    */
