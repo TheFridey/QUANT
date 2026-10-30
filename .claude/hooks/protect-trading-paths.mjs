@@ -34,9 +34,17 @@ const INDIRECT_TARGET =
 // When a command names a protected path, every segment must start with one of these.
 // Only tools that cannot write files; anything else naming a protected path is denied.
 const READ_ONLY_SEGMENT =
-  /^(cat|head|tail|less|grep|rg|egrep|ls|dir|wc|file|stat|diff|type|findstr|Get-Content|gc|Select-String|sls|Get-ChildItem|gci|Test-Path|Measure-Object|Select-Object|echo|printf|true|cd|pwd|cut|tr|jq|git (diff|log|show|status|blame|grep|ls-files)|pnpm (test|vitest run)|pnpm exec vitest run|npx vitest run|node --check|entire (status|search|recap|why))\b/i;
+  /^(cat|head|tail|grep|rg|egrep|ls|dir|wc|file|stat|diff|type|findstr|Get-Content|gc|Select-String|sls|Get-ChildItem|gci|Test-Path|Measure-Object|Select-Object|echo|printf|true|cd|pwd|cut|tr|jq|git (diff|log|show|status|blame|grep|ls-files)|pnpm (test|vitest run)|pnpm exec vitest run|npx vitest run|node --check|entire (status|search|recap|why))\b/i;
 // Flags that make otherwise read-only tools write (output files, snapshot updates, autofix).
-const WRITE_FLAG = /(^|\s)(--fix\b|--output\b|--out-?file\b|--outDir\b|--update\b|--pre\b|-o\b|-u\b|--ext-diff\b|--textconv\b)/i;
+// Allowlist, not denylist: every option token in a protected-path command must be one of these.
+const READ_ONLY_FLAG =
+  /^(-\d+|-[nrRilcHhEFwvasq]+|--|--oneline|--stat|--name-only|--name-status|--no-color|--color=never|--recursive|--ignore-case|--line-number|-(First|Last|Pattern|Path|LiteralPath|TotalCount|Tail|Raw|SimpleMatch|Recurse|Filter|Name))$/;
+const optionsAreReadOnly = (segment) =>
+  segment
+    .replace(/['"`^\\]/g, '')
+    .split(/\s+/)
+    .filter((tok) => tok.startsWith('-'))
+    .every((tok) => READ_ONLY_FLAG.test(tok));
 // Ways to run more than the visible segments: subshells, substitution, backgrounding, call/dot-source operators.
 const COMPOUND = /(\$\(|<\(|>\(|`|[(){}]|(^|[^&|>0-9])&(?!&)|(^|[;|\s])\.\s|\binvoke-expression\b|\biex\b)/i;
 const SHELL_WRITE = new RegExp(
@@ -109,7 +117,7 @@ function main() {
         .split(/\|\|?|&&?|;|\r?\n/)
         .map((s) => s.trim())
         .filter(Boolean)
-        .every((s) => READ_ONLY_SEGMENT.test(s) && !WRITE_FLAG.test(s) && !isWrite(s) && !isWrite(s.replace(/['"`^]/g, '')));
+        .every((s) => READ_ONLY_SEGMENT.test(s) && optionsAreReadOnly(s) && !isWrite(s) && !isWrite(s.replace(/['"`^]/g, '')));
     if ((namesProtected && !readOnly) || (writes && INDIRECT_TARGET.test(unquoted))) {
       decide(unlocked ? 'ask' : 'deny', unlocked ? 'Shell command that may modify a QUANT protected path (unlocked): confirm.' : LOCKED_MSG);
     }
