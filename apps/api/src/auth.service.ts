@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { Injectable, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { randomUUID } from "node:crypto";
 import { hashPassword, verifyPassword } from "@odin/shared/password";
@@ -79,7 +79,10 @@ export class AuthService {
     const payload = await this.verifyPayload(token);
     const id = payload.jti ?? tokenFingerprint(token);
     const expMs = payload.exp ? payload.exp * 1000 : Date.now() + 12 * 60 * 60 * 1000;
-    await revokeToken(id, expMs);
+    const durable = await revokeToken(id, expMs);
+    // Revoked in this process either way; tell the caller when other replicas or a restart would not see it,
+    // so the web sign-out shows its "not confirmed" notice (audit M5/L2).
+    if (!durable) throw new ServiceUnavailableException("Signed out here, but the revocation could not be stored in Redis");
     return { ok: true };
   }
 

@@ -82,7 +82,13 @@ export async function loadEnvConfig(): Promise<{
     NODE_ENV: z.string().optional(),
   });
   const env = schema.parse(process.env);
-  assertDeploymentSecrets({ jwtSecret: env.JWT_SECRET, adminPassword: env.ADMIN_PASSWORD, webOrigin: env.WEB_ORIGIN });
+  assertDeploymentSecrets({
+    jwtSecret: env.JWT_SECRET,
+    adminPassword: env.ADMIN_PASSWORD,
+    webOrigin: env.WEB_ORIGIN,
+    apiHost: env.API_HOST,
+    nodeEnv: env.NODE_ENV,
+  });
   return {
     databaseUrl: env.DATABASE_URL,
     redisUrl: env.REDIS_URL,
@@ -104,23 +110,35 @@ const SAMPLE_JWT_PATTERNS = [/replace-with/i, /^local-/i];
 const SAMPLE_ADMIN_PASSWORDS = ["odin-paper-dev"];
 export const MIN_SHARED_JWT_SECRET_LENGTH = 32;
 
+/** True for a loopback host name or address (localhost, 127.0.0.0/8, ::1). */
+export function isLoopbackHost(host: string): boolean {
+  const normalised = host.trim().replace(/^\[|\]$/g, "").toLowerCase();
+  return normalised === "localhost" || normalised === "::1" || /^127(?:\.\d{1,3}){3}$/.test(normalised);
+}
+
 /** True when the web origin is this machine only (localhost, 127.0.0.0/8 or ::1). */
 export function isLoopbackOrigin(webOrigin: string): boolean {
   try {
-    const host = new URL(webOrigin).hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    return host === "localhost" || host === "::1" || /^127(?:\.\d{1,3}){3}$/.test(host);
+    return isLoopbackHost(new URL(webOrigin).hostname);
   } catch {
     return false;
   }
 }
 
 /**
- * Audit M7: whenever the UI is reachable beyond loopback, refuse weak or sample secrets regardless
- * of NODE_ENV (a forgotten NODE_ENV must not ship the sample admin password). Loopback-only
- * development and CI keep working with the samples.
+ * Audit M7: refuse weak or sample secrets whenever the deployment is reachable beyond this machine
+ * (the web origin OR the API listen address is not loopback), regardless of NODE_ENV, and always
+ * when NODE_ENV=production. Only fully loopback development and CI may use the samples.
  */
-export function assertDeploymentSecrets(input: { jwtSecret: string; adminPassword: string; webOrigin: string }): void {
-  if (isLoopbackOrigin(input.webOrigin)) return;
+export function assertDeploymentSecrets(input: {
+  jwtSecret: string;
+  adminPassword: string;
+  webOrigin: string;
+  apiHost?: string;
+  nodeEnv?: string;
+}): void {
+  const loopbackOnly = isLoopbackOrigin(input.webOrigin) && isLoopbackHost(input.apiHost ?? "127.0.0.1");
+  if (loopbackOnly && input.nodeEnv !== "production") return;
   const problems: string[] = [];
   if (input.jwtSecret.length < MIN_SHARED_JWT_SECRET_LENGTH) {
     problems.push(`JWT_SECRET must be at least ${MIN_SHARED_JWT_SECRET_LENGTH} characters`);
@@ -132,7 +150,7 @@ export function assertDeploymentSecrets(input: { jwtSecret: string; adminPasswor
     problems.push("ADMIN_PASSWORD is the published sample value");
   }
   if (problems.length > 0) {
-    throw new Error(`REFUSING_DEFAULT_SECRETS: WEB_ORIGIN is not loopback and ${problems.join("; ")}`);
+    throw new Error(`REFUSING_DEFAULT_SECRETS: deployment is not loopback-only development and ${problems.join("; ")}`);
   }
 }
 

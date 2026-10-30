@@ -76,4 +76,21 @@ describe("token revocation with Redis down (audit L2)", () => {
     await revokeToken("jti-revoked", Date.now() + 60_000);
     expect(await isTokenRevoked("jti-revoked")).toBe(true);
   });
+
+  it("always tries the Redis write on revoke, reports it was not durable, and keeps it queued", async () => {
+    expect(await isTokenRevoked("jti-trigger-backoff")).toBe(false);
+    expect(tokenRevocationBackoffForTests().downUntil).toBeGreaterThan(Date.now());
+    // Even inside the read backoff window the write is attempted and reported as not durable.
+    expect(await revokeToken("jti-queued-1", Date.now() + 60_000)).toBe(false);
+    expect(await revokeToken("jti-queued-2", Date.now() + 60_000)).toBe(false);
+    expect(tokenRevocationBackoffForTests().pendingWrites).toBe(2);
+  });
+
+  it("logout fails loudly when the revocation could not be stored, so the UI notice appears", async () => {
+    const jwt = { signAsync: async () => "signed", verifyAsync: async () => ({ sub: "u1", jti: "jti-logout", exp: Math.floor(Date.now() / 1000) + 600 }) };
+    const auth = new AuthService({ user: { findUnique: async () => null } } as never, jwt as never);
+    await expect(auth.logout("token")).rejects.toThrow(/could not be stored/);
+    // This process still treats the token as revoked.
+    expect(await isTokenRevoked("jti-logout")).toBe(true);
+  });
 });

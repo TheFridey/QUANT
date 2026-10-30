@@ -51,6 +51,29 @@ describe("deployment secret checks (audit M7)", () => {
     }
   });
 
+  it("refuses samples when the API listens beyond loopback even with a loopback web origin", () => {
+    expect(() =>
+      assertDeploymentSecrets({
+        jwtSecret: "ci-jwt-secret-not-for-production",
+        adminPassword: "odin-paper-dev",
+        webOrigin: "http://127.0.0.1:4317",
+        apiHost: "0.0.0.0",
+      }),
+    ).toThrow(/REFUSING_DEFAULT_SECRETS/);
+  });
+
+  it("always refuses samples when NODE_ENV=production, even fully on loopback", () => {
+    expect(() =>
+      assertDeploymentSecrets({
+        jwtSecret: "ci-jwt-secret-not-for-production",
+        adminPassword: "odin-paper-dev",
+        webOrigin: "http://127.0.0.1:4317",
+        apiHost: "127.0.0.1",
+        nodeEnv: "production",
+      }),
+    ).toThrow(/REFUSING_DEFAULT_SECRETS/);
+  });
+
   it("accepts strong, non-sample secrets off loopback", () => {
     expect(() => assertDeploymentSecrets({ jwtSecret: strong, adminPassword: "a-real-password", webOrigin: shared })).not.toThrow();
   });
@@ -82,7 +105,9 @@ describe("API listen address (audit M4)", () => {
     expect((await withEnv({})).apiHost).toBe("127.0.0.1");
   });
 
-  it("binds a wider address only when API_HOST says so", async () => {
-    expect((await withEnv({ API_HOST: "0.0.0.0" })).apiHost).toBe("0.0.0.0");
+  it("binds a wider address only when API_HOST says so (and then needs real secrets)", async () => {
+    const real = { JWT_SECRET: "x".repeat(40), ADMIN_PASSWORD: "a-real-password" };
+    expect((await withEnv({ API_HOST: "0.0.0.0", ...real })).apiHost).toBe("0.0.0.0");
+    await expect(withEnv({ API_HOST: "0.0.0.0" })).rejects.toThrow(/REFUSING_DEFAULT_SECRETS/);
   });
 });
