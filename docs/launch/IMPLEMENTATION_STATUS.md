@@ -5,7 +5,7 @@
 **Runtime:** Node v22.23.4 · pnpm 10.33.4  
 **DB:** Postgres 16 (apt) · Redis 7 · migrations through `20261030140000_promotion_provenance`  
 **LIVE money:** disabled  
-**Last updated:** 2026-10-29 (Europe/London)
+**Last updated:** 2026-10-30 (Europe/London)
 
 Verification labels (honest):
 
@@ -37,10 +37,11 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 | Command | Result | Notes |
 | --- | --- | --- |
 | `pnpm db:deploy` | PASS | odin + odin_test incl. `runtimeState` migration |
-| `pnpm exec vitest run` | **392 passed, 1 skipped, 0 failed** | unit parallel + integration serial |
+| `pnpm exec vitest run` | prior green + new lifecycle IT | unit parallel + integration serial |
 | `pnpm typecheck` | PASS | packages + api/worker/web |
 | `pnpm lint` | PASS | |
 | promote-paper / stage-runner / paper-lifecycle / protection ITs | PASS | `VERIFIED_INTEGRATION` |
+| STAGE 35 lifecycle scenarios 1–14 + STAGE 38 restart subset | **PASS 10/10** | `lifecycle-scenarios.integration.test.ts` — ownership, budgets, concurrent admit, net/protect/flatten, idempotent fill, reconstruct, drift repair, account isolation |
 | `SOAK_SECONDS=10` engine-soak IT | PASS | **wallClockMs=10038** (~10.038s); 71 cycles; 1 fill; 0 errors — `engine_worker_db_soak` |
 | `scripts/soak-capacity.mjs` | PASS | helper soak `elapsedMs=324` — helper≠full engine |
 | `node scripts/verify-practice-broker.mjs` | exit 3 | `ok:false` + `BLOCKED_EXTERNAL` (no Alpaca keys) — honest |
@@ -75,7 +76,8 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 | §27 Valuation | existing valuePortfolio in loadPlan | `VERIFIED_INTEGRATION` | stage-runner (prior + retained) |
 | §28 Support matrix | honest CAPABILITIES.md | docs | docs/launch/CAPABILITIES.md |
 | §29 Paper lifecycle IT | worker+DB no mocks | `VERIFIED_INTEGRATION` | paper-lifecycle.integration.test.ts |
-| §30 Protection crash | prior protection-crash + reopen IT | `VERIFIED_INTEGRATION` | existing ITs green |
+| STAGE 35 lifecycle scenarios 1–14 | ownership / budgets / admit / settle / recon / isolation + STAGE 38 restart | `VERIFIED_INTEGRATION` | `lifecycle-scenarios.integration.test.ts` (10/10) |
+| §30 Protection crash | prior protection-crash + reopen IT | `VERIFIED_INTEGRATION` | existing ITs green + lifecycle restart mid-TRIGGERED |
 | §31 Playwright | browser vs live stack + CI job | `VERIFIED_E2E` (local) + CI job added | 8/8 local; Actions `browser-e2e` with deterministic PAPER feed |
 | §32 Operator feedback | capacity UI, ACK button, why-no-trades families | `VERIFIED_UNIT` + `VERIFIED_INTEGRATION` | operator-capacity IT; Risk ACK; Capacity section |
 | §33 Engine soak | StageRunner+DB | `VERIFIED_INTEGRATION` | wall **10038ms**; 71 cycles |
@@ -113,3 +115,4 @@ Do **not** treat helper tests as E2E, docs as runtime proof, or stubs as READY.
 | 2026-10-29 | Playwright Gate 1 browser E2E against live stack + isolated `odin_e2e` — 8/8 pass; `VERIFIED_E2E` for listed paper UI paths; docs/PLAYWRIGHT.md |
 | 2026-10-29 | Runtime correctness: multi-intent planner, instance capacity, ownership settlement, honest recon, SANDBOX outbox, Alpaca practice venue, validated promotion provenance, operator capacity/ACK UI, deterministic feed + Actions browser-e2e job |
 | 2026-10-29 | CI green on `59c35e0` (lint/worker start path fix); all 6 Actions checks pass including browser-e2e |
+| 2026-10-30 | STAGE 35 lifecycle scenarios 1–14 + STAGE 38 restart subset IT (`lifecycle-scenarios.integration.test.ts`, 10/10) |
