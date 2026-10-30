@@ -125,6 +125,8 @@ export const REASON_CODES = [
   "ORDER_EXPIRED",
   "ORDER_PENDING",
   "PARTIAL_FILL",
+  /** Risk-reducing exit capped by maxExitImpactBps; the rest is a pending reduce order. */
+  "EXIT_PARTIAL_REMAINDER",
   "SPREAD_APPLIED",
   "COST_ESTIMATED",
   "ADVISORY_ONLY",
@@ -263,6 +265,7 @@ export const REASON_TEXT: Record<ReasonCode, string> = {
   ORDER_EXPIRED: "Pending paper order expired before fill.",
   ORDER_PENDING: "Paper order is pending latency or eligibility.",
   PARTIAL_FILL: "Paper fill was partial under the execution model.",
+  EXIT_PARTIAL_REMAINDER: "Exit filled up to maxExitImpactBps; the remainder is a pending reduce order for the next cycle.",
   SPREAD_APPLIED: "Estimated half-spread applied to the observed mid.",
   COST_ESTIMATED: "Fee, spread, and impact costs estimated explicitly.",
   ADVISORY_ONLY: "LLM advisory text. It does not override risk or sizing.",

@@ -371,6 +371,7 @@ export class TerminalService {
           : usd(d(report.valuation.equityUsd).minus(d(account.sessionStartEquityUsd.toString())))
         : report.valuation.realizedPnlUsd,
       startingBalanceUsd: account.startingBalanceUsd.toString(),
+      dayStartEquityUsd: account.sessionStartEquityUsd?.toString() ?? null,
       maxDailyLossPct: config?.maxDailyLossPct ?? "3",
       equityUsd: report.valuation.equityUsd,
       highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,

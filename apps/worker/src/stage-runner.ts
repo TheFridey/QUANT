@@ -9,6 +9,7 @@ import {
   funnelEventsFromPlan,
   instanceAvailableUsd,
   uniqueFunnelEvents,
+  configInvalidAlert,
   liveGateAlert,
   marketSelectionMap,
   parseActiveStrategyIdentity,
@@ -949,7 +950,10 @@ export class StageRunner {
     let config: StrategyConfig;
     try {
       config = parseStrategyConfig(engine.config);
-    } catch {
+    } catch (error) {
+      // Audit H1: stored config is never healed. Name the failing fields for the operator and plan nothing.
+      const issues = (error as { issues?: Array<{ path: PropertyKey[]; message: string }> }).issues ?? [];
+      await this.persistAlert(db, configInvalidAlert(issues));
       await upsertDecision(db, cycleId, emptyDecision("CONFIG_INVALID", "Strategy configuration failed validation"));
       return null;
     }
@@ -1175,6 +1179,7 @@ export class StageRunner {
       config,
       cashUsd: account.cashUsd.toString(),
       startingBalanceUsd: account.startingBalanceUsd.toString(),
+      dayStartEquityUsd: sessionRoll.sessionStartEquityUsd,
       positions: positionViews,
       pairs,
       marks,
