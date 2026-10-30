@@ -46,7 +46,7 @@ const optionsAreReadOnly = (segment) =>
     .filter((tok) => tok.startsWith('-'))
     .every((tok) => READ_ONLY_FLAG.test(tok));
 // Ways to run more than the visible segments: subshells, substitution, backgrounding, call/dot-source operators.
-const COMPOUND = /(\$\(|<\(|>\(|`|[(){}]|(^|[^&|>0-9])&(?!&)|(^|[;|\s])\.\s|\binvoke-expression\b|\biex\b)/i;
+const COMPOUND = /(\$|<\(|>\(|`|[(){}]|(^|[^&|>0-9])&(?!&)|(^|[;|\s])\.\s|\binvoke-expression\b|\biex\b)/i;
 const SHELL_WRITE = new RegExp(
   [
     String.raw`\bsed\b[^|;&]*\s-[a-z]*i`, String.raw`\bperl\b[^|;&]*\s-[a-z]*i`, '>', String.raw`\btee\b`,
