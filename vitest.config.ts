@@ -42,7 +42,7 @@ export default defineConfig({
           name: "unit",
           environment: "node",
           setupFiles: ["./vitest.setup.ts"],
-          include: ["packages/**/*.test.ts", "apps/**/*.test.ts"],
+          include: ["packages/**/*.test.ts", "apps/**/*.test.ts", ".claude/hooks/*.test.ts"],
           exclude: ["**/*.integration.test.ts", "**/node_modules/**"],
           testTimeout: 30000,
           hookTimeout: 30000,

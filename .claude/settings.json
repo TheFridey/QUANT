@@ -13,5 +13,19 @@
       "Bash(*LIVE_MONEY*)",
       "PowerShell(*LIVE_MONEY*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-trading-paths.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
