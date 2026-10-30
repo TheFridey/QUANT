@@ -76,6 +76,19 @@ describe.skipIf(!isolationAvailable())(`forged sandbox results${skipReason}`, ()
     expect(result.code).toBe("CONTRACT_FAIL");
   });
 
+  it("rejects an invalid signal through forge, with validation living in the runner", async () => {
+    const result = await forgeStrategyModule({
+      hypothesis,
+      source: `export function onBar() { return { intent: "BUY_EVERYTHING", reasonCodes: ["X"] }; }`,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("CONTRACT_FAIL");
+    expect(result.signalsClaimed).toBe(false);
+    expect(result.integrity.executionResult).toBe("CONTRACT_FAIL");
+    if (result.workspacePath) destroyForgeWorkspace(result.workspacePath);
+  });
+
   it("does not accept fewer signals than bars", async () => {
     const result = await run(
       `export function onBar(input: any) {

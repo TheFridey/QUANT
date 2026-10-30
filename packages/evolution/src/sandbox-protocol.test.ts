@@ -95,6 +95,64 @@ describe("sandbox result protocol (unsandboxed harness)", () => {
     if (outcome.kind === "failed") expect(outcome.code).toBe("SANDBOX_PROTOCOL");
   });
 
+  // The next three model the strongest in-process attacker: it already knows the run nonce
+  // (as if read from memory) and watches stdin for the live bar token.
+  const attacker = `import { writeSync } from "node:fs";
+      const NONCE = "test-nonce-0123456789";
+      const tokens = [];
+      process.stdin.on("data", (chunk) => {
+        for (const line of String(chunk).split("\\n")) {
+          try { const parsed = JSON.parse(line); if (parsed.token) tokens.push(parsed.token); } catch {}
+        }
+      });
+      const frame = (seq, token, signal) =>
+        writeSync(3, JSON.stringify({ nonce: NONCE, type: "signal", seq, token, signal }) + "\\n");`;
+
+  it("rejects a frame written before its bar was sent instead of accepting it later", async () => {
+    const { outcome } = await drive(
+      `${attacker}
+      export async function onBar(input) {
+        if (input.history.length === 0) {
+          // Pre-commit an answer for bar 1 after bar 0's frame, before bar 1 exists.
+          setTimeout(() => frame(1, "guessed", { instrumentId: input.bar.instrumentId, pairAddress: input.bar.pairAddress, intent: "ENTER_LONG", reasonCodes: ["PRECOMMIT"] }), 0);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { intent: "HOLD", reasonCodes: ["REAL"] };
+      }`,
+      [bar(0), bar(1)],
+    );
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed") expect(outcome.code).toBe("SANDBOX_PROTOCOL");
+  });
+
+  it("fails the run when a second frame arrives for the same bar", async () => {
+    const { outcome } = await drive(
+      `${attacker}
+      export function onBar(input) {
+        const signal = { instrumentId: input.bar.instrumentId, pairAddress: input.bar.pairAddress, intent: "ENTER_LONG", reasonCodes: ["DUPLICATE"] };
+        // Written synchronously, so the host reads it first and the harness's own frame is the duplicate.
+        frame(0, tokens.at(-1), signal);
+        return { intent: "HOLD", reasonCodes: ["REAL"] };
+      }`,
+      [bar(0)],
+    );
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed") expect(outcome.code).toBe("SANDBOX_PROTOCOL");
+  });
+
+  it("fails the run when a frame names a different instrument than the delivered bar", async () => {
+    const { outcome } = await drive(
+      `${attacker}
+      export function onBar(input) {
+        frame(0, tokens.at(-1), { instrumentId: "solana:spot:OTHER", pairAddress: input.bar.pairAddress, intent: "ENTER_LONG", reasonCodes: ["SWAP"] });
+        return { intent: "HOLD", reasonCodes: ["REAL"] };
+      }`,
+      [bar(0)],
+    );
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed") expect(outcome.code).toBe("CONTRACT_FAIL");
+  });
+
   it("maps an invalid intent to CONTRACT_FAIL", async () => {
     const { outcome } = await drive(
       `export function onBar() { return { intent: "BUY_EVERYTHING", reasonCodes: ["X"], confidence: 42 }; }`,

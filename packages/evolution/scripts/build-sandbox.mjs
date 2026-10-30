@@ -5,7 +5,7 @@
 // this prints why and exits 0; the runner then reports "seccomp: unavailable".
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -39,10 +39,13 @@ for (const args of steps) {
   const result = spawnSync("gcc", args, { encoding: "utf8" });
   if (result.status !== 0) {
     rmSync(staging, { recursive: true, force: true });
-    process.stderr.write(result.stderr);
-    process.exit(1);
+    process.stderr.write(result.stderr ?? "");
+    // Never fail install: the runner then reports seccomp unavailable and refuses to execute.
+    skip("gcc failed to compile the preload (see stderr above)");
   }
 }
+chmodSync(join(staging, "seccomp.so"), 0o555);
+chmodSync(join(staging, "sandbox-init"), 0o555);
 const manifest = {
   sourceHash,
   files: {

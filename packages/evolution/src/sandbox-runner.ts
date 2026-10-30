@@ -11,6 +11,7 @@ import {
   type StrategySignal,
 } from "./strategy-interface.js";
 import { sha256 } from "./compile-strategy.js";
+import { generateSeccompBpf } from "./seccomp-profile.js";
 
 export type RunnerConfiguration = {
   runtime: "bubblewrap" | "disabled";
@@ -169,7 +170,9 @@ try {
   for (;;) {
     const line = await nextLine();
     if (line === null || line === "") break;
-    const bar = JSON.parse(line);
+    const delivery = JSON.parse(line);
+    const bar = delivery.bar;
+    const token = String(delivery.token);
     const raw = await mod.onBar({
       contractVersion: header.contractVersion,
       bar,
@@ -180,7 +183,7 @@ try {
     const signal = normalize(raw, bar);
     if (signal.state) state = signal.state;
     const { state: _state, ...emitted } = signal;
-    send({ type: "signal", seq, signal: emitted });
+    send({ type: "signal", seq, token, signal: emitted });
     history.push(bar);
     seq += 1;
   }
@@ -305,6 +308,8 @@ export async function executeCompiledStrategy(input: {
   metadata: { strategyId: string; version: string; hypothesisId: string };
   timeoutMs?: number;
   perBarTimeoutMs?: number;
+  /** Tightening-only: false runs without a /proc mount (used to test whether Node needs it). */
+  mountProc?: boolean;
 }): Promise<SandboxExecution> {
   const runner = probeIsolation();
   const fail = (patch: Partial<SandboxExecution> & { code: string; error: string }): SandboxExecution => ({
@@ -351,7 +356,7 @@ export async function executeCompiledStrategy(input: {
       initialState: {},
       historyLimit: 256,
     };
-    const args = bwrapArgs(work, runner, runner.seccomp === "default-deny-errno" ? seccomp : null);
+    const args = bwrapArgs(work, runner, runner.seccomp === "default-deny-errno" ? seccomp : null, input.mountProc !== false);
     const outcome = await runStreaming({
       command: "bwrap",
       args,
@@ -399,7 +404,7 @@ type StreamOutcome =
   | { kind: "failed"; code: string; error: string; executedHash: string | null; exitStatus: number | null }
   | { kind: "timeout"; error: string; executedHash: string | null; exitStatus: number | null };
 
-type Frame = { nonce?: unknown; type?: unknown; seq?: unknown; signal?: unknown; code?: unknown; error?: unknown; executedHash?: unknown };
+type Frame = { nonce?: unknown; type?: unknown; seq?: unknown; token?: unknown; signal?: unknown; code?: unknown; error?: unknown; executedHash?: unknown };
 
 /**
  * Lock-step driver: write the header, wait for `ready`, then write one bar and wait for
@@ -550,12 +555,15 @@ async function runStreaming(input: {
   const signals: StrategySignal[] = [];
   for (const [index, bar] of input.bars.entries()) {
     if (frames.length > 0) return failed("SANDBOX_PROTOCOL", "Sandbox sent a frame before the bar was delivered");
-    stdin.write(`${JSON.stringify(bar)}\n`);
+    // A fresh token per bar: a frame written before this bar was sent cannot carry it,
+    // so it is rejected rather than buffered and accepted as this bar's answer.
+    const token = randomBytes(12).toString("hex");
+    stdin.write(`${JSON.stringify({ token, bar })}\n`);
     const frame = await nextFrame(input.perBarTimeoutMs);
     if (typeof frame === "string") return unexpected(frame, `bar ${index}`);
     if (frame.nonce !== input.header.nonce) return failed("SANDBOX_PROTOCOL", "Result frame did not carry the run nonce");
     if (frame.type === "error") return reportedError(frame);
-    if (frame.type !== "signal" || frame.seq !== index) {
+    if (frame.type !== "signal" || frame.seq !== index || frame.token !== token) {
       return failed("SANDBOX_PROTOCOL", `Expected the signal for bar ${index}`);
     }
     const checked = validateSignal(frame.signal, bar);
@@ -567,6 +575,10 @@ async function runStreaming(input: {
   const grace = Math.min(500, Math.max(0, deadline - Date.now()));
   await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, grace))]);
   await stop();
+  // Anything on the result pipe after the last signal is a second frame for a bar.
+  if (frames.length > 0 || resultBuffer.length > 0) {
+    return { kind: "failed", code: "SANDBOX_PROTOCOL", error: "Sandbox sent more than one frame for a bar", executedHash, exitStatus };
+  }
   if (signals.length !== input.bars.length) {
     return { kind: "failed", code: "CONTRACT_FAIL", error: "Signal count does not match delivered bars", executedHash, exitStatus };
   }
@@ -625,7 +637,7 @@ export function bubblewrapCiProbeArgs(): string[] {
   ];
 }
 
-function bwrapArgs(work: string, runner: RunnerConfiguration, seccomp: SeccompBinaries | null): string[] {
+function bwrapArgs(work: string, runner: RunnerConfiguration, seccomp: SeccompBinaries | null, mountProc = true): string[] {
   const mounts =
     seccomp === null
       ? []
@@ -651,8 +663,7 @@ function bwrapArgs(work: string, runner: RunnerConfiguration, seccomp: SeccompBi
     work,
     "/work",
     ...mounts,
-    "--proc",
-    "/proc",
+    ...(mountProc ? ["--proc", "/proc"] : []),
     "--dev",
     "/dev",
     "--size",
@@ -771,6 +782,12 @@ function seccompBinaries(): SeccompBinaries | null {
     seccompCache = { error: "seccomp binaries are stale against the committed sources; rebuild them" };
     return null;
   }
+  const expectedBpf = join(dir, "seccomp-bpf.sha256");
+  if (!existsSync(expectedBpf) || sha256(Buffer.from(generateSeccompBpf())) !== readFileSync(expectedBpf, "utf8").trim()) {
+    seccompCache = { error: "generated seccomp program does not match the committed seccomp-bpf.sha256" };
+    return null;
+  }
+  // Manifest hashes are read once per process and pinned; later runs compare files against them.
   seccompCache = { so: join(buildDir, "seccomp.so"), init: join(buildDir, "sandbox-init"), manifest };
   return seccompCache;
 }
@@ -791,6 +808,10 @@ function verifySeccompBinaries(binaries: SeccompBinaries): string | null {
     if (sha256(readFileSync(path)) !== binaries.manifest.files[name]) {
       return `seccomp binary ${name} does not match its recorded SHA-256; refusing to run`;
     }
+  }
+  // The committed BPF program is deterministic, so the preload must embed exactly those bytes.
+  if (!readFileSync(binaries.so).includes(Buffer.from(generateSeccompBpf()))) {
+    return "seccomp.so does not embed the committed BPF program; refusing to run";
   }
   return null;
 }

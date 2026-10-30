@@ -9,7 +9,6 @@ import { inspectSource, STRATEGY_DEPENDENCY_ALLOWLIST } from "./static-gate.js";
 import {
   STRATEGY_CONTRACT_VERSION,
   strategyModuleManifestSchema,
-  strategySignalSchema,
   type StrategyBar,
   type StrategyModuleManifest,
   type StrategySignal,
@@ -262,29 +261,8 @@ export async function forgeStrategyModule(input: {
     };
   }
 
-  const signals: StrategySignal[] = [];
-  for (const signal of execution.signals) {
-    const parsed = strategySignalSchema.safeParse(signal);
-    if (!parsed.success) {
-      return {
-        ok: false,
-        code: "CONTRACT_FAIL",
-        error: "Strategy signal failed the contract schema",
-        findings: parsed.error.issues.map((issue) => issue.message),
-        signalsClaimed: false,
-        workspacePath,
-        integrity: {
-          ...integrity,
-          signalsClaimed: false,
-          executionResult: "CONTRACT_FAIL",
-          testOutcomes: integrity.testOutcomes.map((row) =>
-            row.name === "isolated_execution" ? { ...row, status: "FAIL" } : row,
-          ),
-        },
-      };
-    }
-    signals.push(parsed.data);
-  }
+  // executeCompiledStrategy has already validated one contract-valid signal per bar.
+  const signals: StrategySignal[] = execution.signals;
 
   return {
     ok: true,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
@@ -15,6 +16,11 @@ describe("seccomp profile generator", () => {
     expect(Array.from(parseCommittedSeccompBpf(committed))).toEqual(Array.from(generated));
     expect(committed).toContain(`odin_seccomp_bpf_len = ${generated.length};`);
     expect(committed.replace(/\r\n/g, "\n")).toContain(renderSeccompBpfC(generated));
+  });
+
+  it("matches the committed SHA-256 of the generated BPF program", () => {
+    const expected = readFileSync(new URL("../sandbox/seccomp-bpf.sha256", import.meta.url), "utf8").trim();
+    expect(createHash("sha256").update(generateSeccompBpf()).digest("hex")).toBe(expected);
   });
 
   it("keeps process, network and tracing syscalls off the allowlist", () => {
