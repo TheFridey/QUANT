@@ -13,6 +13,7 @@
 // quant-safety-reviewer agent), tests/CI and the runtime execution gate remain separate layers.
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import process from 'node:process';
 
 const PROTECTED = [
   /^packages\/risk-engine\//i,
@@ -88,12 +89,16 @@ function canonical(p) {
   }
   try {
     head = realpathSync.native(head);
-  } catch {}
+  } catch {
+    // Unresolvable ancestor (e.g. permissions): keep the lexical path.
+  }
   return join(head, ...tail);
 }
 
 function main() {
-  const input = JSON.parse(readFileSync(0, 'utf8').replace(/^﻿/, ''));
+  let raw = readFileSync(0, 'utf8');
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1); // tolerate a BOM from PowerShell pipes
+  const input = JSON.parse(raw);
   if (!input || typeof input !== 'object') throw new Error('bad input');
   const root = canonical(process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd());
   const unlocked = existsSync(join(root, '.claude', 'protected-edits.unlock'));
@@ -133,7 +138,9 @@ function main() {
   // A hard link can make a protected file reachable under another name.
   try {
     if (statSync(abs).nlink > 1) decide('deny', `Refusing to edit a hard-linked file (${filePath}); it may alias a protected path.`);
-  } catch {}
+  } catch {
+    // File does not exist yet (new file): nothing to alias.
+  }
   const rel = relative(root, abs).replace(/\\/g, '/');
   if (rel.startsWith('..') || isAbsolute(rel)) process.exit(0);
 
