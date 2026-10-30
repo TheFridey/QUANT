@@ -56,9 +56,9 @@ import {
   d,
   hypothesisSchema,
   newId,
-  usd,
 } from "@odin/shared";
 import { Prisma, PrismaClient, toJson } from "@odin/shared/db";
+import { resetPaperBalance } from "./paper-balance.js";
 import { z } from "zod";
 
 @Injectable()
@@ -1311,12 +1311,15 @@ async function lockEngineForPromotion(tx: Prisma.TransactionClient): Promise<Loc
   return engine;
 }
 
-/** Evidence produced before the 30 Oct 2026 sandbox fix (audit C1/C2) is never promotion evidence. */
+/** Only evidence produced by the fixed sandbox counts (audit C1/C2). Allowlist, so unknown eras fail closed. */
+const ACCEPTED_SANDBOX_ERAS = new Set(["STREAMING_FD3"]);
+
 function refusePreSandboxFixEvidence(input: {
   report: { sandboxEra: string } | null;
   artifact: { sandboxEra: string } | null;
 }): void {
-  if (input.report?.sandboxEra === "PRE_SANDBOX_FIX" || input.artifact?.sandboxEra === "PRE_SANDBOX_FIX") {
+  const rejected = [input.report, input.artifact].some((row) => row !== null && !ACCEPTED_SANDBOX_ERAS.has(row.sandboxEra));
+  if (rejected) {
     throw new ConflictException(
       "Promotion is refused: the report or artifact was produced before the sandbox integrity fix (PRE_SANDBOX_FIX). Re-run it.",
     );
@@ -1324,8 +1327,8 @@ function refusePreSandboxFixEvidence(input: {
 }
 
 /**
- * Same startingBalanceUsd rule as TerminalService.updateConfig: the balance may change only while
- * STOPPED with no paper orders, and then the account is reset in this same transaction.
+ * Promotion may change startingBalanceUsd only while STOPPED with no paper orders (stricter than
+ * the strategy PATCH, which also allows PAUSED). The reset shares resetPaperBalance and its lock.
  */
 async function assertPromotionConfigAllowed(
   tx: Prisma.TransactionClient,
@@ -1341,19 +1344,5 @@ async function assertPromotionConfigAllowed(
   if (engine.status !== "STOPPED") {
     throw new ConflictException("Starting balance can change only while the engine is STOPPED");
   }
-  if ((await tx.order.count()) > 0) {
-    throw new ConflictException("Starting balance can change only before any paper order exists");
-  }
-  const amount = usd(d(next.startingBalanceUsd));
-  await tx.paperAccount.update({ where: { id: "primary" }, data: { cashUsd: amount, startingBalanceUsd: amount } });
-  await tx.ledgerEntry.deleteMany({ where: { accountId: "primary", type: "OPENING_BALANCE" } });
-  await tx.ledgerEntry.create({
-    data: {
-      accountId: "primary",
-      type: "OPENING_BALANCE",
-      amountUsd: amount,
-      affectsCash: true,
-      note: "Reset paper starting balance on promotion",
-    },
-  });
+  await resetPaperBalance(tx, next.startingBalanceUsd, "Reset paper starting balance on promotion");
 }
