@@ -32,8 +32,13 @@ const PROTECTED_IN_COMMAND =
 const INDIRECT_TARGET =
   /((risk|trading|execution|promotion|workflow|strategy|venue|broker|protected|unlock|\.claude|\.github)[^\s'"]*[*?[$]|packages[\\/]+[*?[$])/i;
 // When a command names a protected path, every segment must start with one of these.
+// Only tools that cannot write files; anything else naming a protected path is denied.
 const READ_ONLY_SEGMENT =
-  /^(cat|head|tail|less|grep|rg|egrep|ls|dir|wc|file|stat|diff|type|findstr|Get-Content|gc|Select-String|sls|Get-ChildItem|gci|Test-Path|Measure-Object|Select-Object|Sort-Object|echo|printf|true|cd|pwd|sort|uniq|cut|tr|awk '[^']*'$|sed -n|jq|git (diff|log|show|status|blame|grep|ls-files)|pnpm (test|typecheck|lint|vitest run|exec (tsc|vitest run|eslint))|npx (tsc|vitest run|eslint)|node --check|entire (status|search|recap|why))\b/i;
+  /^(cat|head|tail|less|grep|rg|egrep|ls|dir|wc|file|stat|diff|type|findstr|Get-Content|gc|Select-String|sls|Get-ChildItem|gci|Test-Path|Measure-Object|Select-Object|echo|printf|true|cd|pwd|cut|tr|jq|git (diff|log|show|status|blame|grep|ls-files)|pnpm (test|vitest run)|pnpm exec vitest run|npx vitest run|node --check|entire (status|search|recap|why))\b/i;
+// Flags that make otherwise read-only tools write (output files, snapshot updates, autofix).
+const WRITE_FLAG = /(^|\s)(--fix\b|--output\b|--out-?file\b|--outDir\b|--update\b|--pre\b|-o\b|-u\b|--ext-diff\b|--textconv\b)/i;
+// Ways to run more than the visible segments: subshells, substitution, backgrounding, call/dot-source operators.
+const COMPOUND = /(\$\(|<\(|>\(|`|[(){}]|(^|[^&|>0-9])&(?!&)|(^|[;|\s])\.\s|\binvoke-expression\b|\biex\b)/i;
 const SHELL_WRITE = new RegExp(
   [
     String.raw`\bsed\b[^|;&]*\s-[a-z]*i`, String.raw`\bperl\b[^|;&]*\s-[a-z]*i`, '>', String.raw`\btee\b`,
@@ -92,15 +97,19 @@ function main() {
     if (LIVE_MONEY.test(cmd)) decide('deny', 'Command touches live-money switches (LIVE_MONEY_* / EXECUTION_MODE). Operator must do this manually.');
     if (/protected-edits/i.test(cmd)) decide('deny', 'Only the operator may create, change or reference the unlock marker from a shell.');
     const unquoted = cmd.replace(/['"`^]/g, '');
-    const writes = SHELL_WRITE.test(unquoted.replace(STDERR_OR_NULL_REDIRECT, ''));
+    const isWrite = (s) => SHELL_WRITE.test(s.replace(STDERR_OR_NULL_REDIRECT, ''));
+    const writes = isWrite(cmd) || isWrite(unquoted);
     // Guard config is never writable from a shell, unlocked or not.
     if (writes && /\.claude/i.test(unquoted)) decide('deny', 'Shell writes that mention .claude are denied in QUANT; the operator edits guard config by hand.');
-    const namesProtected = PROTECTED_IN_COMMAND.test(unquoted);
-    const readOnly = unquoted
-      .split(/\|\|?|&&|;|\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .every((s) => READ_ONLY_SEGMENT.test(s) && !SHELL_WRITE.test(s.replace(STDERR_OR_NULL_REDIRECT, '')));
+    const namesProtected = PROTECTED_IN_COMMAND.test(cmd) || PROTECTED_IN_COMMAND.test(unquoted);
+    const readOnly =
+      !COMPOUND.test(cmd.replace(STDERR_OR_NULL_REDIRECT, '')) &&
+      cmd
+        .replace(STDERR_OR_NULL_REDIRECT, '')
+        .split(/\|\|?|&&?|;|\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .every((s) => READ_ONLY_SEGMENT.test(s) && !WRITE_FLAG.test(s) && !isWrite(s) && !isWrite(s.replace(/['"`^]/g, '')));
     if ((namesProtected && !readOnly) || (writes && INDIRECT_TARGET.test(unquoted))) {
       decide(unlocked ? 'ask' : 'deny', unlocked ? 'Shell command that may modify a QUANT protected path (unlocked): confirm.' : LOCKED_MSG);
     }
