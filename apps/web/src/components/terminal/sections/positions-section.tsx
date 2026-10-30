@@ -4,7 +4,9 @@ import { useState } from "react";
 import { EmptyState, Panel } from "@/components/terminal/panel";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
+import { estimateTicket } from "@/lib/estimates";
 import { formatDuration, formatPct, formatPx, formatQty, formatUsd, signedClass } from "@/lib/format";
 import type { PositionRow } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -33,10 +35,39 @@ export function PositionsSection() {
   const { snapshot, refresh } = useSnapshot();
   const [closing, setClosing] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  // UI item 11: every close goes through a confirmation that shows the estimate first.
+  const [confirming, setConfirming] = useState<string[] | null>(null);
   if (!snapshot) return null;
   const positions = snapshot.portfolio.positions;
   const urgent = positions.filter((row) => row.protectionRecoveryNeeded || row.protectionStatus === "FAILED" || row.protectionStatus === "UNPROTECTED" || !row.protected);
   const canClose = snapshot.engine.status === "RUNNING" || snapshot.engine.status === "PAUSED";
+
+  const config = snapshot.engine.config;
+  const estimates = (pairs: string[]) =>
+    pairs.map((pairAddress) => {
+      const row = positions.find((item) => item.pairAddress === pairAddress);
+      const quote = snapshot.market.pairs.find((item) => item.pairAddress === pairAddress);
+      const priceUsd = Number(quote?.priceUsd ?? row?.markUsd ?? 0);
+      const estimate =
+        row && priceUsd > 0
+          ? estimateTicket({
+              side: "SELL",
+              priceUsd,
+              qty: Number(row.baseQty),
+              liquidityUsd: quote?.liquidityUsd ? Number(quote.liquidityUsd) : null,
+              feeBps: Number(config?.feeBps ?? 30),
+              spreadBps: Number(config?.spreadBpsEstimate ?? 5),
+              stopLossPct: 0,
+              exposureUsd: null,
+            })
+          : null;
+      return { pairAddress, symbol: row?.baseSymbol ?? pairAddress, estimate };
+    });
+
+  async function closeConfirmed(pairs: string[]) {
+    setConfirming(null);
+    for (const pairAddress of pairs) await closePosition(pairAddress);
+  }
 
   async function closePosition(pairAddress: string) {
     setClosing(pairAddress);
@@ -77,9 +108,9 @@ export function PositionsSection() {
                     size="xs"
                     variant="outline"
                     disabled={!canClose || closing === row.pairAddress}
-                    onClick={() => void closePosition(row.pairAddress)}
+                    onClick={() => setConfirming([row.pairAddress])}
                   >
-                    {closing === row.pairAddress ? "Closing…" : "Reduce-only close"}
+                    {closing === row.pairAddress ? "Closing…" : "Close"}
                   </Button>
                 </li>
               );
@@ -88,7 +119,19 @@ export function PositionsSection() {
         </Panel>
       ) : null}
 
-      <Panel title="Open positions" extra={`${positions.length} open`}>
+      <Panel
+        title="Open positions"
+        extra={
+          <span className="flex items-center gap-2">
+            {positions.length} open
+            {positions.length > 1 ? (
+              <Button type="button" size="xs" variant="outline" disabled={!canClose || closing !== null} onClick={() => setConfirming(positions.map((row) => row.pairAddress))}>
+                Close all
+              </Button>
+            ) : null}
+          </span>
+        }
+      >
         <div aria-live="polite" aria-atomic="true" className="sr-only">
           {message ?? ""}
         </div>
@@ -156,12 +199,20 @@ export function PositionsSection() {
                       <td className="mono px-3 py-2">{formatPx(position.targetUsd)}</td>
                       <td className="px-3 py-2 text-[11px]">
                         <span className={cn("font-medium", tone.className)}>{tone.label}</span>
-                        <span className="block text-[10px] text-muted">
-                          {(position.protectionKinds ?? []).join("/") || "—"} ·{" "}
-                          {position.protectionOrigin === "VENUE_NATIVE" ? "venue" : position.protectionOrigin === "SYNTHETIC_ENGINE" ? "engine" : "—"} ·{" "}
-                          {position.protectionAckState ?? "—"}
-                          {position.protectionDesireDiverges ? " · desire≠confirmed" : ""}
-                          {position.protectionRecoveryNeeded ? " · recoveryNeeded" : ""}
+                        <span
+                          className="block text-[10px] text-muted"
+                          title={[
+                            (position.protectionKinds ?? []).join("/") || "no legs",
+                            position.protectionOrigin ?? "",
+                            position.protectionAckState ?? "",
+                            position.protectionDesireDiverges ? "DESIRE_DIVERGES" : "",
+                            position.protectionRecoveryNeeded ? "RECOVERY_NEEDED" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        >
+                          {position.protectionOrigin === "VENUE_NATIVE" ? "Held at venue" : position.protectionOrigin === "SYNTHETIC_ENGINE" ? "Held by engine" : ""}
+                          {position.protectionRecoveryNeeded ? " · needs recovery" : ""}
                         </span>
                       </td>
                       <td className="mono px-3 py-2">{formatPct(position.exposurePct)}</td>
@@ -172,7 +223,7 @@ export function PositionsSection() {
                           size="xs"
                           variant="outline"
                           disabled={!canClose || closing === position.pairAddress}
-                          onClick={() => void closePosition(position.pairAddress)}
+                          onClick={() => setConfirming([position.pairAddress])}
                         >
                           {closing === position.pairAddress ? "…" : "Close"}
                         </Button>
@@ -185,6 +236,45 @@ export function PositionsSection() {
           </div>
         )}
       </Panel>
+
+      <Dialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>
+        <DialogContent>
+          <DialogTitle>{confirming && confirming.length > 1 ? `Close all ${confirming.length} positions` : "Close position"}</DialogTitle>
+          <DialogDescription className="text-sm text-muted">
+            Sells at the next eligible quote. Figures are estimates; the engine prices the fill itself.
+          </DialogDescription>
+          {confirming ? (
+            <table className="mt-3 w-full text-xs">
+              <thead className="text-left text-muted">
+                <tr>
+                  <th className="font-normal">Position</th>
+                  <th className="font-normal text-right">Est. slippage</th>
+                  <th className="font-normal text-right">Est. proceeds</th>
+                </tr>
+              </thead>
+              <tbody>
+                {estimates(confirming).map((row) => (
+                  <tr key={row.pairAddress}>
+                    <td>{row.symbol}</td>
+                    <td className="mono text-right">
+                      {row.estimate?.impactBps != null ? `${row.estimate.impactBps.toFixed(0)} bps` : "—"}
+                    </td>
+                    <td className="mono text-right">{row.estimate?.proceedsUsd != null ? formatUsd(row.estimate.proceedsUsd.toFixed(2)) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button type="button" size="sm" variant="ghost" onClick={() => setConfirming(null)}>
+              Cancel
+            </Button>
+            <Button type="button" size="sm" variant="danger" onClick={() => confirming && void closeConfirmed(confirming)}>
+              Confirm close
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

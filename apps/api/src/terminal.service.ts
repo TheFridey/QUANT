@@ -1219,14 +1219,18 @@ export class TerminalService {
       orderBy: { receivedAt: "asc" },
       take: 300,
     });
-    const points: Array<{ time: number; priceUsd: string }> = [];
+    // UI item 10: carry 5-minute volume so the chart can show it under price.
+    const points: Array<{ time: number; priceUsd: string; volumeUsd: string | null }> = [];
     for (const row of rows) {
       if (!row.priceUsd) continue;
       const time = Math.floor(row.receivedAt.getTime() / 1000);
       const priceUsd = row.priceUsd.toString();
+      const volumeUsd = row.volume5mUsd?.toString() ?? null;
       const previous = points.at(-1);
-      if (previous && previous.time === time) previous.priceUsd = priceUsd;
-      else points.push({ time, priceUsd });
+      if (previous && previous.time === time) {
+        previous.priceUsd = priceUsd;
+        previous.volumeUsd = volumeUsd;
+      } else points.push({ time, priceUsd, volumeUsd });
     }
     return { pairAddress, points };
   }

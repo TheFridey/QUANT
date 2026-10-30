@@ -18,7 +18,8 @@ test("command centre loads live snapshot equity and agent drawer", async ({ page
 
   if (snapshot.portfolio.equityUsd != null) {
     const amount = Number(snapshot.portfolio.equityUsd);
-    const expected = `$${Math.abs(amount).toFixed(2)}`;
+    // UI item 6: dollars carry thousands separators.
+    const expected = `$${Math.abs(amount).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const signed = amount < 0 ? `-${expected}` : expected;
     expect(equityText.replace(/\s+/g, " ")).toContain(signed);
   } else {

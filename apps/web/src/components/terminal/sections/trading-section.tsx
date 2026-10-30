@@ -2,13 +2,14 @@
 
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { EmptyState, Panel } from "@/components/terminal/panel";
-import { PriceChart } from "@/components/terminal/price-chart";
+import { PriceChart, type ChartPoint } from "@/components/terminal/price-chart";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
+import { estimateTicket } from "@/lib/estimates";
 import { formatLondonDateTime, formatPct, formatPx, formatQty, formatUsd, formatUsdCompact, signedClass } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -41,8 +42,11 @@ function newClientIntentId(side: "BUY" | "SELL"): string {
 export function TradingSection() {
   const { snapshot, refresh } = useSnapshot();
   const [selected, setSelected] = useState<string | null>(null);
-  const [points, setPoints] = useState<Array<{ time: number; priceUsd: string }>>([]);
+  const [points, setPoints] = useState<ChartPoint[]>([]);
   const [notional, setNotional] = useState("10");
+  const [side, setSide] = useState<"BUY" | "SELL">("BUY");
+  const [sellQty, setSellQty] = useState("");
+  const [reviewing, setReviewing] = useState(false);
   const [ticketError, setTicketError] = useState<string | null>(null);
   const [ticketPending, setTicketPending] = useState(false);
   const [receipt, setReceipt] = useState<OrderReceipt | null>(null);
@@ -58,7 +62,7 @@ export function TradingSection() {
   useEffect(() => {
     if (!selected) return;
     let cancelled = false;
-    api<{ points: Array<{ time: number; priceUsd: string }> }>(`/market/observations?pairAddress=${encodeURIComponent(selected)}`)
+    api<{ points: ChartPoint[] }>(`/market/observations?pairAddress=${encodeURIComponent(selected)}`)
       .then((result) => {
         if (!cancelled) setPoints(result.points);
       })
@@ -84,32 +88,30 @@ export function TradingSection() {
   const live = Boolean(pair?.freshness === "LIVE" && pair.priceUsd !== null && engineOkForBuy);
   const config = snapshot?.engine.config;
 
-  const preview = useMemo(() => {
-    if (!snapshot) return null;
-    const price = pair?.priceUsd ? Number(pair.priceUsd) : null;
-    const notion = Number(notional);
-    const feeBps = Number(config?.feeBps ?? 30);
-    const stopPct = Number(config?.stopLossPct ?? 3);
-    const slipBps = Number(config?.maxSlippageBps ?? 150);
-    const cash = Number(snapshot.portfolio.availableFundsUsd ?? snapshot.portfolio.cashUsd);
-    if (!price || !Number.isFinite(notion) || notion <= 0) {
-      return null;
-    }
-    const qty = notion / price;
-    const feeUsd = (notion * feeBps) / 10_000;
-    const slipUsd = (notion * slipBps) / 10_000;
-    const stopLossUsd = (notion * stopPct) / 100;
-    return {
+  const price = pair?.priceUsd ? Number(pair.priceUsd) : position?.markUsd ? Number(position.markUsd) : null;
+  const stopPct = Number(config?.stopLossPct ?? 3);
+  const targetPct = Number(config?.takeProfitPct ?? 5);
+  const cash = Number(snapshot?.portfolio.availableFundsUsd ?? snapshot?.portfolio.cashUsd ?? 0);
+  const exposure = snapshot?.portfolio.exposureUsd != null ? Number(snapshot.portfolio.exposureUsd) : null;
+  const riskCap = snapshot?.portfolio.openRiskCapUsd != null ? Number(snapshot.portfolio.openRiskCapUsd) : null;
+
+  // UI item 9: one estimate drives the ticket, the review step and the close confirmation.
+  const estimate = useMemo(() => {
+    if (!price) return null;
+    const qty = side === "BUY" ? Number(notional) / price : Number(sellQty || position?.baseQty || 0);
+    if (!Number.isFinite(qty) || qty <= 0) return null;
+    return estimateTicket({
+      side,
+      priceUsd: price,
       qty,
-      feeUsd,
-      slipUsd,
-      stopLossUsd,
-      cash,
-      account: snapshot.execution?.metricsAccountId ?? "primary",
-      environment: snapshot.execution?.tradingEnvironment ?? "MARKET_DATA_PAPER",
-      affordable: cash + 1e-9 >= notion + feeUsd,
-    };
-  }, [pair?.priceUsd, notional, config, snapshot]);
+      liquidityUsd: pair?.liquidityUsd ? Number(pair.liquidityUsd) : null,
+      feeBps: Number(config?.feeBps ?? 30),
+      spreadBps: Number(config?.spreadBpsEstimate ?? 5),
+      stopLossPct: stopPct,
+      exposureUsd: exposure,
+    });
+  }, [price, side, notional, sellQty, position?.baseQty, pair?.liquidityUsd, config, stopPct, exposure]);
+  const affordable = estimate === null || side === "SELL" || cash + 1e-9 >= estimate.notionalUsd + estimate.feeUsd;
 
   async function pollReceipt(cycleId: string, clientIntentId: string) {
     if (pollRef.current != null) window.clearInterval(pollRef.current);
@@ -134,7 +136,8 @@ export function TradingSection() {
     }, 750);
   }
 
-  async function place(side: "BUY" | "SELL", event?: FormEvent) {
+  async function place(orderSide: "BUY" | "SELL", event?: FormEvent) {
+    const side = orderSide;
     event?.preventDefault();
     if (!selected) return;
     setTicketPending(true);
@@ -142,10 +145,13 @@ export function TradingSection() {
     const clientIntentId = intentRef.current && receipt?.pending ? intentRef.current : newClientIntentId(side);
     intentRef.current = clientIntentId;
     try {
+      const fullClose = !sellQty || (position && Number(sellQty) >= Number(position.baseQty));
       const body =
         side === "BUY"
           ? { side, pairAddress: selected, notionalUsd: notional, clientIntentId }
-          : { side, pairAddress: selected, clientIntentId };
+          : fullClose
+            ? { side, pairAddress: selected, clientIntentId }
+            : { side, pairAddress: selected, clientIntentId, scope: "NET" as const, qty: Number(sellQty).toFixed(8) };
       const result = await api<OrderReceipt>("/orders", {
         method: "POST",
         body: JSON.stringify(body),
@@ -229,7 +235,10 @@ export function TradingSection() {
       </Panel>
 
       <Panel title={pair ? `${pair.baseSymbol} / ${pair.quoteSymbol}` : selected ?? "Mark"} extra={pair?.dexId} className="min-h-[320px]">
-        <PriceChart points={points} />
+        <PriceChart
+          points={points}
+          levels={position ? { entryUsd: position.avgCostUsd, stopUsd: position.stopUsd, targetUsd: position.targetUsd } : undefined}
+        />
       </Panel>
 
       <Panel title="Paper ticket">
@@ -249,61 +258,158 @@ export function TradingSection() {
               <span className={signedClass(position.unrealizedPnlUsd)}>{formatUsd(position.unrealizedPnlUsd)}</span>
             </div>
           ) : null}
-          {preview ? (
-            <dl className="grid grid-cols-2 gap-x-2 gap-y-1 rounded border border-border/80 bg-panel-2/40 p-2 text-[11px]">
-              <div>
-                <dt className="text-muted">Est. qty</dt>
-                <dd className="mono">{formatQty(String(preview.qty))}</dd>
-              </div>
-              <div>
-                <dt className="text-muted">Est. fees</dt>
-                <dd className="mono">{formatUsd(String(preview.feeUsd))}</dd>
-              </div>
-              <div>
-                <dt className="text-muted">Stop risk</dt>
-                <dd className="mono">{formatUsd(String(preview.stopLossUsd))}</dd>
-              </div>
-              <div>
-                <dt className="text-muted">Cash / budget</dt>
-                <dd className={cn("mono", preview.affordable ? "" : "text-loss")}>{formatUsd(String(preview.cash))}</dd>
-              </div>
-              <div className="col-span-2">
-                <dt className="text-muted">Account</dt>
-                <dd className="mono">
-                  {preview.account} · {preview.environment}
-                </dd>
-              </div>
-            </dl>
-          ) : null}
-          <form className="space-y-2" onSubmit={(event) => void place("BUY", event)}>
-            <Label htmlFor="notional">Notional USD</Label>
-            <Input id="notional" value={notional} onChange={(event) => setNotional(event.target.value)} inputMode="decimal" />
-            <div className="flex gap-2">
-              <Button type="submit" size="sm" disabled={!live || ticketPending || (preview != null && !preview.affordable)}>
-                Buy
-              </Button>
-              <Button
+          <div role="group" aria-label="Order side" className="grid grid-cols-2 gap-1 rounded border border-border p-0.5">
+            {(["BUY", "SELL"] as const).map((option) => (
+              <button
+                key={option}
                 type="button"
-                size="sm"
-                variant="outline"
-                disabled={
-                  !position ||
-                  !engineOkForSell ||
-                  ticketPending ||
-                  (pair != null && pair.freshness !== "LIVE" && pair.freshness !== "DELAYED")
-                }
-                onClick={() => void place("SELL")}
+                aria-pressed={side === option}
+                onClick={() => {
+                  setSide(option);
+                  setReviewing(false);
+                }}
+                className={cn(
+                  "rounded px-2 py-1 text-xs font-medium",
+                  side === option ? (option === "BUY" ? "bg-profit/20 text-profit" : "bg-loss/20 text-loss") : "text-muted",
+                )}
               >
-                Close
-              </Button>
+                {option === "BUY" ? "Buy" : "Sell"}
+              </button>
+            ))}
+          </div>
+          <form
+            className="space-y-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!reviewing) setReviewing(true);
+              else void place(side, event).then(() => setReviewing(false));
+            }}
+          >
+            {side === "BUY" ? (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label htmlFor="notional">Notional (USD)</Label>
+                  <Input
+                    id="notional"
+                    value={notional}
+                    inputMode="decimal"
+                    onChange={(event) => {
+                      setNotional(event.target.value);
+                      setReviewing(false);
+                    }}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="quantity">Quantity</Label>
+                  <Input
+                    id="quantity"
+                    inputMode="decimal"
+                    value={price && Number(notional) > 0 ? formatQty((Number(notional) / price).toFixed(8)).replace(/,/g, "") : ""}
+                    onChange={(event) => {
+                      const qty = Number(event.target.value);
+                      if (price && Number.isFinite(qty)) setNotional((qty * price).toFixed(2));
+                      setReviewing(false);
+                    }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div>
+                <Label htmlFor="sell-qty">Quantity to sell</Label>
+                <Input
+                  id="sell-qty"
+                  inputMode="decimal"
+                  placeholder={position ? `All (${formatQty(position.baseQty)})` : "No open position"}
+                  value={sellQty}
+                  onChange={(event) => {
+                    setSellQty(event.target.value);
+                    setReviewing(false);
+                  }}
+                />
+              </div>
+            )}
+            {side === "BUY" && price ? (
+              <dl className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px]" title="Strategy defaults; the engine arms these after the fill">
+                <div>
+                  <dt className="text-muted">Stop (strategy, −{stopPct}%)</dt>
+                  <dd className="mono">{formatPx(String(price * (1 - stopPct / 100)))}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted">Target (strategy, +{targetPct}%)</dt>
+                  <dd className="mono">{formatPx(String(price * (1 + targetPct / 100)))}</dd>
+                </div>
+              </dl>
+            ) : null}
+            {reviewing && estimate ? (
+              <dl className="grid grid-cols-2 gap-x-2 gap-y-1 rounded border border-primary/40 bg-panel-2/40 p-2 text-[11px]" aria-live="polite">
+                <div>
+                  <dt className="text-muted">Est. quantity</dt>
+                  <dd className="mono">{formatQty(estimate.qty.toFixed(8))}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted">Est. fees</dt>
+                  <dd className="mono">{formatUsd(estimate.feeUsd.toFixed(2))}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted">Est. impact</dt>
+                  <dd className="mono">
+                    {estimate.impactBps === null ? "—" : `${estimate.impactBps.toFixed(0)} bps · ${formatUsd((estimate.impactUsd ?? 0).toFixed(2))}`}
+                  </dd>
+                </div>
+                {side === "BUY" ? (
+                  <div>
+                    <dt className="text-muted">Loss if stopped</dt>
+                    <dd className="mono text-loss">{formatUsd((estimate.stopRiskUsd ?? 0).toFixed(2))}</dd>
+                  </div>
+                ) : (
+                  <div>
+                    <dt className="text-muted">Est. proceeds</dt>
+                    <dd className="mono">{formatUsd((estimate.proceedsUsd ?? 0).toFixed(2))}</dd>
+                  </div>
+                )}
+                <div className="col-span-2">
+                  <dt className="text-muted">Open risk after trade</dt>
+                  <dd className="mono">
+                    {estimate.postTradeExposureUsd === null ? "—" : formatUsd(estimate.postTradeExposureUsd.toFixed(2))}
+                    {riskCap !== null ? <span className="text-muted"> of {formatUsd(riskCap.toFixed(2))} cap</span> : null}
+                  </dd>
+                </div>
+              </dl>
+            ) : null}
+            <div className="flex gap-2">
+              {side === "BUY" ? (
+                <Button type="submit" size="sm" disabled={!live || ticketPending || !estimate || !affordable}>
+                  {reviewing ? "Confirm buy" : "Review buy"}
+                </Button>
+              ) : (
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    !position ||
+                    !engineOkForSell ||
+                    ticketPending ||
+                    (pair != null && pair.freshness !== "LIVE" && pair.freshness !== "DELAYED")
+                  }
+                >
+                  {reviewing ? "Confirm sell" : "Review sell"}
+                </Button>
+              )}
+              {reviewing ? (
+                <Button type="button" size="sm" variant="ghost" onClick={() => setReviewing(false)}>
+                  Back
+                </Button>
+              ) : null}
             </div>
-            {!live ? <p className="text-xs text-muted">Buys require a LIVE quote and a running engine. Close works while paused.</p> : null}
+            {side === "BUY" && !live ? <p className="text-xs text-muted">Buying needs a live quote and a running engine. Selling also works while paused.</p> : null}
+            {side === "BUY" && !affordable ? <p className="text-xs text-loss">Not enough cash for this size plus fees.</p> : null}
             {ticketError ? <p className="text-xs text-loss">{ticketError}</p> : null}
             {receipt ? (
               <p className={`text-xs ${receipt.pending ? "text-warning" : "text-muted"}`}>
                 {receipt.pending ? "Pending · " : ""}
                 {receipt.message ?? receipt.status}
-                {receipt.replayed ? " · replayed intent" : ""} · {receipt.cycleId}
+                {receipt.replayed ? " · replayed" : ""}
               </p>
             ) : null}
           </form>
@@ -312,18 +418,32 @@ export function TradingSection() {
             {snapshot.orders.length === 0 ? (
               <p className="text-xs text-muted">No paper orders recorded.</p>
             ) : (
-              <ul className="space-y-1 text-xs">
-                {snapshot.orders.slice(0, 10).map((order) => (
-                  <li key={order.id}>
-                    <button type="button" className="flex w-full justify-between gap-2 text-left hover:text-primary" onClick={() => setInspectId(order.id)}>
-                      <span>
-                        {order.side} {order.baseSymbol} {order.status}
-                      </span>
-                      <span className="mono text-muted">{order.fills[0] ? formatPx(order.fills[0].priceUsd) : order.rejectReason ?? formatQty(order.qty)}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <table className="w-full text-[11px]">
+                <thead className="text-left text-muted">
+                  <tr>
+                    <th className="font-normal">Order</th>
+                    <th className="font-normal text-right">Qty</th>
+                    <th className="font-normal text-right">Time</th>
+                    <th className="font-normal text-right">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {snapshot.orders.slice(0, 10).map((order) => (
+                    <tr key={order.id}>
+                      <td>
+                        <button type="button" className="text-left hover:text-primary" onClick={() => setInspectId(order.id)}>
+                          {order.side === "BUY" ? "Buy" : "Sell"} {order.baseSymbol}
+                        </button>
+                      </td>
+                      <td className="mono text-right">{formatQty(order.fills[0]?.qty ?? order.qty)}</td>
+                      <td className="mono text-right text-muted">{formatLondonDateTime(order.createdAt).slice(-8)}</td>
+                      <td className={cn("text-right", order.status === "REJECTED" ? "text-loss" : order.status === "FILLED" ? "text-profit" : "text-muted")}>
+                        <span title={order.rejectReason ?? undefined}>{order.status.toLowerCase()}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
           </div>
         </div>

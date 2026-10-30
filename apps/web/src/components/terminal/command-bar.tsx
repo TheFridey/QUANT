@@ -44,10 +44,11 @@ export function CommandBar() {
 
   return (
     <>
-      <header className="panel z-20 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-3 py-2">
+      {/* UI item 14: compact sticky header on small screens. */}
+      <header className="panel sticky top-0 z-20 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-3 py-2">
         <div className="min-w-[150px]">
           <div className="text-sm font-semibold tracking-[0.08em]">ODIN // QUANT</div>
-          <div className="text-[10px] uppercase tracking-[0.16em] text-muted">Command centre · London {clock}</div>
+          <div className="hidden text-[10px] uppercase tracking-[0.16em] text-muted sm:block">Command centre · London {clock}</div>
         </div>
 
         <Badge className="border-primary/40 text-primary">{mode}</Badge>
@@ -88,12 +89,25 @@ export function CommandBar() {
             className="text-base"
             value={snapshot.portfolio.equityUsd === null ? "Incomplete marks" : formatUsd(snapshot.portfolio.equityUsd)}
           />
-          <div className="text-[10px] text-muted">
+          <div className="hidden text-[10px] text-muted sm:block">
             Cash {formatUsd(snapshot.portfolio.cashUsd)} · {snapshot.portfolio.valuation}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex items-center gap-1.5 md:hidden">
+          <HeaderMenu
+            label="Engine"
+            items={[
+              { label: "Start", disabled: !can("start"), onSelect: () => void control("/engine/start") },
+              { label: "Pause", disabled: !can("pause"), onSelect: () => void control("/engine/pause") },
+              { label: "Resume", disabled: !can("resume"), onSelect: () => void control("/engine/resume") },
+            ]}
+          />
+          <Button size="xs" variant="danger" disabled={!can("emergency_stop")} onClick={() => setEmergencyOpen(true)}>
+            Emergency stop
+          </Button>
+        </div>
+        <div className="hidden flex-wrap items-center gap-1.5 md:flex">
           <Button size="xs" disabled={!can("start")} onClick={() => void control("/engine/start")}>
             Start
           </Button>
@@ -109,11 +123,17 @@ export function CommandBar() {
         </div>
         {/* UI item 8: Sign out lives in the account menu so Emergency stop stands alone. */}
         <div className="flex items-center">
-          <AccountMenu
-            onSignOut={() => {
-              setToken(null);
-              router.push("/login");
-            }}
+          <HeaderMenu
+            label="Account"
+            items={[
+              {
+                label: "Sign out",
+                onSelect: () => {
+                  setToken(null);
+                  router.push("/login");
+                },
+              },
+            ]}
           />
         </div>
       </header>
@@ -161,7 +181,6 @@ function HealthPill({ checks }: { checks: Array<{ label: string; value: string; 
   const detail = checks.map((check) => `${check.ok ? "OK" : "!!"} ${check.label}: ${check.value}`).join("\n");
   return (
     <div
-      role="status"
       title={detail}
       className={cn(
         "flex items-center gap-2 rounded border px-2.5 py-1 text-[11px]",
@@ -175,7 +194,14 @@ function HealthPill({ checks }: { checks: Array<{ label: string; value: string; 
   );
 }
 
-function AccountMenu({ onSignOut }: { onSignOut: () => void }) {
+/** Small disclosure menu for the header (account actions; engine controls on mobile). */
+function HeaderMenu({
+  label,
+  items,
+}: {
+  label: string;
+  items: Array<{ label: string; disabled?: boolean; onSelect: () => void }>;
+}) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -193,21 +219,25 @@ function AccountMenu({ onSignOut }: { onSignOut: () => void }) {
   return (
     <div ref={root} className="relative">
       <Button size="xs" variant="ghost" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-        Account
+        {label}
       </Button>
       {open ? (
         <div role="menu" className="absolute right-0 z-30 mt-1 min-w-36 rounded border border-border bg-panel p-1 shadow-lg">
-          <button
-            type="button"
-            role="menuitem"
-            className="w-full rounded px-3 py-1.5 text-left text-xs hover:bg-white/5 focus-visible:bg-white/5"
-            onClick={() => {
-              setOpen(false);
-              onSignOut();
-            }}
-          >
-            Sign out
-          </button>
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              className="w-full rounded px-3 py-1.5 text-left text-xs hover:bg-white/5 focus-visible:bg-white/5 disabled:cursor-not-allowed disabled:text-muted"
+              onClick={() => {
+                setOpen(false);
+                item.onSelect();
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
       ) : null}
     </div>

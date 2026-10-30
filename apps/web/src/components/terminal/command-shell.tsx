@@ -2,7 +2,7 @@
 
 import { CommandBar } from "@/components/terminal/command-bar";
 import { MobileNav, Sidebar } from "@/components/terminal/sidebar";
-import { SnapshotProvider, useSnapshot } from "@/components/terminal/snapshot-context";
+import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { AgentsSection } from "@/components/terminal/sections/agents-section";
 import { BacktestingSection } from "@/components/terminal/sections/backtesting-section";
 import { DecisionFeed } from "@/components/terminal/sections/decision-feed";
@@ -34,19 +34,25 @@ import { StrategySection } from "@/components/terminal/sections/strategy-section
 import { TradingSection } from "@/components/terminal/sections/trading-section";
 import { Button } from "@/components/ui/button";
 import { SkeletonBlock } from "@/components/terminal/panel";
-import { SECTIONS } from "@/lib/sections";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { RESEARCH_TABS, SECTIONS, parseResearchTab } from "@/lib/sections";
+import { cn } from "@/lib/utils";
 import type { TerminalSection } from "@/lib/types";
 
 export function CommandShell({ section }: { section: TerminalSection }) {
-  return (
-    <SnapshotProvider>
-      <ShellFrame section={section} />
-    </SnapshotProvider>
-  );
+  // The SnapshotProvider is in app/terminal/layout.tsx so it survives section navigation (UI item 15).
+  return <ShellFrame section={section} />;
 }
 
 function ShellFrame({ section }: { section: TerminalSection }) {
-  const { loading, snapshot, refresh, error } = useSnapshot();
+  const { loading, snapshot, refresh, error, lastRefreshAt } = useSnapshot();
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => tick((value) => value + 1), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const ageSeconds = lastRefreshAt ? Math.max(0, Math.round((Date.now() - new Date(lastRefreshAt).getTime()) / 1000)) : null;
   const sectionDef = SECTIONS.find((item) => item.id === section);
   const label = sectionDef?.label ?? "Overview";
   const group = sectionDef?.group ?? "Desk";
@@ -90,10 +96,13 @@ function ShellFrame({ section }: { section: TerminalSection }) {
           <div className="flex items-center justify-between border-b border-border px-3 py-2">
             <div>
               <div className="text-[10px] uppercase tracking-[0.16em] text-muted">
-                {group} · Module
+                {group}
               </div>
               <h1 className="text-sm font-medium">{label}</h1>
             </div>
+            <span className={cn("ml-auto mr-2 text-[11px]", ageSeconds !== null && ageSeconds > 30 ? "text-warning" : "text-muted")} aria-live="off">
+              {ageSeconds === null ? "Not yet updated" : ageSeconds < 2 ? "Updated just now" : `Updated ${ageSeconds}s ago`}
+            </span>
             <Button size="xs" variant="outline" onClick={() => void refresh()}>
               Refresh
             </Button>
@@ -141,19 +150,17 @@ function renderSection(section: TerminalSection) {
     case "backtesting":
       return <BacktestingSection />;
     case "research":
-      return <ResearchCentreSection />;
     case "operations":
-      return <ResearchOperationsSection />;
     case "forge":
-      return <ForgeMonitorSection />;
     case "genome":
-      return <GenomeSection />;
     case "integrity":
-      return <DataIntegritySection />;
     case "confidence":
-      return <ResearchConfidenceSection />;
     case "memory":
-      return <ResearchMemorySection />;
+      return (
+        <Suspense fallback={null}>
+          <ResearchPage fallbackTab={section} />
+        </Suspense>
+      );
     case "risk":
       return <RiskSection />;
     case "capacity":
@@ -174,4 +181,43 @@ function renderSection(section: TerminalSection) {
     default:
       return <OverviewSection />;
   }
+}
+
+/** UI item 13: one Research page; the former sub-pages are tabs selected by ?tab=. */
+function ResearchPage({ fallbackTab }: { fallbackTab: string }) {
+  const params = useSearchParams();
+  const router = useRouter();
+  const active = parseResearchTab(params.get("tab") ?? fallbackTab);
+  return (
+    <div className="space-y-3">
+      <div role="tablist" aria-label="Research views" className="flex flex-wrap gap-1 border-b border-border pb-2">
+        {RESEARCH_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            id={`research-tab-${tab.id}`}
+            aria-selected={active === tab.id}
+            aria-controls="research-tabpanel"
+            onClick={() => router.replace(`/terminal/research?tab=${tab.id}`)}
+            className={cn(
+              "rounded px-3 py-1.5 text-xs",
+              active === tab.id ? "bg-primary/15 text-primary" : "text-muted hover:text-foreground",
+            )}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" id="research-tabpanel" aria-labelledby={`research-tab-${active}`}>
+        {active === "research" ? <ResearchCentreSection /> : null}
+        {active === "operations" ? <ResearchOperationsSection /> : null}
+        {active === "forge" ? <ForgeMonitorSection /> : null}
+        {active === "genome" ? <GenomeSection /> : null}
+        {active === "integrity" ? <DataIntegritySection /> : null}
+        {active === "confidence" ? <ResearchConfidenceSection /> : null}
+        {active === "memory" ? <ResearchMemorySection /> : null}
+      </div>
+    </div>
+  );
 }

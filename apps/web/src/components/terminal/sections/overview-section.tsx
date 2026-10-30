@@ -228,7 +228,6 @@ function DeskSummary() {
           <dt className="text-[11px] text-muted">Open risk vs cap</dt>
           <dd className="mono text-xl">
             {formatUsd(exposure)} <span className="text-sm text-muted">of {formatUsd(cap)}</span>
-          </dd>
           {usedPct !== null ? (
             <div
               className="mt-1 h-1.5 rounded bg-white/10"
@@ -241,6 +240,7 @@ function DeskSummary() {
               <div className={cn("h-1.5 rounded", usedPct >= 90 ? "bg-loss" : "bg-primary")} style={{ width: `${usedPct}%` }} />
             </div>
           ) : null}
+          </dd>
         </div>
         <div>
           <dt className="text-[11px] text-muted">Open positions</dt>

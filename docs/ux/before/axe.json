@@ -1,0 +1,629 @@
+{
+  "desktop-1440x900/overview": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    },
+    {
+      "id": "link-in-text-block",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Links must be distinguishable without relying on color",
+      "target": [
+        ".underline-offset-2"
+      ]
+    }
+  ],
+  "desktop-1440x900/agents": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 7,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive",
+        ".bg-panel\\/60.border-white\\/10.text-left:nth-child(1) > .space-y-1.mt-2.text-\\[10px\\] > .text-loss\\/80.truncate",
+        ".bg-panel\\/60.border-white\\/10.text-left:nth-child(2) > .space-y-1.mt-2.text-\\[10px\\] > .text-loss\\/80.truncate"
+      ]
+    }
+  ],
+  "desktop-1440x900/radar": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    },
+    {
+      "id": "scrollable-region-focusable",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Scrollable region must have keyboard access",
+      "target": [
+        ".overflow-auto.min-h-0.flex-1 > .overflow-auto"
+      ]
+    }
+  ],
+  "desktop-1440x900/markets": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/trading": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    },
+    {
+      "id": "definition-list",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "<dl> elements must only directly contain properly-ordered <dt> and <dd> groups, <script>, <template> or <div> elements",
+      "target": [
+        "dl"
+      ]
+    }
+  ],
+  "desktop-1440x900/portfolio": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/positions": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/history": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/strategy": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/backtesting": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/risk": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    },
+    {
+      "id": "scrollable-region-focusable",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Scrollable region must have keyboard access",
+      "target": [
+        ".p-3"
+      ]
+    }
+  ],
+  "desktop-1440x900/capacity": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/research": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/operations": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/forge": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/genome": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/integrity": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/confidence": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/memory": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/models": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/autonomy": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/logs": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "desktop-1440x900/settings": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    },
+    {
+      "id": "definition-list",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "<dl> elements must only directly contain properly-ordered <dt> and <dd> groups, <script>, <template> or <div> elements",
+      "target": [
+        ".space-y-2"
+      ]
+    },
+    {
+      "id": "link-in-text-block",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Links must be distinguishable without relying on color",
+      "target": [
+        ".underline-offset-2"
+      ]
+    }
+  ],
+  "mobile-390x844/overview": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/agents": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 3,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive",
+        ".bg-panel\\/60.border-white\\/10.text-left:nth-child(1) > .space-y-1.mt-2.text-\\[10px\\] > .text-loss\\/80.truncate",
+        ".bg-panel\\/60.border-white\\/10.text-left:nth-child(2) > .space-y-1.mt-2.text-\\[10px\\] > .text-loss\\/80.truncate"
+      ]
+    },
+    {
+      "id": "scrollable-region-focusable",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Scrollable region must have keyboard access",
+      "target": [
+        ".overflow-auto.min-h-0.flex-1 > .overflow-auto"
+      ]
+    }
+  ],
+  "mobile-390x844/radar": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    },
+    {
+      "id": "scrollable-region-focusable",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Scrollable region must have keyboard access",
+      "target": [
+        ".overflow-auto.min-h-0.flex-1 > .overflow-auto"
+      ]
+    }
+  ],
+  "mobile-390x844/markets": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/trading": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    },
+    {
+      "id": "definition-list",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "<dl> elements must only directly contain properly-ordered <dt> and <dd> groups, <script>, <template> or <div> elements",
+      "target": [
+        "dl"
+      ]
+    }
+  ],
+  "mobile-390x844/portfolio": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/positions": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/history": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/strategy": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/backtesting": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/risk": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    },
+    {
+      "id": "scrollable-region-focusable",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Scrollable region must have keyboard access",
+      "target": [
+        ".p-3"
+      ]
+    }
+  ],
+  "mobile-390x844/capacity": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/research": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/operations": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    },
+    {
+      "id": "scrollable-region-focusable",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Scrollable region must have keyboard access",
+      "target": [
+        ".p-3.overflow-auto.min-h-0"
+      ]
+    }
+  ],
+  "mobile-390x844/forge": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/genome": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/integrity": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/confidence": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/memory": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/models": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    },
+    {
+      "id": "scrollable-region-focusable",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Scrollable region must have keyboard access",
+      "target": [
+        ".p-3.overflow-auto.min-h-0"
+      ]
+    }
+  ],
+  "mobile-390x844/autonomy": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/logs": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    }
+  ],
+  "mobile-390x844/settings": [
+    {
+      "id": "color-contrast",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "Elements must meet minimum color contrast ratio thresholds",
+      "target": [
+        ".bg-destructive"
+      ]
+    },
+    {
+      "id": "definition-list",
+      "impact": "serious",
+      "nodes": 1,
+      "help": "<dl> elements must only directly contain properly-ordered <dt> and <dd> groups, <script>, <template> or <div> elements",
+      "target": [
+        ".space-y-2"
+      ]
+    }
+  ]
+}
