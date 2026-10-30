@@ -11,7 +11,7 @@
 // Limits: this is a guardrail, not a sandbox. Shell detection is pattern-based and cannot
 // see writes made by a script whose source is not on the command line. Review (the
 // quant-safety-reviewer agent), tests/CI and the runtime execution gate remain separate layers.
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 const PROTECTED = [
@@ -30,7 +30,10 @@ const PROTECTED_IN_COMMAND =
   /(packages[\\/]+risk-engine|packages[\\/]+trading-engine|execution-gate|packages[\\/]+shared[\\/]+src[\\/]+strategy|market-data[\\/]+src[\\/]+[^\s'"]*(venue|broker|execution-)|promotion\.ts|\.github[\\/]+workflows|\.claude[\\/]+(settings|hooks))/i;
 // Globs or variable expansion that could reach a protected path without naming it.
 const INDIRECT_TARGET =
-  /((risk|trading|execution|promotion|workflow|strategy|venue|broker|\.claude|\.github)[^\s'"]*[*?[$]|packages[\\/]+[*?[$])/i;
+  /((risk|trading|execution|promotion|workflow|strategy|venue|broker|protected|unlock|\.claude|\.github)[^\s'"]*[*?[$]|packages[\\/]+[*?[$])/i;
+// When a command names a protected path, every segment must start with one of these.
+const READ_ONLY_SEGMENT =
+  /^(cat|head|tail|less|grep|rg|egrep|ls|dir|wc|file|stat|diff|type|findstr|Get-Content|gc|Select-String|sls|Get-ChildItem|gci|Test-Path|Measure-Object|Select-Object|Sort-Object|echo|printf|true|cd|pwd|sort|uniq|cut|tr|awk '[^']*'$|sed -n|jq|git (diff|log|show|status|blame|grep|ls-files)|pnpm (test|typecheck|lint|vitest run|exec (tsc|vitest run|eslint))|npx (tsc|vitest run|eslint)|node --check|entire (status|search|recap|why))\b/i;
 const SHELL_WRITE = new RegExp(
   [
     String.raw`\bsed\b[^|;&]*\s-[a-z]*i`, String.raw`\bperl\b[^|;&]*\s-[a-z]*i`, '>', String.raw`\btee\b`,
@@ -40,6 +43,7 @@ const SHELL_WRITE = new RegExp(
     String.raw`\bgit\s+(checkout|restore|apply|am|stash|reset|mv|rm|clean|switch|merge|pull|cherry-pick|revert)\b`,
     String.raw`write(File|AllText|AllBytes|Text)?(Sync)?\s*\(`, 'appendFile', String.raw`\[IO\.File\]`,
     String.raw`open\([^)]*['"][wax+]`, String.raw`\.(write_text|write_bytes)\(`,
+    String.raw`\b(fsutil|link|copyFile|cpSync|rename(Sync)?|replace|symlink|os\.replace|shutil)\b`,
   ].join('|'),
   'i',
 );
@@ -87,9 +91,18 @@ function main() {
     const cmd = ti.command;
     if (LIVE_MONEY.test(cmd)) decide('deny', 'Command touches live-money switches (LIVE_MONEY_* / EXECUTION_MODE). Operator must do this manually.');
     if (/protected-edits/i.test(cmd)) decide('deny', 'Only the operator may create, change or reference the unlock marker from a shell.');
-    const writes = SHELL_WRITE.test(cmd.replace(STDERR_OR_NULL_REDIRECT, ''));
-    if (writes && (PROTECTED_IN_COMMAND.test(cmd) || INDIRECT_TARGET.test(cmd))) {
-      decide(unlocked ? 'ask' : 'deny', unlocked ? 'Shell write that may reach a QUANT protected path (unlocked): confirm.' : LOCKED_MSG);
+    const unquoted = cmd.replace(/['"`^]/g, '');
+    const writes = SHELL_WRITE.test(unquoted.replace(STDERR_OR_NULL_REDIRECT, ''));
+    // Guard config is never writable from a shell, unlocked or not.
+    if (writes && /\.claude/i.test(unquoted)) decide('deny', 'Shell writes that mention .claude are denied in QUANT; the operator edits guard config by hand.');
+    const namesProtected = PROTECTED_IN_COMMAND.test(unquoted);
+    const readOnly = unquoted
+      .split(/\|\|?|&&|;|\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .every((s) => READ_ONLY_SEGMENT.test(s) && !SHELL_WRITE.test(s.replace(STDERR_OR_NULL_REDIRECT, '')));
+    if ((namesProtected && !readOnly) || (writes && INDIRECT_TARGET.test(unquoted))) {
+      decide(unlocked ? 'ask' : 'deny', unlocked ? 'Shell command that may modify a QUANT protected path (unlocked): confirm.' : LOCKED_MSG);
     }
     process.exit(0);
   }
@@ -97,7 +110,13 @@ function main() {
   const filePath = ti.file_path ?? ti.notebook_path;
   if (filePath === undefined) process.exit(0);
   if (typeof filePath !== 'string') throw new Error('bad path');
+  // UNC and device-namespace paths can alias local files; refuse them rather than compare strings.
+  if (/^([\\/]{2}|\\\\\?\\|\\\\\.\\)/.test(filePath)) decide('deny', 'UNC/device paths are not allowed for edits in QUANT; use a normal local path.');
   const abs = canonical(isAbsolute(filePath) ? filePath : join(input.cwd || root, filePath));
+  // A hard link can make a protected file reachable under another name.
+  try {
+    if (statSync(abs).nlink > 1) decide('deny', `Refusing to edit a hard-linked file (${filePath}); it may alias a protected path.`);
+  } catch {}
   const rel = relative(root, abs).replace(/\\/g, '/');
   if (rel.startsWith('..') || isAbsolute(rel)) process.exit(0);
 
