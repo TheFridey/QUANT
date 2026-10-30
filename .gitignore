@@ -11,3 +11,7 @@ test-results
 packages/shared/src/generated
 .turbo
 agent-tools
+
+# Claude Code: operator-only unlock marker and personal settings
+.claude/protected-edits.unlock
+.claude/settings.local.json
