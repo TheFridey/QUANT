@@ -104,6 +104,21 @@ export type AgentBus = {
 
 export const silentBus: AgentBus = { async publish() {} };
 
+/**
+ * Executor interactive transaction limits (audit H3). Prisma's default is a 5 s timeout and
+ * 2 s maxWait; the executor settles, plans, reconciles and admits under one account lock, so it
+ * gets explicit, overridable bounds. Tune with ODIN_EXECUTOR_TX_TIMEOUT_MS / _MAX_WAIT_MS.
+ */
+const EXECUTOR_TRANSACTION_LIMITS = {
+  timeout: positiveIntFromEnv("ODIN_EXECUTOR_TX_TIMEOUT_MS", 20_000),
+  maxWait: positiveIntFromEnv("ODIN_EXECUTOR_TX_MAX_WAIT_MS", 10_000),
+};
+
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
 export class StageRunner {
   private readonly observability = new ObservabilityRegistry();
   /** Fairness cursor for mandatory pair-address lookups across cycles (D08). */
@@ -233,7 +248,18 @@ export class StageRunner {
     await this.ensureAccount(ctx);
     // Crash/restart: restore confirmed protection + durable unresolved exit intents before admission.
     await recoverProtectionAfterRestart(this.prisma, { accountId: ctx.accountId });
+    // Audit H3: explicit transaction limits plus per-phase timings recorded on the cycle.
+    const timings: Record<string, number> = {};
+    let phaseStarted = Date.now();
+    const endPhase = (name: string) => {
+      const at = Date.now();
+      timings[name] = at - phaseStarted;
+      phaseStarted = at;
+    };
+    const transactionStarted = Date.now();
     await this.prisma.$transaction(async (tx) => {
+      timings.lockWait = Date.now() - transactionStarted;
+      phaseStarted = Date.now();
       await lockAccount(tx, ctx.accountId);
 
       // R05: settle/cancel pending under explicit policy FIRST, then refresh book/caps, then admit.
@@ -312,14 +338,17 @@ export class StageRunner {
         }
       }
 
+      endPhase("settle");
       // Refresh authoritative book after settlement (R05).
       const loaded = await this.loadPlan(cycleId, now, tx, ctx);
       if (!loaded) return;
       for (const decision of loaded.plan.decisions.filter((item) => item.agent === "AEGIS" || item.agent === "ATLAS" || item.agent === "EXECUTOR")) {
         await upsertDecision(tx, cycleId, decision);
       }
+      endPhase("plan");
 
       await this.reconcileAndAlert(tx, ctx);
+      endPhase("reconcile");
 
       const liveGate = assertPaperOrSandboxOnly(process.env);
       const filledIds: string[] = [];
@@ -614,7 +643,10 @@ export class StageRunner {
         }
       }
       await tx.cycleRun.update({ where: { id: cycleId }, data: { orderCount: filled } });
-    });
+      endPhase("admit");
+    }, EXECUTOR_TRANSACTION_LIMITS);
+    timings.transaction = Date.now() - transactionStarted;
+    phaseStarted = Date.now();
     // SANDBOX outbox: submit / sync / book external fills outside the account lock (Stage Q).
     await processSandboxOutbox(this.prisma, { accountId: ctx.accountId, now });
     // Retry unresolved protection exits — account-scoped, lifecycle-fenced (D07).
@@ -690,6 +722,8 @@ export class StageRunner {
         }
       },
     });
+    endPhase("protect");
+    await this.prisma.cycleRun.update({ where: { id: cycleId }, data: { executorTimings: timings } });
     await this.advance(cycleId, "executor");
   }
 

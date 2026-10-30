@@ -307,6 +307,8 @@ model CycleRun {
   strategyRevision    String?
   riskRevision        String?
   pinnedContext       Json?
+  /// Executor phase durations in ms (settle, plan, reconcile, admit, protect, transaction) — audit H3.
+  executorTimings     Json?
 
   @@index([status, startedAt])
   @@index([startedAt])
