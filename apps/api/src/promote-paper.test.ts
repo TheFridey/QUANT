@@ -7,7 +7,7 @@ import {
 } from "@odin/evolution";
 import { DEFAULT_STRATEGY, configHashOf, parseStrategyConfig } from "@odin/shared";
 import type { PrismaClient } from "@odin/shared/db";
-import { BadRequestException } from "@nestjs/common";
+import { BadRequestException, ConflictException } from "@nestjs/common";
 import { describe, expect, it } from "vitest";
 import { EvolutionService } from "./evolution.service.js";
 
@@ -158,9 +158,14 @@ function buildValidatedFixtures(entryM5ChangePct = "3") {
   return { config, configHash, report, reportRow, artifact, approval, hypothesis, reportId, artifactId, approvalId };
 }
 
-function mockPrisma(seed: ReturnType<typeof buildValidatedFixtures>, options?: { missingReport?: boolean }) {
-  let row: { id: string; config: unknown; activeStrategy: unknown; runtimeState?: unknown } = {
+function mockPrisma(
+  seed: ReturnType<typeof buildValidatedFixtures>,
+  options?: { missingReport?: boolean; status?: string; artifactEra?: string },
+) {
+  let row: { id: string; status: string; config: unknown; activeStrategy: unknown; runtimeState?: unknown } = {
     id: "primary",
+    // Promotion requires a PAUSED or STOPPED engine (audit C4).
+    status: options?.status ?? "PAUSED",
     config: { ...DEFAULT_STRATEGY },
     activeStrategy: null,
     runtimeState: {},
@@ -174,6 +179,7 @@ function mockPrisma(seed: ReturnType<typeof buildValidatedFixtures>, options?: {
         updates.push(input.data);
         row = {
           id: "primary",
+          status: row.status,
           config: input.data.config,
           activeStrategy: input.data.activeStrategy,
           runtimeState: input.data.runtimeState ?? row.runtimeState,
@@ -187,7 +193,9 @@ function mockPrisma(seed: ReturnType<typeof buildValidatedFixtures>, options?: {
     },
     strategyArtifact: {
       findUnique: async ({ where }: { where: { id: string } }) =>
-        where.id === seed.artifactId ? seed.artifact : null,
+        where.id === seed.artifactId
+          ? { ...seed.artifact, sandboxEra: options?.artifactEra ?? "STREAMING_FD3" }
+          : null,
     },
     promotionApproval: {
       findMany: async ({ where }: { where: { reportId: string } }) =>
@@ -204,9 +212,71 @@ function mockPrisma(seed: ReturnType<typeof buildValidatedFixtures>, options?: {
         return input.data;
       },
     },
+    $queryRaw: async () => [],
   } as unknown as PrismaClient;
+  (prisma as unknown as { $transaction: (fn: (tx: PrismaClient) => Promise<unknown>) => Promise<unknown> }).$transaction =
+    async (fn) => fn(prisma);
   return { prisma, getRow: () => row, updates, promotions };
 }
+
+describe("promotion lock (audit C4)", () => {
+  it("refuses promotion while the engine is RUNNING and leaves the config unchanged", async () => {
+    const seed = buildValidatedFixtures("3");
+    const { prisma, getRow, updates, promotions } = mockPrisma(seed, { status: "RUNNING" });
+    const before = JSON.stringify(getRow().config);
+    const service = new EvolutionService(prisma);
+    const body = { authorised: true, reportId: seed.reportId, artifactId: seed.artifactId, approvalId: seed.approvalId, config: seed.config };
+    await expect(service.promotePaperStrategy(body, "operator@odin.local")).rejects.toBeInstanceOf(ConflictException);
+    await expect(
+      service.applyUnvalidatedPaperExperiment(
+        {
+          authorised: true,
+          mode: "UNVALIDATED_PAPER_EXPERIMENT",
+          artifactId: seed.artifactId,
+          config: seed.config,
+          label: "labelled experiment",
+          rationale: "explicit paper-only trial",
+        },
+        "operator@odin.local",
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(updates).toHaveLength(0);
+    expect(promotions).toHaveLength(0);
+    expect(JSON.stringify(getRow().config)).toBe(before);
+  });
+
+  it("refuses evidence produced before the sandbox fix", async () => {
+    const seed = buildValidatedFixtures("3");
+    const { prisma, updates } = mockPrisma(seed, { artifactEra: "PRE_SANDBOX_FIX" });
+    const service = new EvolutionService(prisma);
+    await expect(
+      service.promotePaperStrategy(
+        { authorised: true, reportId: seed.reportId, artifactId: seed.artifactId, approvalId: seed.approvalId, config: seed.config },
+        "operator@odin.local",
+      ),
+    ).rejects.toThrow(/PRE_SANDBOX_FIX/);
+    expect(updates).toHaveLength(0);
+  });
+
+  it("refuses a starting-balance change unless the engine is STOPPED", async () => {
+    const seed = buildValidatedFixtures("3");
+    const { prisma, updates } = mockPrisma(seed, { status: "PAUSED" });
+    const service = new EvolutionService(prisma);
+    await expect(
+      service.promotePaperStrategy(
+        {
+          authorised: true,
+          reportId: seed.reportId,
+          artifactId: seed.artifactId,
+          approvalId: seed.approvalId,
+          config: { ...seed.config, startingBalanceUsd: "20000.00000000" },
+        },
+        "operator@odin.local",
+      ),
+    ).rejects.toThrow();
+    expect(updates).toHaveLength(0);
+  });
+});
 
 describe("paper engine promotion write", () => {
   it("updates EngineControl primary after VALIDATED promotion and refuses rejected validation", async () => {
@@ -348,16 +418,18 @@ describe("paper engine promotion write", () => {
 
   it("applies an unvalidated paper experiment without deployment eligibility", async () => {
     const seed = buildValidatedFixtures();
-    let row: { id: string; config: unknown; activeStrategy: unknown } = {
+    let row: { id: string; status: string; config: unknown; activeStrategy: unknown } = {
       id: "primary",
+      status: "PAUSED",
       config: { ...DEFAULT_STRATEGY },
       activeStrategy: null,
     };
     const prisma = {
+      $queryRaw: async () => [],
       engineControl: {
         findUnique: async () => row,
         update: async (input: { data: { config: unknown; activeStrategy: unknown } }) => {
-          row = { id: "primary", config: input.data.config, activeStrategy: input.data.activeStrategy };
+          row = { id: "primary", status: row.status, config: input.data.config, activeStrategy: input.data.activeStrategy };
           return row;
         },
       },
@@ -370,6 +442,8 @@ describe("paper engine promotion write", () => {
         create: async (input: { data: Record<string, unknown> }) => input.data,
       },
     } as unknown as PrismaClient;
+    (prisma as unknown as { $transaction: (fn: (tx: PrismaClient) => Promise<unknown>) => Promise<unknown> }).$transaction =
+      async (fn) => fn(prisma);
     const service = new EvolutionService(prisma);
     const applied = await service.applyUnvalidatedPaperExperiment(
       {
