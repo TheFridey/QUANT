@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
-import { formatLondonDateTime, formatPct, formatPx, formatQty, formatUsd, signedClass } from "@/lib/format";
+import { formatLondonDateTime, formatPct, formatPx, formatQty, formatUsd, formatUsdCompact, signedClass } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 type OrderReceipt = {
@@ -236,7 +236,7 @@ export function TradingSection() {
         <div className="space-y-3 p-3 text-sm">
           {pair ? (
             <p className="text-xs text-muted">
-              Liquidity {formatUsd(pair.liquidityUsd)} · 24h {formatUsd(pair.volume24hUsd)} · 5m {formatPct(pair.priceChangeM5Pct)}
+              Liquidity {formatUsdCompact(pair.liquidityUsd)} · 24h {formatUsdCompact(pair.volume24hUsd)} · 5m {formatPct(pair.priceChangeM5Pct)}
             </p>
           ) : selected ? (
             <p className="text-xs text-muted">Held instrument selected for reduce-only close.</p>
@@ -267,8 +267,11 @@ export function TradingSection() {
                 <dt className="text-muted">Cash / budget</dt>
                 <dd className={cn("mono", preview.affordable ? "" : "text-loss")}>{formatUsd(String(preview.cash))}</dd>
               </div>
-              <div className="col-span-2 text-muted">
-                Account {preview.account} · {preview.environment}
+              <div className="col-span-2">
+                <dt className="text-muted">Account</dt>
+                <dd className="mono">
+                  {preview.account} · {preview.environment}
+                </dd>
               </div>
             </dl>
           ) : null}

@@ -7,10 +7,9 @@ import { PerformanceSection } from "@/components/terminal/sections/performance-s
 import { PortfolioSection } from "@/components/terminal/sections/portfolio-section";
 import { PositionsSection } from "@/components/terminal/sections/positions-section";
 import { EmptyState, Panel } from "@/components/terminal/panel";
-import { ReadinessChecklist } from "@/components/terminal/readiness-checklist";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { AGENT_PIPELINE } from "@/lib/agents";
-import { formatLondon, formatLondonDateTime } from "@/lib/format";
+import { formatLondon, formatLondonDateTime, formatUsd, signedClass } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export function OverviewSection() {
@@ -76,69 +75,7 @@ export function OverviewSection() {
           </span>
         </div>
       ) : null}
-      <ReadinessChecklist compact />
-      <Panel title="Operator desk" extra="What is trading / blocked / needs attention">
-        <dl className="grid gap-3 p-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
-          <div>
-            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Environment</dt>
-            <dd className="mono">{snapshot.execution?.tradingEnvironment ?? "MARKET_DATA_PAPER"}</dd>
-          </div>
-          <div>
-            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Engine</dt>
-            <dd>{snapshot.engine.status}</dd>
-          </div>
-          <div>
-            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Freshness</dt>
-            <dd className="mono uppercase">{snapshot.market.mode}</dd>
-          </div>
-          <div>
-            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Exec mode</dt>
-            <dd className="mono uppercase">{snapshot.execution?.mode ?? "PAPER"}</dd>
-          </div>
-          <div>
-            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Protection debt</dt>
-            <dd className="mono">{unresolved}</dd>
-          </div>
-          <div>
-            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Why blocked</dt>
-            <dd className="mono text-[10px]">{dominantHard ?? (breakerOpen ? "CIRCUIT_BREAKER" : "—")}</dd>
-          </div>
-          <div>
-            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Open positions</dt>
-            <dd className="mono">{(snapshot.portfolio?.positions ?? []).filter((p) => Number(p.baseQty) > 0).length}</dd>
-          </div>
-          <div>
-            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Attention</dt>
-            <dd className="mono">{(snapshot.alerts ?? []).length + unresolved}</dd>
-          </div>
-          <div className="sm:col-span-2 lg:col-span-4">
-            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Funnel (latest sample)</dt>
-            <dd className="mono text-[10px]">
-              D:{snapshot.funnel?.summary?.DISCOVERED ?? 0} · S:{snapshot.funnel?.summary?.SIGNALLED ?? 0} · O:
-              {snapshot.funnel?.summary?.ORDERED ?? 0} · F:{snapshot.funnel?.summary?.FILLED ?? 0} · R:
-              {snapshot.funnel?.summary?.REJECTED ?? 0}
-            </dd>
-          </div>
-          <div className="sm:col-span-2 lg:col-span-4">
-            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Why no trades</dt>
-            <dd className="text-[11px] text-muted">
-              {snapshot.whyNoTrades?.note ??
-                "Funnel sample explains quiet days — no mandatory trade quota."}
-              {Array.isArray(snapshot.whyNoTrades?.families) && snapshot.whyNoTrades.families.length > 0 ? (
-                <span className="mono ml-2 text-[10px]">
-                  {snapshot.whyNoTrades.families
-                    .map((f: { family: string; count: number }) => `${f.family}×${f.count}`)
-                    .join(" · ")}
-                </span>
-              ) : snapshot.whyNoTrades?.decisiveBlocks?.[0] ? (
-                <span className="mono ml-2 text-[10px]">
-                  top block: {snapshot.whyNoTrades.decisiveBlocks[0].reasonCodes?.join(",") ?? "—"}
-                </span>
-              ) : null}
-            </dd>
-          </div>
-        </dl>
-      </Panel>
+      <DeskSummary />
       <PortfolioSection />
       <Panel title="Agent pipeline" extra="Click a card for inputs / outputs">
         <div className="grid gap-2 p-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
@@ -253,5 +190,77 @@ export function OverviewSection() {
       </div>
       <AgentDrawer agent={selected} open={selected !== null} onOpenChange={(open) => !open && setSelected(null)} />
     </div>
+  );
+}
+
+/**
+ * UI item 5: the Overview leads with what an operator acts on — equity, today's P&L, open risk
+ * against its cap, open positions and, when idle, why nothing is trading. Infrastructure checks
+ * live in Settings; engine codes stay in tooltips.
+ */
+function DeskSummary() {
+  const { snapshot } = useSnapshot();
+  if (!snapshot) return null;
+  const portfolio = snapshot.portfolio;
+  const openPositions = (portfolio?.positions ?? []).filter((position) => Number(position.baseQty) > 0).length;
+  const exposure = portfolio?.exposureUsd ?? null;
+  const cap = portfolio?.openRiskCapUsd ?? null;
+  const usedPct = exposure !== null && cap !== null && Number(cap) > 0 ? Math.min(100, (Number(exposure) / Number(cap)) * 100) : null;
+  const why = snapshot.whyNoTrades;
+  const topFamily = Array.isArray(why?.families) && why.families.length > 0 ? why.families[0] : null;
+  const funnel = snapshot.funnel?.summary;
+  const funnelDetail = funnel
+    ? `Discovered ${funnel.DISCOVERED ?? 0}, signalled ${funnel.SIGNALLED ?? 0}, ordered ${funnel.ORDERED ?? 0}, filled ${funnel.FILLED ?? 0}, rejected ${funnel.REJECTED ?? 0}`
+    : undefined;
+
+  return (
+    <Panel title="Desk summary">
+      <dl className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <dt className="text-[11px] text-muted">Equity</dt>
+          <dd className="mono text-xl">{formatUsd(portfolio?.equityUsd ?? null)}</dd>
+        </div>
+        <div>
+          <dt className="text-[11px] text-muted">Today&apos;s P&amp;L</dt>
+          <dd className={cn("mono text-xl", signedClass(portfolio?.dayPnlUsd ?? null))}>{formatUsd(portfolio?.dayPnlUsd ?? null)}</dd>
+        </div>
+        <div>
+          <dt className="text-[11px] text-muted">Open risk vs cap</dt>
+          <dd className="mono text-xl">
+            {formatUsd(exposure)} <span className="text-sm text-muted">of {formatUsd(cap)}</span>
+          </dd>
+          {usedPct !== null ? (
+            <div
+              className="mt-1 h-1.5 rounded bg-white/10"
+              role="meter"
+              aria-label="Open risk used"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(usedPct)}
+            >
+              <div className={cn("h-1.5 rounded", usedPct >= 90 ? "bg-loss" : "bg-primary")} style={{ width: `${usedPct}%` }} />
+            </div>
+          ) : null}
+        </div>
+        <div>
+          <dt className="text-[11px] text-muted">Open positions</dt>
+          <dd className="mono text-xl">
+            {openPositions} <span className="text-sm text-muted">of {String(snapshot.engine.config?.maxPositions ?? "—")}</span>
+          </dd>
+        </div>
+        {openPositions === 0 ? (
+          <div className="sm:col-span-2 lg:col-span-4">
+            <dt className="text-[11px] text-muted">Why no trades</dt>
+            <dd className="text-sm" title={funnelDetail}>
+              {snapshot.engine.status !== "RUNNING"
+                ? `The engine is ${snapshot.engine.status.toLowerCase()}. Start it from the header to begin paper trading.`
+                : topFamily
+                  ? `${topFamily.label ?? topFamily.family}: ${topFamily.action ?? "see Agent Intelligence for detail."}`
+                  : (why?.note ?? "No entry signal met the strategy's rules in the latest cycle.")}
+            </dd>
+          </div>
+        ) : null}
+      </dl>
+    </Panel>
   );
 }

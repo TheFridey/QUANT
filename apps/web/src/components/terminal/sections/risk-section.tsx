@@ -5,7 +5,7 @@ import { Metric, Panel } from "@/components/terminal/panel";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import { formatPct, formatUsd } from "@/lib/format";
+import { formatDrawdown, formatUsd, formatUsdCompact } from "@/lib/format";
 
 export function RiskSection() {
   const { snapshot, refresh } = useSnapshot();
@@ -42,8 +42,8 @@ export function RiskSection() {
         <div className="grid grid-cols-2 gap-4 p-4">
           <Metric label="Equity" value={<span className="mono">{p.equityUsd === null ? "Incomplete" : formatUsd(p.equityUsd)}</span>} />
           <Metric label="Exposure" value={<span className="mono">{formatUsd(p.exposureUsd)}</span>} />
-          <Metric label="Current DD" value={<span className="mono text-loss">{formatPct(p.currentDrawdownPct)}</span>} />
-          <Metric label="Max DD" value={<span className="mono text-loss">{formatPct(p.maxDrawdownPct)}</span>} />
+          <Metric label="Drawdown (below HWM)" value={<span className="mono text-loss">{formatDrawdown(p.currentDrawdownPct)}</span>} />
+          <Metric label="Max drawdown" value={<span className="mono text-loss">{formatDrawdown(p.maxDrawdownPct)}</span>} />
           <Metric label="Open positions" value={<span className="mono">{p.positions.length}</span>} />
           <Metric label="HWM" value={<span className="mono">{formatUsd(p.highWaterMarkUsd)}</span>} />
           <Metric label="Protected" value={<span className="mono">{protectedCount}</span>} />
@@ -59,7 +59,7 @@ export function RiskSection() {
           <Metric label="Max positions" value={<span className="mono">{String(config.maxPositions ?? "—")}</span>} />
           <Metric label="Max position % equity" value={<span className="mono">{String(config.maxPositionPctEquity ?? "—")}</span>} />
           <Metric label="Max daily loss %" value={<span className="mono">{String(config.maxDailyLossPct ?? "—")}</span>} />
-          <Metric label="Min liquidity" value={<span className="mono">{formatUsd(config.minLiquidityUsd != null ? String(config.minLiquidityUsd) : null)}</span>} />
+          <Metric label="Min liquidity" value={<span className="mono">{formatUsdCompact(config.minLiquidityUsd != null ? String(config.minLiquidityUsd) : null)}</span>} />
         </div>
       </Panel>
       <Panel title="Execution mode">
@@ -69,8 +69,14 @@ export function RiskSection() {
             <dd className="mono">{execution?.mode ?? "PAPER"}</dd>
           </div>
           <div>
-            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Live allowed</dt>
-            <dd className="mono">{execution?.liveAllowed ? "yes" : "no"}</dd>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Execution gate</dt>
+            <dd className="mono">
+              {execution?.executionGateOk ? (execution.mode === "SANDBOX" ? "SANDBOX only" : "PAPER only") : "refused"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Live</dt>
+            <dd className="mono">disabled</dd>
           </div>
           <div>
             <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Pause new entries</dt>

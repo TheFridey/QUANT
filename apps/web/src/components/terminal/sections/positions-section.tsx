@@ -15,18 +15,18 @@ function protectionTone(position: PositionRow): { label: string; className: stri
     return { label: status === "FAILED" ? "FAILED — recovery needed" : "Recovery needed", className: "text-loss" };
   }
   if (status === "UNPROTECTED" || !position.protected) {
-    return { label: "UNPROTECTED", className: "text-loss" };
+    return { label: "No stop", className: "text-loss" };
   }
   if (status === "EXIT_IN_PROGRESS") {
     return { label: "Exit in progress", className: "text-warning" };
   }
   if (status === "UNKNOWN") {
-    return { label: "UNKNOWN coverage", className: "text-warning" };
+    return { label: "Stop status unknown", className: "text-warning" };
   }
-  if (position.protectionVenueConfirmed) return { label: "PROTECTED · venue ACK", className: "text-profit" };
-  if (position.protectionHelper) return { label: "PROTECTED · helper", className: "text-foreground" };
-  if (position.protectionConfirmed) return { label: "PROTECTED · confirmed", className: "text-profit" };
-  return { label: status ?? "PROTECTED", className: "text-foreground" };
+  if (position.protectionVenueConfirmed) return { label: "Stop confirmed by venue", className: "text-profit" };
+  if (position.protectionHelper) return { label: "Stop held by engine", className: "text-foreground" };
+  if (position.protectionConfirmed) return { label: "Stop confirmed", className: "text-profit" };
+  return { label: "Stop set", className: "text-foreground" };
 }
 
 export function PositionsSection() {

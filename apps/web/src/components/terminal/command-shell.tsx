@@ -98,7 +98,15 @@ function ShellFrame({ section }: { section: TerminalSection }) {
               Refresh
             </Button>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto scroll-thin p-3">{renderSection(section)}</div>
+          {/* Focusable so keyboard users can scroll the section (axe scrollable-region-focusable). */}
+          <div
+            role="region"
+            aria-label="Section content"
+            tabIndex={0}
+            className="min-h-0 flex-1 overflow-auto scroll-thin p-3"
+          >
+            {renderSection(section)}
+          </div>
         </div>
       </div>
     </main>

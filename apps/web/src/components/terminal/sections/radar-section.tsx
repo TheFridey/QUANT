@@ -5,7 +5,7 @@ import { EmptyState, Panel } from "@/components/terminal/panel";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { formatAge, formatLondonDateTime, formatPct, formatPx, formatUsd, signedClass } from "@/lib/format";
+import { formatAge, formatLondonDateTime, formatPct, formatPx, formatUsdCompact, signedClass } from "@/lib/format";
 import type { WatchlistRow } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -56,7 +56,7 @@ export function RadarSection() {
         {rows.length === 0 ? (
           <EmptyState title="Watchlist empty" detail="No WatchlistEntry rows yet, or filters excluded all tokens." />
         ) : (
-          <div className="overflow-auto">
+          <div className="overflow-auto" role="region" aria-label="Scrollable table" tabIndex={0}>
             <table className="w-full min-w-[960px] text-left text-xs">
               <thead className="sticky top-0 bg-card text-[10px] uppercase tracking-[0.12em] text-muted">
                 <tr className="border-b border-border">
@@ -91,8 +91,8 @@ export function RadarSection() {
                     </td>
                     <td className="mono px-3 py-2">{formatAge(row.ageMs)}</td>
                     <td className="mono px-3 py-2">{formatPx(row.priceUsd)}</td>
-                    <td className="mono px-3 py-2">{formatUsd(row.liquidityUsd)}</td>
-                    <td className="mono px-3 py-2">{formatUsd(row.volume24hUsd)}</td>
+                    <td className="mono px-3 py-2">{formatUsdCompact(row.liquidityUsd)}</td>
+                    <td className="mono px-3 py-2">{formatUsdCompact(row.volume24hUsd)}</td>
                     <td className={cn("mono px-3 py-2", signedClass(row.momentumPct))}>{formatPct(row.momentumPct)}</td>
                     <td className="px-3 py-2">
                       {row.security ? (
@@ -137,11 +137,11 @@ function DetailCard({ row }: { row: WatchlistRow | null }) {
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div>
             <div className="text-[10px] uppercase tracking-[0.12em] text-muted">Liquidity</div>
-            <div className="mono">{formatUsd(row.liquidityUsd)}</div>
+            <div className="mono">{formatUsdCompact(row.liquidityUsd)}</div>
           </div>
           <div>
             <div className="text-[10px] uppercase tracking-[0.12em] text-muted">24h volume</div>
-            <div className="mono">{formatUsd(row.volume24hUsd)}</div>
+            <div className="mono">{formatUsdCompact(row.volume24hUsd)}</div>
           </div>
           <div>
             <div className="text-[10px] uppercase tracking-[0.12em] text-muted">Momentum 5m</div>

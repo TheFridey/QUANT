@@ -37,15 +37,11 @@ export function SettingsSection() {
         </div>
       </Panel>
       <Panel title="Session">
-        <dl className="space-y-2 p-4 text-sm">
+        <dl className="space-y-2 px-4 pt-4 text-sm">
           <div className="flex justify-between gap-3">
-            <dt className="text-muted">API socket</dt>
+            <dt className="text-muted">Live connection</dt>
             <dd className="mono">{socketState}</dd>
           </div>
-          <p className="text-[11px] text-muted">
-            Socket state is terminal transport only — market LIVE comes from quote freshness on the snapshot.
-            Refresh interval persists in this browser.
-          </p>
           <div className="flex justify-between gap-3">
             <dt className="text-muted">Venue</dt>
             <dd className="mono">{snapshot?.venue ?? "PAPER"}</dd>
@@ -54,8 +50,12 @@ export function SettingsSection() {
             <dt className="text-muted">Market mode</dt>
             <dd className="mono uppercase">{snapshot?.market.mode ?? "—"}</dd>
           </div>
-          <p className="pt-2 text-xs text-muted">Paper trading only. No wallet, no private keys, no live order routing.</p>
         </dl>
+        <p className="px-4 pt-2 text-[11px] text-muted">
+          The live connection only carries updates; whether quotes are live comes from their age. The refresh interval is
+          saved in this browser.
+        </p>
+        <p className="px-4 pb-4 pt-2 text-xs text-muted">Paper trading only. No wallet, no private keys, no live order routing.</p>
       </Panel>
       <Panel title="Multi-market controls" className="lg:col-span-2">
         <dl className="grid grid-cols-2 gap-3 p-4 text-xs sm:grid-cols-4">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -62,18 +62,24 @@ export function CommandBar() {
           {snapshot.engine.status}
         </Badge>
 
-        <StatusPill label="Socket" value={socketState} ok={socketOk} />
-        <StatusPill label="Market" value={marketLive ? "live quotes" : (dataState ?? "no data").toLowerCase()} ok={marketLive} />
-        <StatusPill
-          label="Refresh"
-          value={refreshAgeMs == null ? "—" : refreshAgeMs < 1500 ? "just now" : `${Math.round(refreshAgeMs / 1000)}s ago`}
-          ok={refreshAgeMs != null && refreshAgeMs < 15_000}
-        />
-        <StatusPill label="Agents" value={`${agentActive}/6`} ok={agentActive > 0} />
-        <StatusPill
-          label="Cycle"
-          value={snapshot.cycle ? `${snapshot.cycle.stage}` : "idle"}
-          ok={snapshot.cycle?.status === "COMPLETE" || snapshot.cycle?.status === "RUNNING"}
+        {/* UI item 5: one health pill; the individual checks are in its tooltip and in Settings. */}
+        <HealthPill
+          checks={[
+            { label: "Live connection", value: socketState, ok: socketOk },
+            { label: "Market data", value: marketLive ? "live quotes" : (dataState ?? "no data").toLowerCase(), ok: marketLive },
+            {
+              label: "Last refresh",
+              value: refreshAgeMs == null ? "—" : refreshAgeMs < 1500 ? "just now" : `${Math.round(refreshAgeMs / 1000)}s ago`,
+              ok: refreshAgeMs != null && refreshAgeMs < 15_000,
+            },
+            { label: "Agents reporting", value: `${agentActive} of 6`, ok: agentActive > 0 },
+            {
+              label: "Cycle",
+              value: snapshot.cycle ? `${snapshot.cycle.stage}` : "idle",
+              ok: snapshot.cycle?.status === "COMPLETE" || snapshot.cycle?.status === "RUNNING",
+            },
+            { label: "Redis", value: snapshot.health?.redis ?? "unknown", ok: snapshot.health?.redis === "up" },
+          ]}
         />
 
         <div className="mono ml-auto text-right">
@@ -100,16 +106,15 @@ export function CommandBar() {
           <Button size="xs" variant="danger" disabled={!can("emergency_stop")} onClick={() => setEmergencyOpen(true)}>
             Emergency stop
           </Button>
-          <Button
-            size="xs"
-            variant="ghost"
-            onClick={() => {
+        </div>
+        {/* UI item 8: Sign out lives in the account menu so Emergency stop stands alone. */}
+        <div className="flex items-center">
+          <AccountMenu
+            onSignOut={() => {
               setToken(null);
               router.push("/login");
             }}
-          >
-            Sign out
-          </Button>
+          />
         </div>
       </header>
       {error ? <div className="border-b border-loss/40 bg-loss/10 px-3 py-1.5 text-xs text-loss">{error}</div> : null}
@@ -150,14 +155,61 @@ export function CommandBar() {
   );
 }
 
-function StatusPill({ label, value, ok }: { label: string; value: string; ok: boolean }) {
+function HealthPill({ checks }: { checks: Array<{ label: string; value: string; ok: boolean }> }) {
+  const failing = checks.filter((check) => !check.ok);
+  const healthy = failing.length === 0;
+  const detail = checks.map((check) => `${check.ok ? "OK" : "!!"} ${check.label}: ${check.value}`).join("\n");
   return (
-    <div className="hidden items-center gap-2 rounded border border-border px-2 py-1 md:flex">
-      <span className={cn("h-1.5 w-1.5 rounded-full", ok ? "bg-profit animate-odin-pulse" : "bg-loss")} />
-      <div>
-        <div className="text-[9px] uppercase tracking-[0.14em] text-muted">{label}</div>
-        <div className="text-[11px]">{value}</div>
-      </div>
+    <div
+      role="status"
+      title={detail}
+      className={cn(
+        "flex items-center gap-2 rounded border px-2.5 py-1 text-[11px]",
+        healthy ? "border-profit/40 text-profit" : "border-warning/50 text-warning",
+      )}
+    >
+      <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", healthy ? "bg-profit" : "bg-warning")} />
+      {healthy ? "All systems normal" : `${failing.length} ${failing.length === 1 ? "check needs" : "checks need"} attention`}
+      <span className="sr-only">{detail}</span>
+    </div>
+  );
+}
+
+function AccountMenu({ onSignOut }: { onSignOut: () => void }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent ? event.key === "Escape" : !root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  return (
+    <div ref={root} className="relative">
+      <Button size="xs" variant="ghost" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        Account
+      </Button>
+      {open ? (
+        <div role="menu" className="absolute right-0 z-30 mt-1 min-w-36 rounded border border-border bg-panel p-1 shadow-lg">
+          <button
+            type="button"
+            role="menuitem"
+            className="w-full rounded px-3 py-1.5 text-left text-xs hover:bg-white/5 focus-visible:bg-white/5"
+            onClick={() => {
+              setOpen(false);
+              onSignOut();
+            }}
+          >
+            Sign out
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

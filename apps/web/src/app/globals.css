@@ -33,7 +33,11 @@ body {
   font-feature-settings: "ss01" on, "cv11" on;
 }
 
-button, input, select, textarea { font: inherit; }
+/* UI bug 1: unlayered rules beat every Tailwind v4 utility, so this reset forced 16px on all buttons.
+   In the base layer it only fills in where no utility sets the font. */
+@layer base {
+  button, input, select, textarea { font: inherit; }
+}
 
 /* D30 — keyboard focus without replacing Radix primitives */
 :focus-visible {

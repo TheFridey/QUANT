@@ -1,28 +1,78 @@
 import Decimal from "decimal.js";
 
+/** One formatter for every operator screen (UI item 6). Inputs are decimal strings from the API. */
+
+function present(value: string | null | undefined): value is string {
+  return value !== null && value !== undefined && value !== "";
+}
+
+/** Group the integer part with thousands separators: 1234567.5 -> "1,234,567.5". */
+function group(fixed: string): string {
+  const [whole, fraction] = fixed.split(".");
+  const grouped = (whole ?? "0").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction === undefined ? grouped : `${grouped}.${fraction}`;
+}
+
+/** Dollars to cents with thousands separators: "$12,345.67", "-$5.00". */
 export function formatUsd(value: string | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "—";
+  if (!present(value)) return "—";
   const amount = new Decimal(value).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
   const sign = amount.isNeg() ? "-" : "";
-  return `${sign}$${amount.abs().toFixed(2)}`;
+  return `${sign}$${group(amount.abs().toFixed(2))}`;
 }
 
+/** Compact dollars for large figures such as liquidity and volume: "$2.5M", "$740K", "$1.2B". */
+export function formatUsdCompact(value: string | null | undefined): string {
+  if (!present(value)) return "—";
+  const amount = new Decimal(value);
+  const abs = amount.abs();
+  const sign = amount.isNeg() ? "-" : "";
+  const units: Array<[Decimal, string]> = [
+    [new Decimal("1e12"), "T"],
+    [new Decimal("1e9"), "B"],
+    [new Decimal("1e6"), "M"],
+    [new Decimal("1e3"), "K"],
+  ];
+  for (const [size, suffix] of units) {
+    if (abs.gte(size)) {
+      const scaled = abs.div(size);
+      const digits = scaled.gte(100) ? 0 : 1;
+      return `${sign}$${scaled.toDecimalPlaces(digits, Decimal.ROUND_HALF_UP).toFixed(digits).replace(/\.0$/, "")}${suffix}`;
+    }
+  }
+  return formatUsd(value);
+}
+
+/** Prices to 6 significant figures, grouped: "1,234.56", "0.000123457". */
 export function formatPx(value: string | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "—";
-  return new Decimal(value).toSignificantDigits(8).toString();
+  if (!present(value)) return "—";
+  const amount = new Decimal(value).toSignificantDigits(6, Decimal.ROUND_HALF_UP);
+  return group(amount.toFixed());
 }
 
+/** Quantities trimmed of trailing zeros and grouped: "1,500", "0.25". */
 export function formatQty(value: string | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "—";
+  if (!present(value)) return "—";
   const fixed = new Decimal(value).toFixed(8);
-  return fixed.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  return group(fixed.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, ""));
 }
 
+/** Signed percentage for returns and P&L: "+1.23%", "-0.50%". */
 export function formatPct(value: string | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "—";
+  if (!present(value)) return "—";
   const amount = new Decimal(value);
   const sign = amount.isNeg() ? "" : "+";
   return `${sign}${amount.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)}%`;
+}
+
+/**
+ * Drawdown is a distance below the high-water mark, so it is always shown as a negative
+ * percentage ("-0.02%", or "0.00%" at the HWM), never "+x%" (UI bug 4).
+ */
+export function formatDrawdown(value: string | null | undefined): string {
+  if (!present(value)) return "—";
+  const amount = new Decimal(value).abs().toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  return amount.isZero() ? "0.00%" : `-${amount.toFixed(2)}%`;
 }
 
 export function formatRate(value: string | null | undefined): string {

@@ -2,7 +2,7 @@
 
 import { EmptyState, Metric, Panel } from "@/components/terminal/panel";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
-import { formatPct, formatRate, formatUsd, signedClass } from "@/lib/format";
+import { formatDrawdown, formatPct, formatRate, formatUsd, signedClass } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export function PerformanceSection() {
@@ -29,7 +29,7 @@ export function PerformanceSection() {
           <Metric label="Expectancy" value={<span className={cn("mono", signedClass(p.expectancyUsd))}>{formatUsd(p.expectancyUsd)}</span>} />
           <Metric label="Largest gain" value={<span className="mono text-profit">{formatUsd(p.largestGainUsd)}</span>} />
           <Metric label="Largest loss" value={<span className="mono text-loss">{formatUsd(p.largestLossUsd)}</span>} />
-          <Metric label="Max drawdown" value={<span className="mono text-loss">{formatPct(p.maxDrawdownPct)}</span>} />
+          <Metric label="Max drawdown (below HWM)" value={<span className="mono text-loss">{formatDrawdown(p.maxDrawdownPct)}</span>} />
           <Metric label="Fees" value={<span className="mono">{formatUsd(p.feesUsd)}</span>} />
           <Metric label="Avg slippage" value={<span className="mono">{p.avgSlippageBps != null ? `${p.avgSlippageBps} bps` : "—"}</span>} hint={p.fillCount != null ? `${p.fillCount} fills` : undefined} />
           <Metric label="Slippage USD" value={<span className="mono">{formatUsd(p.totalSlippageUsd)}</span>} />

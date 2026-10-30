@@ -32,13 +32,13 @@ function tone(status: CheckStatus): string {
 function statusWord(status: CheckStatus): string {
   switch (status) {
     case "ok":
-      return "READY";
+      return "Ready";
     case "warn":
-      return "ATTENTION";
+      return "Needs attention";
     case "blocked":
-      return "BLOCKED";
+      return "Blocked";
     default:
-      return "INFO";
+      return "Info";
   }
 }
 
@@ -161,8 +161,7 @@ export function ReadinessChecklist({ compact = false }: { compact?: boolean }) {
 
   return (
     <Panel
-      title={compact ? "Session readiness" : "First-session readiness"}
-      extra="checklist · not a wizard"
+      title={compact ? "System checks" : "System checks"}
       className={compact ? undefined : "lg:col-span-2"}
     >
       <ul className="divide-y divide-border/70">
@@ -173,25 +172,23 @@ export function ReadinessChecklist({ compact = false }: { compact?: boolean }) {
               <p className="mt-0.5 text-[11px] text-muted">{item.detail}</p>
             </div>
             <div className="text-right">
-              <span className={cn("mono text-[11px] font-medium", tone(item.status))}>
+              <span className={cn("text-[11px] font-medium", tone(item.status))} title={item.code ?? undefined}>
                 {statusWord(item.status)}
-                {item.code ? ` · ${item.code}` : ""}
               </span>
             </div>
           </li>
         ))}
       </ul>
       <p className="border-t border-border px-4 py-3 text-[11px] text-muted">
-        Honest labels: <span className="mono">MISSING_CREDENTIALS</span> means keys are absent;{" "}
-        <span className="mono">NOT_IMPLEMENTED</span> means the venue path is not built — do not confuse the two. Owner
-        steps:{" "}
+        &ldquo;Missing credentials&rdquo; means the practice keys are not set. &ldquo;Not built&rdquo; means that venue is not
+        available in this version. Set-up steps are in{" "}
         <Link
           href="/terminal/settings"
-          className="text-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          className="text-primary underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
         >
           Settings
         </Link>{" "}
-        · docs/launch/RUNBOOKS.md (local bring-up, practice providers, single-operator scope).
+        and the runbook (docs/launch/RUNBOOKS.md).
       </p>
     </Panel>
   );

@@ -38,7 +38,8 @@ test.describe("Gate 1 local paper browser workflows", () => {
     await page.getByRole("button", { name: /^Resume$/ }).click();
     await expect.poll(async () => (await snapshot(page)).engine.status).toBe("RUNNING");
 
-    await page.getByRole("button", { name: /Sign out/i }).click();
+    await page.getByRole("button", { name: /^Account$/ }).click();
+    await page.getByRole("menuitem", { name: /Sign out/i }).click();
     await expect(page.getByRole("heading", { name: "ODIN // QUANT" })).toBeVisible();
     await expect(page).toHaveURL(/\/login/);
   });
@@ -201,7 +202,7 @@ test.describe("Gate 1 local paper browser workflows", () => {
     await page.goto("/terminal/positions");
     await expect(page.getByText("Open positions")).toBeVisible();
     await expect(page.getByText(pair.baseSymbol).first()).toBeVisible();
-    await expect(page.getByText(/PROTECTED|UNPROTECTED|Recovery|Exit/i).first()).toBeVisible();
+    await expect(page.getByText(/Stop confirmed|Stop held|Stop set|No stop|Stop status|Recovery|Exit/i).first()).toBeVisible();
 
     const orderIdsAfterBuy = new Set(afterBuy.orders.map((order) => order.id));
     const closeBtn = page.getByRole("button", { name: /^Close$/ }).first();
@@ -278,7 +279,7 @@ test.describe("Gate 1 local paper browser workflows", () => {
     const keyboardTargets = [
       page.getByRole("button", { name: /^Pause$/ }),
       page.getByRole("button", { name: /^Resume$/ }),
-      page.getByRole("button", { name: /Sign out/i }),
+      page.getByRole("button", { name: /^Account$/ }),
     ];
     let focused = false;
     for (const target of keyboardTargets) {
