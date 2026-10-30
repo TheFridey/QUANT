@@ -190,7 +190,7 @@ export async function runBoundedResearchCycle(input: {
         step(
           "REQUEST_CODE_GENERATION",
           "REJECTED",
-          `Static source gate rejected the engineering source (${findings.map((finding) => finding.code).join(", ")})`,
+          `Static source lint rejected the engineering source (${findings.map((finding) => finding.code).join(", ")})`,
           engineeringCall.model,
         ),
       );

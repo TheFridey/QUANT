@@ -131,7 +131,7 @@ export async function forgeStrategyModule(input: {
     return {
       ok: false,
       code: "STATIC_REJECT",
-      error: "Generated source failed the static source gate",
+      error: "Generated source failed the static source lint",
       findings: staticFindings.map((finding) => `${finding.code}: ${finding.detail}`),
       signalsClaimed: false,
       integrity: baseIntegrity({
@@ -303,7 +303,7 @@ function mapExecutionCode(
   code: string,
 ): "ISOLATION_DISABLED" | "SANDBOX_TIMEOUT" | "HASH_MISMATCH" | "CONTRACT_FAIL" | "SANDBOX_EXIT" {
   if (code === "ISOLATION_DISABLED" || code === "SANDBOX_TIMEOUT" || code === "HASH_MISMATCH") return code;
-  if (code === "CONTRACT" || code.startsWith("SIGNAL_")) return "CONTRACT_FAIL";
+  if (code === "CONTRACT_FAIL" || code === "CONTRACT" || code.startsWith("SIGNAL_")) return "CONTRACT_FAIL";
   return "SANDBOX_EXIT";
 }
 

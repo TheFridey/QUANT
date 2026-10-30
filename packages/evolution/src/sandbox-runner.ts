@@ -1,8 +1,15 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { STRATEGY_CONTRACT_VERSION, type StrategyBar, type StrategySignal } from "./strategy-interface.js";
+import type { Readable, Writable } from "node:stream";
+import {
+  STRATEGY_CONTRACT_VERSION,
+  strategySignalSchema,
+  type StrategyBar,
+  type StrategySignal,
+} from "./strategy-interface.js";
 import { sha256 } from "./compile-strategy.js";
 
 export type RunnerConfiguration = {
@@ -15,41 +22,96 @@ export type RunnerConfiguration = {
   rootFilesystem: "read-only";
   secretsMounted: false;
   tmpfsBytes: number;
+  /** Enforced address-space limit in MiB (RLIMIT_AS), or 0 when no limit was measured. */
   memoryMb: number;
+  /** How memory is bounded. "heap-flag-only" means only --max-old-space-size, which is not a hard limit. */
+  memoryEnforcement: "rlimit-as" | "heap-flag-only";
+  addressSpaceBytes: number | null;
+  /** V8 old-space flag passed to Node. Advisory; RLIMIT_AS is the enforced bound. */
+  heapMb: number;
   cpuSeconds: number;
   timeoutMs: number;
+  perBarTimeoutMs: number;
   nproc: number;
   outputLimitBytes: number;
   dependencies: readonly string[];
   nodePath: string;
   seccomp: "default-deny-errno" | "unavailable";
   seccompDetail: string;
+  /** Results travel on a host-opened pipe (fd 3), one frame per delivered bar. */
+  protocol: "streaming-fd3";
 };
 
 export type IsolationProbe = RunnerConfiguration;
 
 const TMPFS_BYTES = 8_388_608;
-const MEMORY_MB = 64;
+const HEAP_MB = 64;
+/** Address space allowed above the measured Node baseline. Kept under 512 MiB so a 512 MiB buffer fails. */
+const ADDRESS_SPACE_HEADROOM_BYTES = 256 * 1024 * 1024;
 const CPU_SECONDS = 3;
 const TIMEOUT_MS = 4_000;
+const PER_BAR_TIMEOUT_MS = 1_000;
 const NPROC = 16;
 const OUTPUT_LIMIT = 200_000;
+const DIAGNOSTIC_LIMIT = 2_000;
+const RESULT_FD = 3;
+/** Opt-in for hosts that cannot load the seccomp preload (non-x86_64, no gcc). */
+const ALLOW_NO_SECCOMP_ENV = "ODIN_SANDBOX_ALLOW_NO_SECCOMP";
 
 let cachedProbe: IsolationProbe | null = null;
 
+/**
+ * Harness protocol (one JSON object per line):
+ *   host → stdin : header, then exactly one bar after each signal frame
+ *   harness → fd 3: ready, then one signal (or error) frame per bar, each echoing the nonce
+ * The harness never holds a bar the strategy has not been shown, so scanning process
+ * memory cannot reveal future bars. stdout and stderr are diagnostics only. The host
+ * re-validates every frame, so a strategy that writes its own frames can at most emit
+ * a contract-valid signal for the bar it was given — which it could do anyway.
+ */
 const HARNESS = `import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { readFileSync, writeSync } from "node:fs";
 
+const writeResult = writeSync;
+const encode = JSON.stringify;
+const RESULT_FD = ${RESULT_FD};
 const INTENTS = new Set(["ENTER_LONG", "EXIT_LONG", "HOLD", "RESEARCH_NOTE"]);
 
-function readStdin() {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    process.stdin.on("data", (chunk) => chunks.push(chunk));
-    process.stdin.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    process.stdin.on("error", reject);
+const pending = [];
+let buffered = "";
+let ended = false;
+let wake = null;
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\\n")) >= 0) {
+    pending.push(buffered.slice(0, index));
+    buffered = buffered.slice(index + 1);
+  }
+  if (wake) { const resume = wake; wake = null; resume(); }
+});
+process.stdin.on("end", () => {
+  ended = true;
+  if (wake) { const resume = wake; wake = null; resume(); }
+});
+
+function nextLine() {
+  return new Promise((resolve) => {
+    const take = () => {
+      if (pending.length > 0) return resolve(pending.shift());
+      if (ended) return resolve(null);
+      wake = take;
+    };
+    take();
   });
+}
+
+const header = JSON.parse(await nextLine());
+const nonce = String(header.nonce);
+function send(frame) {
+  const line = encode({ ...frame, nonce }) + "\\n";
+  writeResult(RESULT_FD, line);
 }
 
 function sanitizeState(state) {
@@ -85,49 +147,49 @@ function normalize(raw, bar) {
   };
 }
 
-const requestText = await readStdin();
-const request = JSON.parse(requestText);
-const artifact = readFileSync("/work/strategy.js");
+const strategyUrl = new URL("./strategy.js", import.meta.url);
+const artifact = readFileSync(strategyUrl);
 const executedHash = createHash("sha256").update(artifact).digest("hex");
-if (executedHash !== request.artifactHash) {
-  console.log(JSON.stringify({ ok: false, code: "HASH_MISMATCH", executedHash }));
+if (executedHash !== header.artifactHash) {
+  send({ type: "error", code: "HASH_MISMATCH", executedHash });
   process.exit(2);
 }
-const mod = await import(pathToFileURL("/work/strategy.js").href);
+// The strategy is imported only after the harness captured writeSync, JSON.stringify and the nonce.
+const mod = await import(strategyUrl.href);
 if (typeof mod.onBar !== "function") {
-  console.log(JSON.stringify({ ok: false, code: "CONTRACT", error: "onBar missing", executedHash }));
+  send({ type: "error", code: "CONTRACT", error: "onBar missing", executedHash });
   process.exit(2);
 }
+send({ type: "ready", executedHash });
+
 const history = [];
-const signals = [];
-let state = sanitizeState(request.initialState);
+let state = sanitizeState(header.initialState);
+let seq = 0;
 try {
-  for (const bar of request.bars) {
-    const past = history.slice(-request.historyLimit);
+  for (;;) {
+    const line = await nextLine();
+    if (line === null || line === "") break;
+    const bar = JSON.parse(line);
     const raw = await mod.onBar({
-      contractVersion: request.contractVersion,
+      contractVersion: header.contractVersion,
       bar,
-      history: past,
+      history: history.slice(-header.historyLimit),
       state,
-      metadata: request.metadata,
+      metadata: header.metadata,
     });
     const signal = normalize(raw, bar);
     if (signal.state) state = signal.state;
     const { state: _state, ...emitted } = signal;
-    signals.push(emitted);
+    send({ type: "signal", seq, signal: emitted });
     history.push(bar);
+    seq += 1;
   }
 } catch (error) {
-  const code = error && error.message ? String(error.message) : "SANDBOX";
-  console.log(JSON.stringify({ ok: false, code, executedHash }));
+  const code = error && error.message ? String(error.message).slice(0, 64) : "SANDBOX";
+  send({ type: "error", seq, code, executedHash });
   process.exit(2);
 }
-const body = JSON.stringify({ ok: true, executedHash, signals });
-if (body.length > request.maxOutputBytes) {
-  console.log(JSON.stringify({ ok: false, code: "OUTPUT_LIMIT", executedHash }));
-  process.exit(3);
-}
-console.log(body);
+process.exit(0);
 `;
 
 export function probeIsolation(force = false): IsolationProbe {
@@ -142,39 +204,68 @@ export function probeIsolation(force = false): IsolationProbe {
     rootFilesystem: "read-only",
     secretsMounted: false,
     tmpfsBytes: TMPFS_BYTES,
-    memoryMb: MEMORY_MB,
+    memoryMb: 0,
+    memoryEnforcement: "heap-flag-only",
+    addressSpaceBytes: null,
+    heapMb: HEAP_MB,
     cpuSeconds: CPU_SECONDS,
     timeoutMs: TIMEOUT_MS,
+    perBarTimeoutMs: PER_BAR_TIMEOUT_MS,
     nproc: NPROC,
     outputLimitBytes: OUTPUT_LIMIT,
     dependencies: [],
     nodePath: process.execPath,
     seccomp: "unavailable",
     seccompDetail: "bubblewrap is not available, so the seccomp preload was not installed",
+    protocol: "streaming-fd3",
   };
   const version = spawnSyncCapture("bwrap", ["--version"]);
   if (version.code !== 0) {
     cachedProbe = { ...disabled, reason: version.stderr || "bubblewrap is not installed" };
     return cachedProbe;
   }
+  const bwrapVersion = version.stdout.trim() || null;
   const uidProbe = runBubblewrap("process.stdout.write(String(process.getuid()))");
   if (uidProbe.code !== 0 || !/^\d+$/.test(uidProbe.stdout.trim())) {
     cachedProbe = {
       ...disabled,
-      bwrapVersion: version.stdout.trim() || null,
+      bwrapVersion,
       reason: `bubblewrap probe failed: ${uidProbe.stderr || uidProbe.stdout || "no uid"}`,
     };
     return cachedProbe;
   }
   const uid = Number(uidProbe.stdout.trim());
+  const memory = measureAddressSpaceLimit();
+  if ("error" in memory) {
+    cachedProbe = { ...disabled, bwrapVersion, uid, reason: memory.error };
+    return cachedProbe;
+  }
+  const seccomp = seccompProbeFields();
+  const allowNoSeccomp = process.env[ALLOW_NO_SECCOMP_ENV] === "true";
+  if (seccomp.seccomp === "unavailable" && !allowNoSeccomp) {
+    cachedProbe = {
+      ...disabled,
+      bwrapVersion,
+      uid,
+      ...seccomp,
+      reason: `seccomp: unavailable (${seccomp.seccompDetail}). Set ${ALLOW_NO_SECCOMP_ENV}=true to run without it.`,
+    };
+    return cachedProbe;
+  }
   cachedProbe = {
     ...disabled,
     runtime: "bubblewrap",
     available: true,
-    reason: "bubblewrap user namespace with unshared network and a read-only root",
-    bwrapVersion: version.stdout.trim() || null,
+    reason:
+      seccomp.seccomp === "unavailable"
+        ? `bubblewrap user namespace with unshared network and a read-only root. seccomp: unavailable (allowed by ${ALLOW_NO_SECCOMP_ENV})`
+        : "bubblewrap user namespace with unshared network and a read-only root",
+    bwrapVersion,
     uid,
-    ...seccompProbeFields(),
+    memoryMb: Math.floor(memory.bytes / (1024 * 1024)),
+    memoryEnforcement: "rlimit-as",
+    addressSpaceBytes: memory.bytes,
+    ...seccomp,
   };
   return cachedProbe;
 }
@@ -196,132 +287,312 @@ export type SandboxExecution = {
   runner: RunnerConfiguration;
 };
 
+/** Harness error codes that mean the strategy broke the signal contract. */
+const CONTRACT_CODES = new Set([
+  "CONTRACT",
+  "SIGNAL_SHAPE",
+  "SIGNAL_INTENT",
+  "SIGNAL_REASONS",
+  "SIGNAL_CONFIDENCE",
+  "NONDETERMINISTIC",
+  "STATE_LIMIT",
+]);
+
 export async function executeCompiledStrategy(input: {
   javascript: string;
   artifactHash: string;
   bars: StrategyBar[];
   metadata: { strategyId: string; version: string; hypothesisId: string };
   timeoutMs?: number;
+  perBarTimeoutMs?: number;
 }): Promise<SandboxExecution> {
   const runner = probeIsolation();
+  const fail = (patch: Partial<SandboxExecution> & { code: string; error: string }): SandboxExecution => ({
+    ok: false,
+    contained: true,
+    signalsClaimed: false,
+    exitStatus: null,
+    timedOut: false,
+    executedHash: null,
+    signals: [],
+    runner,
+    ...patch,
+  });
   if (!runner.available) {
-    return {
-      ok: false,
-      contained: false,
-      signalsClaimed: false,
-      exitStatus: null,
-      timedOut: false,
-      executedHash: null,
-      signals: [],
-      error: runner.reason,
-      code: "ISOLATION_DISABLED",
-      runner,
-    };
+    return fail({ contained: false, error: runner.reason, code: "ISOLATION_DISABLED" });
   }
-  const work = join(tmpdir(), `odin-forge-run-${sha256(input.artifactHash).slice(0, 12)}-${Date.now()}`);
-  mkdirSync(work, { recursive: true });
+  const seccomp = seccompBinaries();
+  if (runner.seccomp === "default-deny-errno") {
+    // Re-hash the prebuilt binaries before every bind mount; refuse if they changed.
+    const integrity = seccomp === null ? "seccomp binaries are missing" : verifySeccompBinaries(seccomp);
+    if (integrity !== null) {
+      return fail({ contained: false, error: integrity, code: "SECCOMP_INTEGRITY" });
+    }
+  }
+  const work = mkdtempSync(join(tmpdir(), "odin-forge-run-"));
   try {
     writeFileSync(join(work, "strategy.js"), input.javascript);
     writeFileSync(join(work, "harness.mjs"), HARNESS);
     writeFileSync(join(work, "package.json"), "{\"type\":\"module\"}\n");
     const onDisk = sha256(readFileSync(join(work, "strategy.js")));
     if (onDisk !== input.artifactHash) {
-      return {
-        ok: false,
-        contained: true,
-        signalsClaimed: false,
-        exitStatus: null,
-        timedOut: false,
+      return fail({
         executedHash: onDisk,
-        signals: [],
         error: "Artifact hash does not match the bytes written for execution",
         code: "HASH_MISMATCH",
-        runner,
-      };
+      });
     }
-    const request = {
+    const nonce = randomBytes(16).toString("hex");
+    const header = {
+      nonce,
       artifactHash: input.artifactHash,
       contractVersion: STRATEGY_CONTRACT_VERSION,
-      bars: input.bars,
       metadata: input.metadata,
       initialState: {},
       historyLimit: 256,
-      maxOutputBytes: OUTPUT_LIMIT,
     };
-    const args = bwrapArgs(work);
-    const result = await spawnCaptured("bwrap", args, JSON.stringify(request), input.timeoutMs ?? runner.timeoutMs);
-    if (result.timedOut) {
-      return {
-        ok: false,
-        contained: true,
-        signalsClaimed: false,
-        exitStatus: result.code,
-        timedOut: true,
-        executedHash: null,
-        signals: [],
-        error: "Sandbox process exceeded the time limit and was terminated",
-        code: "SANDBOX_TIMEOUT",
-        runner,
-      };
+    const args = bwrapArgs(work, runner, runner.seccomp === "default-deny-errno" ? seccomp : null);
+    const outcome = await runStreaming({
+      command: "bwrap",
+      args,
+      header,
+      bars: input.bars,
+      timeoutMs: input.timeoutMs ?? runner.timeoutMs,
+      perBarTimeoutMs: input.perBarTimeoutMs ?? runner.perBarTimeoutMs,
+    });
+    const base = { exitStatus: outcome.exitStatus, executedHash: outcome.executedHash };
+    switch (outcome.kind) {
+      case "timeout":
+        return fail({
+          ...base,
+          timedOut: true,
+          error: outcome.error,
+          code: "SANDBOX_TIMEOUT",
+        });
+      case "failed":
+        return fail({ ...base, error: outcome.error, code: outcome.code });
+      case "completed": {
+        if (outcome.executedHash !== input.artifactHash) {
+          return fail({ ...base, error: "Executed artifact hash differs from the compiled artifact", code: "HASH_MISMATCH" });
+        }
+        return {
+          ok: true,
+          contained: true,
+          signalsClaimed: true,
+          exitStatus: outcome.exitStatus,
+          timedOut: false,
+          executedHash: outcome.executedHash,
+          signals: outcome.signals,
+          error: null,
+          code: "EXECUTED",
+          runner,
+        };
+      }
     }
-    const parsed = parseSandboxStdout(result.stdout);
-    if (!parsed) {
-      return {
-        ok: false,
-        contained: true,
-        signalsClaimed: false,
-        exitStatus: result.code,
-        timedOut: false,
-        executedHash: null,
-        signals: [],
-        error: trimOutput(result.stderr || result.stdout || "Sandbox produced no result"),
-        code: result.code === 0 ? "SANDBOX_OUTPUT" : "SANDBOX_EXIT",
-        runner,
-      };
-    }
-    if (!parsed.ok) {
-      return {
-        ok: false,
-        contained: true,
-        signalsClaimed: false,
-        exitStatus: result.code,
-        timedOut: false,
-        executedHash: parsed.executedHash,
-        signals: [],
-        error: parsed.error ?? parsed.code,
-        code: parsed.code,
-        runner,
-      };
-    }
-    if (parsed.executedHash !== input.artifactHash) {
-      return {
-        ok: false,
-        contained: true,
-        signalsClaimed: false,
-        exitStatus: result.code,
-        timedOut: false,
-        executedHash: parsed.executedHash,
-        signals: [],
-        error: "Executed artifact hash differs from the compiled artifact",
-        code: "HASH_MISMATCH",
-        runner,
-      };
-    }
-    return {
-      ok: true,
-      contained: true,
-      signalsClaimed: true,
-      exitStatus: result.code,
-      timedOut: false,
-      executedHash: parsed.executedHash,
-      signals: parsed.signals,
-      error: null,
-      code: "EXECUTED",
-      runner,
-    };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+}
+
+type StreamOutcome =
+  | { kind: "completed"; signals: StrategySignal[]; executedHash: string; exitStatus: number | null }
+  | { kind: "failed"; code: string; error: string; executedHash: string | null; exitStatus: number | null }
+  | { kind: "timeout"; error: string; executedHash: string | null; exitStatus: number | null };
+
+type Frame = { nonce?: unknown; type?: unknown; seq?: unknown; signal?: unknown; code?: unknown; error?: unknown; executedHash?: unknown };
+
+/**
+ * Lock-step driver: write the header, wait for `ready`, then write one bar and wait for
+ * exactly one frame before writing the next. Every frame must echo the nonce and its
+ * signal is re-validated here, so no caller can receive an unchecked signal.
+ */
+async function runStreaming(input: {
+  command: string;
+  args: string[];
+  header: { nonce: string } & Record<string, unknown>;
+  bars: StrategyBar[];
+  timeoutMs: number;
+  perBarTimeoutMs: number;
+}): Promise<StreamOutcome> {
+  const child = spawn(input.command, input.args, { stdio: ["pipe", "pipe", "pipe", "pipe"], env: {} });
+  const stdin = child.stdin as Writable;
+  const results = child.stdio[RESULT_FD] as Readable;
+  let diagnostics = "";
+  let resultBytes = 0;
+  let resultBuffer = "";
+  let overflow = false;
+  let exitStatus: number | null = null;
+  let closed = false;
+  const frames: string[] = [];
+  let notify: (() => void) | null = null;
+  const poke = () => {
+    const resume = notify;
+    notify = null;
+    resume?.();
+  };
+  const collectDiagnostics = (chunk: Buffer) => {
+    if (diagnostics.length < DIAGNOSTIC_LIMIT) diagnostics += chunk.toString("utf8");
+  };
+  child.stdout?.on("data", collectDiagnostics);
+  child.stderr?.on("data", collectDiagnostics);
+  results.on("data", (chunk: Buffer) => {
+    resultBytes += chunk.length;
+    if (resultBytes > OUTPUT_LIMIT) {
+      overflow = true;
+      child.kill("SIGKILL");
+      poke();
+      return;
+    }
+    resultBuffer += chunk.toString("utf8");
+    let index: number;
+    while ((index = resultBuffer.indexOf("\n")) >= 0) {
+      frames.push(resultBuffer.slice(0, index));
+      resultBuffer = resultBuffer.slice(index + 1);
+    }
+    poke();
+  });
+  results.on("error", () => undefined);
+  stdin.on("error", () => undefined);
+  const exited = new Promise<void>((resolve) => {
+    child.on("error", () => {
+      closed = true;
+      poke();
+      resolve();
+    });
+    child.on("close", (code) => {
+      exitStatus = code;
+      closed = true;
+      poke();
+      resolve();
+    });
+  });
+
+  const deadline = Date.now() + input.timeoutMs;
+  let executedHash: string | null = null;
+
+  const nextFrame = (stepMs: number): Promise<Frame | "timeout" | "closed" | "overflow" | "malformed"> =>
+    new Promise((resolve) => {
+      const limit = Math.min(stepMs, Math.max(0, deadline - Date.now()));
+      const timer = setTimeout(() => {
+        notify = null;
+        resolve("timeout");
+      }, limit);
+      const take = () => {
+        if (overflow) {
+          clearTimeout(timer);
+          return resolve("overflow");
+        }
+        const line = frames.shift();
+        if (line !== undefined) {
+          clearTimeout(timer);
+          try {
+            const value = JSON.parse(line) as unknown;
+            return resolve(value && typeof value === "object" && !Array.isArray(value) ? (value as Frame) : "malformed");
+          } catch {
+            return resolve("malformed");
+          }
+        }
+        if (closed) {
+          clearTimeout(timer);
+          return resolve("closed");
+        }
+        notify = take;
+      };
+      take();
+    });
+
+  const stop = async (): Promise<void> => {
+    if (!closed) child.kill("SIGKILL");
+    await exited;
+  };
+  const failed = async (code: string, error: string): Promise<StreamOutcome> => {
+    await stop();
+    return { kind: "failed", code, error, executedHash, exitStatus };
+  };
+  const timedOut = async (error: string): Promise<StreamOutcome> => {
+    await stop();
+    return { kind: "timeout", error, executedHash, exitStatus };
+  };
+  const unexpected = async (
+    frame: "closed" | "overflow" | "malformed" | "timeout",
+    phase: string,
+  ): Promise<StreamOutcome> => {
+    if (frame === "timeout") return timedOut(`Sandbox did not answer within the time limit during ${phase}`);
+    if (frame === "overflow") return failed("SANDBOX_OUTPUT", "Sandbox result channel exceeded the output limit");
+    if (frame === "malformed") return failed("SANDBOX_PROTOCOL", `Malformed result frame during ${phase}`);
+    await exited;
+    return {
+      kind: "failed",
+      code: "SANDBOX_EXIT",
+      error: trimOutput(diagnostics || `Sandbox exited during ${phase} without a result`),
+      executedHash,
+      exitStatus,
+    };
+  };
+  const reportedError = (frame: Frame): Promise<StreamOutcome> => {
+    const code = typeof frame.code === "string" ? frame.code : "SANDBOX";
+    if (typeof frame.executedHash === "string") executedHash = frame.executedHash;
+    const mapped = CONTRACT_CODES.has(code) ? "CONTRACT_FAIL" : code === "HASH_MISMATCH" ? "HASH_MISMATCH" : "SANDBOX_EXIT";
+    const detail = typeof frame.error === "string" ? frame.error : code;
+    return failed(mapped, trimOutput(detail));
+  };
+
+  stdin.write(`${JSON.stringify(input.header)}\n`);
+  const ready = await nextFrame(input.timeoutMs);
+  if (typeof ready === "string") return unexpected(ready, "startup");
+  if (ready.nonce !== input.header.nonce) return failed("SANDBOX_PROTOCOL", "Result frame did not carry the run nonce");
+  if (ready.type === "error") return reportedError(ready);
+  if (ready.type !== "ready" || typeof ready.executedHash !== "string") {
+    return failed("SANDBOX_PROTOCOL", "Sandbox did not report ready");
+  }
+  executedHash = ready.executedHash;
+
+  const signals: StrategySignal[] = [];
+  for (const [index, bar] of input.bars.entries()) {
+    if (frames.length > 0) return failed("SANDBOX_PROTOCOL", "Sandbox sent a frame before the bar was delivered");
+    stdin.write(`${JSON.stringify(bar)}\n`);
+    const frame = await nextFrame(input.perBarTimeoutMs);
+    if (typeof frame === "string") return unexpected(frame, `bar ${index}`);
+    if (frame.nonce !== input.header.nonce) return failed("SANDBOX_PROTOCOL", "Result frame did not carry the run nonce");
+    if (frame.type === "error") return reportedError(frame);
+    if (frame.type !== "signal" || frame.seq !== index) {
+      return failed("SANDBOX_PROTOCOL", `Expected the signal for bar ${index}`);
+    }
+    const checked = validateSignal(frame.signal, bar);
+    if (!checked.ok) return failed("CONTRACT_FAIL", checked.error);
+    signals.push(checked.signal);
+  }
+  stdin.end();
+  // Give the harness a moment to exit cleanly so the exit status is real, then make sure it is gone.
+  const grace = Math.min(500, Math.max(0, deadline - Date.now()));
+  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, grace))]);
+  await stop();
+  if (signals.length !== input.bars.length) {
+    return { kind: "failed", code: "CONTRACT_FAIL", error: "Signal count does not match delivered bars", executedHash, exitStatus };
+  }
+  return { kind: "completed", signals, executedHash: executedHash ?? "", exitStatus };
+}
+
+const NONDETERMINISTIC_CODE = /^\d{12,}$/;
+
+/** Host-side contract check. The harness runs in the strategy's process, so its checks are advisory. */
+export function validateSignal(
+  raw: unknown,
+  bar: StrategyBar,
+): { ok: true; signal: StrategySignal } | { ok: false; error: string } {
+  const parsed = strategySignalSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { ok: false, error: `Strategy signal failed the contract schema: ${parsed.error.issues[0]?.message ?? "invalid"}` };
+  }
+  const signal = parsed.data;
+  if (signal.instrumentId !== bar.instrumentId) return { ok: false, error: "Signal instrument does not match the delivered bar" };
+  if ((signal.pairAddress ?? null) !== (bar.pairAddress ?? null)) {
+    return { ok: false, error: "Signal pair address does not match the delivered bar" };
+  }
+  if (signal.reasonCodes.some((code) => code.includes(".") || NONDETERMINISTIC_CODE.test(code))) {
+    return { ok: false, error: "Signal reason codes look nondeterministic" };
+  }
+  return { ok: true, signal };
 }
 
 /** Library mounts shared by strategy execution and the CI availability probe. */
@@ -354,13 +625,13 @@ export function bubblewrapCiProbeArgs(): string[] {
   ];
 }
 
-function bwrapArgs(work: string): string[] {
-  const seccomp = seccompBinaries();
+function bwrapArgs(work: string, runner: RunnerConfiguration, seccomp: SeccompBinaries | null): string[] {
   const mounts =
     seccomp === null
       ? []
       : ["--ro-bind", seccomp.so, "/seccomp.so", "--ro-bind", seccomp.init, "/sandbox-init"];
-  const command = seccomp === null ? ["/node", `--max-old-space-size=${MEMORY_MB}`, "/work/harness.mjs"] : ["/sandbox-init"];
+  const command = seccomp === null ? ["/node", `--max-old-space-size=${HEAP_MB}`, "/work/harness.mjs"] : ["/sandbox-init"];
+  const addressSpace = runner.addressSpaceBytes === null ? [] : [`--as=${runner.addressSpaceBytes}`];
   return [
     "--unshare-user",
     "--unshare-net",
@@ -396,24 +667,51 @@ function bwrapArgs(work: string): string[] {
     "/usr/bin",
     "--setenv",
     "ODIN_NODE_HEAP",
-    String(MEMORY_MB),
+    String(HEAP_MB),
     "--",
     "/usr/bin/prlimit",
     `--nproc=${NPROC}`,
     "--nofile=32",
     `--cpu=${CPU_SECONDS}`,
+    ...addressSpace,
     "--",
     ...command,
   ];
 }
 
-type SeccompBinaries = { so: string; init: string };
+/**
+ * Measure Node's peak virtual size inside bubblewrap, then allow a fixed headroom above it.
+ * The result is verified by booting Node under the limit and allocating 8 MiB.
+ */
+function measureAddressSpaceLimit(): { bytes: number } | { error: string } {
+  const peak = runBubblewrap(
+    "const m=require('fs').readFileSync('/proc/self/status','utf8').match(/VmPeak:\\s+(\\d+)/);process.stdout.write(m?m[1]:'')",
+  );
+  const kib = Number(peak.stdout.trim());
+  if (peak.code !== 0 || !Number.isFinite(kib) || kib <= 0) {
+    return { error: `could not measure Node address space inside bubblewrap: ${peak.stderr || peak.stdout || "no VmPeak"}` };
+  }
+  const bytes = Math.ceil((kib * 1024 + ADDRESS_SPACE_HEADROOM_BYTES) / (1024 * 1024)) * 1024 * 1024;
+  const check = runBubblewrap(
+    "const b=new ArrayBuffer(8*1024*1024);new Uint8Array(b).fill(1);process.stdout.write('ok')",
+    ["/usr/bin/prlimit", `--as=${bytes}`, "--"],
+  );
+  if (check.code !== 0 || check.stdout.trim() !== "ok") {
+    return { error: `Node did not start under the measured address-space limit (${bytes} bytes): ${check.stderr || check.stdout}` };
+  }
+  return { bytes };
+}
+
+type SeccompBinaries = { so: string; init: string; manifest: SeccompManifest };
+type SeccompManifest = { sourceHash: string; files: { "seccomp.so": string; "sandbox-init": string } };
 
 let seccompCache: SeccompBinaries | { error: string } | null = null;
 
 function seccompProbeFields(): { seccomp: IsolationProbe["seccomp"]; seccompDetail: string } {
   const built = seccompBinaries();
   if (built) {
+    const integrity = verifySeccompBinaries(built);
+    if (integrity !== null) return { seccomp: "unavailable", seccompDetail: integrity };
     return {
       seccomp: "default-deny-errno",
       seccompDetail:
@@ -424,7 +722,7 @@ function seccompProbeFields(): { seccomp: IsolationProbe["seccomp"]; seccompDeta
   return { seccomp: "unavailable", seccompDetail: detail };
 }
 
-function sandboxSourceDir(): string {
+export function sandboxSourceDir(): string {
   const starts = [process.cwd(), join(process.cwd(), "packages/evolution")];
   for (const start of starts) {
     let dir = start;
@@ -441,75 +739,60 @@ function sandboxSourceDir(): string {
   return join(process.cwd(), "packages/evolution/sandbox");
 }
 
+/**
+ * Locate the binaries built by `scripts/build-sandbox.mjs` (run on install and build).
+ * Nothing is compiled at runtime and nothing is read from shared /tmp.
+ */
 function seccompBinaries(): SeccompBinaries | null {
   if (seccompCache && !("error" in seccompCache)) return seccompCache;
   if (seccompCache && "error" in seccompCache) return null;
-  if (process.arch !== "x64") {
-    seccompCache = { error: "the committed seccomp profile is x86_64 only" };
+  if (process.platform !== "linux" || process.arch !== "x64") {
+    seccompCache = { error: "the committed seccomp profile is x86_64 Linux only" };
     return null;
   }
   const dir = sandboxSourceDir();
-  const preload = join(dir, "seccomp-preload.c");
-  const initSource = join(dir, "sandbox-init.c");
-  if (!existsSync(preload) || !existsSync(initSource)) {
-    seccompCache = { error: "seccomp sources are not present beside the evolution package" };
+  const buildDir = join(dir, "build");
+  const manifestPath = join(buildDir, "manifest.json");
+  if (!existsSync(manifestPath)) {
+    seccompCache = {
+      error: "seccomp binaries were not built; run `pnpm --filter @odin/evolution sandbox:build` (needs gcc)",
+    };
     return null;
   }
-  const gcc = spawnSync("gcc", ["--version"], { encoding: "utf8" });
-  if (gcc.status !== 0) {
-    seccompCache = { error: "gcc is not installed, so the seccomp preload was not built" };
+  let manifest: SeccompManifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as SeccompManifest;
+  } catch {
+    seccompCache = { error: "seccomp build manifest is unreadable" };
     return null;
   }
-  const stamp = sha256(readFileSync(preload, "utf8") + "\n" + readFileSync(initSource, "utf8")).slice(0, 16);
-  const outDir = join(tmpdir(), `odin-seccomp-${stamp}`);
-  const so = join(outDir, "seccomp.so");
-  const init = join(outDir, "sandbox-init");
-  if (!existsSync(so) || !existsSync(init)) {
-    mkdirSync(outDir, { recursive: true });
-    const soBuild = spawnSync("gcc", ["-shared", "-fPIC", "-O2", "-o", so, preload], { encoding: "utf8" });
-    if (soBuild.status !== 0) {
-      seccompCache = { error: trimOutput(soBuild.stderr || "seccomp preload compile failed") };
-      return null;
-    }
-    const initBuild = spawnSync("gcc", ["-O2", "-o", init, initSource], { encoding: "utf8" });
-    if (initBuild.status !== 0) {
-      seccompCache = { error: trimOutput(initBuild.stderr || "sandbox init compile failed") };
-      return null;
-    }
+  const sourceHash = seccompSourceHash(dir);
+  if (manifest.sourceHash !== sourceHash) {
+    seccompCache = { error: "seccomp binaries are stale against the committed sources; rebuild them" };
+    return null;
   }
-  seccompCache = { so, init };
+  seccompCache = { so: join(buildDir, "seccomp.so"), init: join(buildDir, "sandbox-init"), manifest };
   return seccompCache;
 }
 
-function parseSandboxStdout(stdout: string):
-  | { ok: true; executedHash: string; signals: StrategySignal[] }
-  | { ok: false; code: string; error?: string; executedHash: string | null }
-  | null {
-  const line = stdout.trim().split("\n").filter(Boolean).at(-1);
-  if (!line) return null;
-  try {
-    const value = JSON.parse(line) as {
-      ok?: boolean;
-      code?: string;
-      error?: string;
-      executedHash?: string;
-      signals?: StrategySignal[];
-    };
-    if (value.ok === true && typeof value.executedHash === "string" && Array.isArray(value.signals)) {
-      return { ok: true, executedHash: value.executedHash, signals: value.signals };
+/** Must match `sourceHash` in scripts/build-sandbox.mjs. */
+function seccompSourceHash(dir: string): string {
+  return sha256(
+    readFileSync(join(dir, "seccomp-preload.c"), "utf8") + "\n" + readFileSync(join(dir, "sandbox-init.c"), "utf8"),
+  );
+}
+
+function verifySeccompBinaries(binaries: SeccompBinaries): string | null {
+  for (const [name, path] of [
+    ["seccomp.so", binaries.so],
+    ["sandbox-init", binaries.init],
+  ] as const) {
+    if (!existsSync(path)) return `seccomp binary ${name} is missing`;
+    if (sha256(readFileSync(path)) !== binaries.manifest.files[name]) {
+      return `seccomp binary ${name} does not match its recorded SHA-256; refusing to run`;
     }
-    if (value.ok === false) {
-      return {
-        ok: false,
-        code: value.code ?? "SANDBOX_OUTPUT",
-        error: value.error,
-        executedHash: value.executedHash ?? null,
-      };
-    }
-    return null;
-  } catch {
-    return null;
   }
+  return null;
 }
 
 function trimOutput(value: string): string {
@@ -525,7 +808,7 @@ function spawnSyncCapture(command: string, args: string[]): { code: number | nul
   };
 }
 
-function runBubblewrap(expression: string): { code: number | null; stdout: string; stderr: string } {
+function runBubblewrap(expression: string, prefix: string[] = []): { code: number | null; stdout: string; stderr: string } {
   return spawnSyncCapture("bwrap", [
     "--unshare-user",
     "--unshare-net",
@@ -544,46 +827,15 @@ function runBubblewrap(expression: string): { code: number | null; stdout: strin
     "/dev",
     "--clearenv",
     "--",
+    ...prefix,
     "/node",
     "-e",
     expression,
   ]);
 }
 
-function spawnCaptured(
-  command: string,
-  args: string[],
-  stdin: string,
-  timeoutMs: number,
-): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: {} });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let settled = false;
-    const finish = (code: number | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr: trimOutput(stderr), timedOut });
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-      if (stdout.length > OUTPUT_LIMIT) {
-        child.kill("SIGKILL");
-      }
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      if (stderr.length < 2_000) stderr += chunk.toString("utf8");
-    });
-    child.on("error", () => finish(null));
-    child.on("close", (code) => finish(code));
-    child.stdin?.write(stdin);
-    child.stdin?.end();
-  });
-}
+/**
+ * Test seam: drives the harness protocol with any command (e.g. plain Node, no isolation)
+ * so protocol checks run on hosts without bubblewrap. Never use it to execute strategies.
+ */
+export const sandboxProtocolForTests = { harnessSource: HARNESS, runStreaming };

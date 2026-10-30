@@ -126,6 +126,14 @@ See `docs/EVOLUTION.md`. Live paper BullMQ path is unchanged.
 | ORACLE queues / briefings | `ResearchQueueItem` + research centre endpoints |
 | Command centre modules | Market Selector, AI Research Centre, Model Ops, Genome, Memory, Autonomy |
 
+### Forge sandbox contract (`packages/evolution/src/sandbox-runner.ts`)
+
+- **Isolation boundary** is bubblewrap (user, net, pid, ipc, uts namespaces; read-only root; uid 65534) plus the x86_64 seccomp preload. The static source check is a **lint** for honest mistakes, not a security control.
+- **Streaming protocol.** The host writes a header (contract version, metadata, history limit, artifact hash, per-run nonce), waits for `ready`, then writes exactly one bar and waits for exactly one frame before the next. The sandbox never holds a bar the strategy has not been shown, so scanning `/proc/self/mem` cannot reveal future bars. Per-bar and overall timeouts both apply; either yields `SANDBOX_TIMEOUT`.
+- **Results** travel only on fd 3, a pipe opened by the host. stdout/stderr are diagnostics and are never parsed. Each frame must echo the nonce and carry the expected sequence number. The host re-validates every signal with `strategySignalSchema`, checks it names the delivered bar's instrument, and requires one signal per bar; anything else is `CONTRACT_FAIL` or `SANDBOX_PROTOCOL`. The nonce is defence in depth: the strategy shares the harness process, so the guarantee is that it can only ever emit a contract-valid signal for the bar it was given.
+- **Memory** is bounded by `RLIMIT_AS`, measured per host as Node's peak virtual size inside bubblewrap plus 256 MiB, and reported as `memoryEnforcement: "rlimit-as"`. `--max-old-space-size` is advisory only.
+- **Seccomp binaries** are built at install/build time by `packages/evolution/scripts/build-sandbox.mjs` into `packages/evolution/sandbox/build/` with SHA-256 recorded in `manifest.json`; the runner re-hashes them before every run and refuses on mismatch. The BPF array is generated from `src/seccomp-profile.ts`. Without seccomp (non-x86_64 or no gcc) isolation reports unavailable unless `ODIN_SANDBOX_ALLOW_NO_SECCOMP=true`, in which case the runner reason says `seccomp: unavailable`.
+
 ## Engine
 
 `STOPPED → start → RUNNING → pause → PAUSED → resume → RUNNING`.
