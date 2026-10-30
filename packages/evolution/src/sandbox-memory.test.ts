@@ -101,9 +101,14 @@ describe.skipIf(!isolationAvailable())(`sandbox realistic workload${skipReason}`
 });
 
 describe.skipIf(!isolationAvailable())(`sandbox without /proc${skipReason}`, () => {
-  // Evidence only: decides whether the /proc mount can be dropped. Asserts the outcome is reported, not its value.
-  it("records whether the harness runs with no /proc mount", async () => {
-    const compiled = compileStrategySource(`export function onBar() { return { intent: "HOLD", reasonCodes: ["NO_PROC"] }; }`);
+  // CI on fa26daf showed Node runs without /proc, so strategy runs no longer mount it.
+  it("runs strategies with no /proc mount by default", async () => {
+    const compiled = compileStrategySource(`export function onBar() {
+      const f = (globalThis as any)["pro" + "cess"].getBuiltinModule("f" + "s");
+      let seen = "PROC_ABSENT";
+      try { f.readFileSync("/proc/self/maps", "utf8"); seen = "PROC_PRESENT"; } catch (_e) {}
+      return { intent: "HOLD", reasonCodes: [seen] };
+    }`);
     if (!compiled.ok) throw new Error(compiled.error);
     const result = await executeCompiledStrategy({
       javascript: compiled.javascript,
@@ -123,10 +128,9 @@ describe.skipIf(!isolationAvailable())(`sandbox without /proc${skipReason}`, () 
         },
       ],
       metadata: { strategyId: "no-proc", version: "0", hypothesisId: "hyp" },
-      mountProc: false,
     });
-    console.info(`[sandbox without /proc] ok=${result.ok} code=${result.code} error=${result.error ?? ""}`);
-    expect(typeof result.ok).toBe("boolean");
+    expect(result.ok, result.error ?? "").toBe(true);
+    expect(result.signals[0]?.reasonCodes[0]).toBe("PROC_ABSENT");
   });
 });
 

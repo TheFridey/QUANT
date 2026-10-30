@@ -82,6 +82,8 @@ describe.skipIf(!isolationAvailable())(`sandbox look-ahead${skipReason}`, () => 
       metadata: { strategyId: "lookahead", version: "0", hypothesisId: "hyp" },
       timeoutMs: 15_000,
       perBarTimeoutMs: 5_000,
+      // Real runs have no /proc. Mount it here so the test proves streaming alone defeats the scan.
+      mountProcForTest: true,
     });
     expect(result.ok, result.error ?? "").toBe(true);
     expect(result.signals).toHaveLength(bars.length);

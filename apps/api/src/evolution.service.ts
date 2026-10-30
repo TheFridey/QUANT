@@ -24,6 +24,7 @@ import {
   proposeOracleCycle,
   forgeStrategyModule,
   parseAutonomyPolicy,
+  probeIsolation,
   runChallengeReview,
   runResearchPipeline,
   searchTradeMemory,
@@ -502,7 +503,20 @@ export class EvolutionService {
       orderBy: { createdAt: "desc" },
       take: 20,
     });
+    const runner = probeIsolation();
     return {
+      runner: {
+        runtime: runner.runtime,
+        available: runner.available,
+        reason: runner.reason,
+        seccomp: runner.seccomp,
+        seccompDetail: runner.seccompDetail,
+        memoryEnforcement: runner.memoryEnforcement,
+        memoryMb: runner.memoryMb,
+        timeoutMs: runner.timeoutMs,
+        perBarTimeoutMs: runner.perBarTimeoutMs,
+        protocol: runner.protocol,
+      },
       runs: reports.map((row) => {
         const payload = row.payload as {
           reproducibility?: { codeHash?: string };
@@ -522,6 +536,7 @@ export class EvolutionService {
           pipelineCompleted: payload.outcomes?.PIPELINE_COMPLETED?.met === true,
           resultsMeasurable: payload.outcomes?.RESULTS_MEASURABLE?.met === true,
           deploymentEligible: payload.outcomes?.DEPLOYMENT_ELIGIBLE?.met === true,
+          sandboxEra: row.sandboxEra,
           createdAt: row.createdAt.toISOString(),
         };
       }),

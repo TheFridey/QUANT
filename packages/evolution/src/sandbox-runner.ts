@@ -308,8 +308,11 @@ export async function executeCompiledStrategy(input: {
   metadata: { strategyId: string; version: string; hypothesisId: string };
   timeoutMs?: number;
   perBarTimeoutMs?: number;
-  /** Tightening-only: false runs without a /proc mount (used to test whether Node needs it). */
-  mountProc?: boolean;
+  /**
+   * Test-only: mount /proc inside the sandbox. Strategy runs have no /proc (CI showed Node does not
+   * need it). The look-ahead test sets this to prove the streaming protocol alone defeats a memory scan.
+   */
+  mountProcForTest?: boolean;
 }): Promise<SandboxExecution> {
   const runner = probeIsolation();
   const fail = (patch: Partial<SandboxExecution> & { code: string; error: string }): SandboxExecution => ({
@@ -356,7 +359,7 @@ export async function executeCompiledStrategy(input: {
       initialState: {},
       historyLimit: 256,
     };
-    const args = bwrapArgs(work, runner, runner.seccomp === "default-deny-errno" ? seccomp : null, input.mountProc !== false);
+    const args = bwrapArgs(work, runner, runner.seccomp === "default-deny-errno" ? seccomp : null, input.mountProcForTest === true);
     const outcome = await runStreaming({
       command: "bwrap",
       args,
@@ -637,7 +640,7 @@ export function bubblewrapCiProbeArgs(): string[] {
   ];
 }
 
-function bwrapArgs(work: string, runner: RunnerConfiguration, seccomp: SeccompBinaries | null, mountProc = true): string[] {
+function bwrapArgs(work: string, runner: RunnerConfiguration, seccomp: SeccompBinaries | null, mountProc = false): string[] {
   const mounts =
     seccomp === null
       ? []
