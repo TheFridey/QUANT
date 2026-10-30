@@ -115,6 +115,17 @@ export const strategyConfigSchema = z
         ctx.addIssue({ code: "custom", path: [key], message: `Must be between ${min} and ${max}` });
       }
     }
+    // An exit cap below the entry caps would make capped exits worse than plain fills (review F4).
+    if (
+      inRange(value.maxExitImpactBps, "1", "5000") &&
+      (d(value.maxExitImpactBps).lt(value.maxSlippageBps) || d(value.maxExitImpactBps).lt(value.maxPriceImpactBps))
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["maxExitImpactBps"],
+        message: "Must be at least maxSlippageBps and maxPriceImpactBps",
+      });
+    }
     if (value.discoveryMaxPairAgeHours !== null) {
       if (!inRange(value.discoveryMaxPairAgeHours, "0.1", "8760")) {
         ctx.addIssue({
@@ -317,7 +328,9 @@ export const DEFAULT_STRATEGY: StrategyConfig = {
   maxTotalDrawdownPct: "10",
   maxPriceImpactBps: "150",
   maxExitImpactBps: "1000",
-  paperLatencyMs: 0,
+  // Measured: CI engine soak (24 pairs) median ingest-to-executor latency 706 ms, p95 905 ms,
+  // rounded up to 1 s (audit L4). Paper fills are never earlier than a real pipeline could act.
+  paperLatencyMs: 1000,
   spreadBpsEstimate: "5",
   orderExpiryMs: 60_000,
   pulseMinObservations: 5,

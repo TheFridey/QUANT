@@ -37,6 +37,17 @@ export function rollSessionEquity(input: {
 
   const sessionDay = startOfLondonDay(input.sessionStartedAt).getTime();
   const today = startOfLondonDay(input.now).getTime();
+  if (today > sessionDay && input.currentEquityUsd == null) {
+    // Never base a new day on startingBalanceUsd because marks are missing at the boundary (review F6).
+    // Keep the old session, report daily P&L unavailable (entries blocked), and roll once equity is known.
+    return {
+      sessionStartedAt: input.sessionStartedAt,
+      sessionStartEquityUsd: input.sessionStartEquityUsd,
+      highWaterMarkUsd: hwm,
+      rolled: false,
+      dailyPnlUsd: null,
+    };
+  }
   if (today > sessionDay) {
     return {
       sessionStartedAt: startOfLondonDay(input.now),

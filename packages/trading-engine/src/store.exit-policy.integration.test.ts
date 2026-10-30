@@ -129,7 +129,7 @@ describe.skipIf(!enabled)("exit execution policy and entry freshness (audit B1, 
 
     for (let round = 0; round < 20 && remainder; round += 1) {
       now = new Date(now.getTime() + 5_000);
-      await observation(now, { priceUsd: "1", liquidityUsd: "50000", ingestJobId: remainder.cycleId });
+      await observation(now, { priceUsd: "1", liquidityUsd: "50000" });
       const orderId = remainder.id;
       const settled = await prisma.$transaction(async (tx) => {
         await lockAccount(tx, accountId);
@@ -143,7 +143,9 @@ describe.skipIf(!enabled)("exit execution policy and entry freshness (audit B1, 
     expect(d(position.baseQty.toString()).toFixed(8)).toBe("0.00000000");
     const fills = await prisma.fill.findMany({ where: { order: { accountId }, side: "SELL" } });
     expect(fills.length).toBeGreaterThan(1);
-    for (const fill of fills) expect(d(fill.slippageBps.toString()).lte(d("1000.5"))).toBe(true);
+    // Recorded slippage = impact (≤ maxExitImpactBps) + half the spread estimate.
+    const ceiling = d(DEFAULT_STRATEGY.maxExitImpactBps).plus(d(DEFAULT_STRATEGY.spreadBpsEstimate).div(2)).plus("0.01");
+    for (const fill of fills) expect(d(fill.slippageBps.toString()).lte(ceiling)).toBe(true);
   });
 
   it("rejects a pending BUY whose quote ages from LIVE into DELAYED before settlement, even with DEMO entries on", async () => {
@@ -227,5 +229,63 @@ describe.skipIf(!enabled)("exit execution policy and entry freshness (audit B1, 
       "demo",
     );
     expect(demoMode.status).toBe("FILLED");
+  });
+
+  it("releases a STRATEGY exit reservation exactly once when a pending exit expires (review F3)", async () => {
+    await reset();
+    await prisma.strategyAllocation.deleteMany({ where: { accountId } });
+    await prisma.strategyInstance.deleteMany({ where: { accountId } });
+    await seedPosition("100");
+    const instance = await prisma.strategyInstance.create({
+      data: { name: "f3", version: "1", accountId, instrumentIds: [pairAddress], params: {}, budgetUsd: "1000" },
+    });
+    await prisma.strategyAllocation.create({
+      data: { accountId, strategyInstanceId: instance.id, instrumentId: pairAddress, pairAddress, qty: "100", avgCostUsd: "1" },
+    });
+    const t0 = new Date("2026-10-30T12:00:00.000Z");
+    const decision = await observation(t0, { priceUsd: "1", liquidityUsd: "1000000" });
+    const pendingExit = async (expiresInMs: number) => {
+      const clientOrderId = newId("ord");
+      const result = await prisma.$transaction(async (tx) => {
+        await lockAccount(tx, accountId);
+        return commitProposedOrder(tx, {
+          accountId,
+          cycleId: newId("cyc"),
+          order: {
+            clientOrderId,
+            pairAddress,
+            baseSymbol: "SOL",
+            side: "SELL",
+            intent: "EXIT",
+            qty: "30",
+            observationId: decision.id,
+            reasonCodes: ["ORDER_PROPOSED"],
+            ownerScope: "STRATEGY",
+            strategyInstanceId: instance.id,
+            eligibleAt: new Date(t0.getTime() + 5_000).toISOString(),
+            expiresAt: new Date(t0.getTime() + expiresInMs).toISOString(),
+          },
+          config: DEFAULT_STRATEGY,
+          mode: "live",
+          now: t0,
+        });
+      });
+      expect(result.status).toBe("PENDING");
+      return prisma.order.findUniqueOrThrow({ where: { clientOrderId } });
+    };
+    const first = await pendingExit(10_000);
+    await pendingExit(600_000);
+    const reserved = async () =>
+      d((await prisma.strategyAllocation.findFirstOrThrow({ where: { accountId, strategyInstanceId: instance.id } })).reservedExitQty.toString()).toFixed(8);
+    expect(await reserved()).toBe("60.00000000");
+    const expired = await prisma.$transaction(async (tx) => {
+      await lockAccount(tx, accountId);
+      return settlePendingOrder(tx, { accountId, orderId: first.id, config: DEFAULT_STRATEGY, mode: "live", now: new Date(t0.getTime() + 20_000), tradingEnvironment: "MARKET_DATA_PAPER" });
+    });
+    expect(expired.status).toBe("EXPIRED");
+    // Only the expired order's 30 is released; the other pending exit keeps its reservation.
+    expect(await reserved()).toBe("30.00000000");
+    await prisma.strategyAllocation.deleteMany({ where: { accountId } });
+    await prisma.strategyInstance.deleteMany({ where: { accountId } });
   });
 });

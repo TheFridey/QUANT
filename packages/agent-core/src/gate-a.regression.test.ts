@@ -136,6 +136,8 @@ describe("Gate A regressions", () => {
   it("releases in-cycle capacity after a completed sell so a later buy can size", () => {
     const config = {
       ...DEFAULT_STRATEGY,
+      // In-cycle capacity release applies to immediate fills; the 1 s default defers them.
+      paperLatencyMs: 0,
       maxPositions: 1,
       maxAggregateExposurePct: "5",
       maxPositionPctEquity: "5",

@@ -46,6 +46,7 @@ import {
   classifyFreshness,
   clientOrderIdFor,
   d,
+  DEFAULT_STRATEGY,
   freshnessFromProvenance,
   inferObservationProvenance,
   instrumentIdFromPositionKey,
@@ -110,13 +111,31 @@ export const silentBus: AgentBus = { async publish() {} };
  * gets explicit, overridable bounds. Tune with ODIN_EXECUTOR_TX_TIMEOUT_MS / _MAX_WAIT_MS.
  */
 const EXECUTOR_TRANSACTION_LIMITS = {
-  timeout: positiveIntFromEnv("ODIN_EXECUTOR_TX_TIMEOUT_MS", 20_000),
-  maxWait: positiveIntFromEnv("ODIN_EXECUTOR_TX_MAX_WAIT_MS", 10_000),
+  timeout: boundedIntFromEnv("ODIN_EXECUTOR_TX_TIMEOUT_MS", 20_000, 60_000),
+  maxWait: boundedIntFromEnv("ODIN_EXECUTOR_TX_MAX_WAIT_MS", 10_000, 30_000),
 };
 
-function positiveIntFromEnv(name: string, fallback: number): number {
+/** Positive integer from env, clamped to `max` so a typo cannot hold the account lock for minutes. */
+function boundedIntFromEnv(name: string, fallback: number, max: number): number {
   const value = Number(process.env[name]);
-  return Number.isInteger(value) && value > 0 ? value : fallback;
+  return Number.isInteger(value) && value > 0 ? Math.min(value, max) : fallback;
+}
+
+type ConfigIssue = { path: PropertyKey[]; message: string };
+
+/**
+ * Audit H1 (review F1): a stored config that fails validation is never healed or rewritten,
+ * and it never stops risk reduction. Entries are blocked (pauseNewEntries) while settlement,
+ * planned exits and protection run on DEFAULT_STRATEGY, the authoritative defaults, until the
+ * operator corrects the fields named in the CONFIG_INVALID alert.
+ */
+export function strategyConfigOrExitOnly(raw: unknown): { config: StrategyConfig; issues: ConfigIssue[] | null } {
+  try {
+    return { config: parseStrategyConfig(raw), issues: null };
+  } catch (error) {
+    const issues = (error as { issues?: ConfigIssue[] }).issues ?? [{ path: [], message: String(error) }];
+    return { config: { ...DEFAULT_STRATEGY, pauseNewEntries: true }, issues };
+  }
 }
 
 export class StageRunner {
@@ -264,7 +283,7 @@ export class StageRunner {
 
       // R05: settle/cancel pending under explicit policy FIRST, then refresh book/caps, then admit.
       const engine = await tx.engineControl.findUnique({ where: { id: "primary" } });
-      const config = parseStrategyConfig(engine?.config ?? {});
+      const { config } = strategyConfigOrExitOnly(engine?.config ?? {});
       // Local settle loop must only touch PAPER — never locally fill SANDBOX pending orders (F01).
       const pending = await tx.order.findMany({
         where: { accountId: ctx.accountId, status: "PENDING", executionMode: "PAPER" },
@@ -325,9 +344,7 @@ export class StageRunner {
             });
           }
         }
-        if (settled.status === "REJECTED" || settled.status === "EXPIRED") {
-          await releasePendingExitReservation(tx, row);
-        }
+        // Exit reservations are released inside settlePendingOrder only (review F3: no double release).
         if (settled.status === "FILLED" || settled.status === "REJECTED" || settled.status === "EXPIRED") {
           await releaseInTx(
             tx,
@@ -680,7 +697,7 @@ export class StageRunner {
             return { ok: true };
           }
           const config = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
-          const parsed = parseStrategyConfig(config?.config ?? {});
+          const parsed = strategyConfigOrExitOnly(config?.config ?? {}).config;
           const result = await this.prisma.$transaction(async (tx) => {
             await lockAccount(tx, intent.accountId);
             const protKey = intentIdempotencyKey({
@@ -981,15 +998,12 @@ export class StageRunner {
     const cycle = await db.cycleRun.findUnique({ where: { id: cycleId } });
     const engine = await db.engineControl.findUnique({ where: { id: "primary" } });
     if (!cycle || !engine) return null;
-    let config: StrategyConfig;
-    try {
-      config = parseStrategyConfig(engine.config);
-    } catch (error) {
-      // Audit H1: stored config is never healed. Name the failing fields for the operator and plan nothing.
-      const issues = (error as { issues?: Array<{ path: PropertyKey[]; message: string }> }).issues ?? [];
-      await this.persistAlert(db, configInvalidAlert(issues));
+    const resolved = strategyConfigOrExitOnly(engine.config);
+    const config = resolved.config;
+    if (resolved.issues) {
+      // Audit H1: never healed. Name the failing fields; plan exits only (entries paused) until fixed.
+      await this.persistAlert(db, configInvalidAlert(resolved.issues));
       await upsertDecision(db, cycleId, emptyDecision("CONFIG_INVALID", "Strategy configuration failed validation"));
-      return null;
     }
     const ctx =
       ctxOverride ??
@@ -1971,7 +1985,7 @@ export class StageRunner {
   private async config(): Promise<StrategyConfig> {
     const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     if (!engine) throw new Error("ENGINE_MISSING");
-    return parseStrategyConfig(engine.config);
+    return strategyConfigOrExitOnly(engine.config).config;
   }
 
   /**

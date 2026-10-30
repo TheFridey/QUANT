@@ -82,6 +82,12 @@ Older configs merge missing keys from `DEFAULT_STRATEGY`:
 | `maxTotalDrawdownPct` | `10` |
 | `maxPositions` | `4` |
 | `maxPriceImpactBps` | `150` |
+| `maxExitImpactBps` | `1000` (must be ≥ the entry caps) |
+| `paperLatencyMs` | `1000` (CI soak median ingest→executor 706 ms, rounded up) |
+
+The daily loss limit is `maxDailyLossPct` of **start-of-day equity**. The trading day rolls at **Europe/London midnight** (BST/GMT aware). A day never rolls while equity is unknown; daily P&L then reads unavailable and entries are blocked until marks return.
+
+An invalid stored config is never healed or rewritten. The worker raises a CRITICAL `CONFIG_INVALID` alert naming the failing fields, pauses entries, and keeps settling, exiting and protecting on `DEFAULT_STRATEGY` values until the operator corrects it. `scripts/report-invalid-configs.mjs` lists affected rows read-only.
 
 ## Accounting
 
@@ -90,7 +96,10 @@ Older configs merge missing keys from `DEFAULT_STRATEGY`:
 - Buy cash movement is `-(notional + fee)`. Sell cash movement is `+(notional - fee)`.
 - Fees enter the cost basis. Realized P&L is informational and does not move cash a second time.
 - Cash must equal the sum of cash-affecting ledger rows.
-- Fill price is the observed mid adjusted by participation impact and optional half-spread; rejected when impact exceeds `maxSlippageBps` / `maxPriceImpactBps`.
+- **Impact model.** DexScreener `liquidityUsd` is the whole pool, so the per-side reserve is `R = liquidityUsd / 2`. Constant-product average-price impact is `N / R` for a BUY of notional `N` and `N / (R + N)` for a SELL, floored at the former linear `N / liquidityUsd`. Fill price is mid adjusted by that impact and half the spread estimate. `Fill.slippageBps` records the realised slippage from mid (including adverse gap fills).
+- **Entries** are rejected when impact exceeds `maxSlippageBps` or `maxPriceImpactBps`; sizing caps notional at `R · min(those caps)` so a max-size entry passes.
+- **Exit execution policy.** Risk-reducing SELLs (EXIT, FLATTEN, protection closes, OPERATOR reduce) are never rejected for impact. They fill as much as stays within `maxExitImpactBps` at the modelled worse price; the rest is booked as a PENDING reduce order (`EXIT_PARTIAL_REMAINDER`, eligible immediately, normal expiry) that the next cycle's settle phase retries against a fresh quote. A STRATEGY remainder reserves its quantity first; if it cannot, nothing is booked and the next cycle plans a fresh exit. Exit reservations are released only inside `settlePendingOrder`.
+- **Known bias (documented, not corrected).** Each remainder is quoted against fresh pool liquidity that does not subtract earlier paper sells in the same chain, so a very large exit split into chunks is modelled more favourably than one real constant-product exit. Backtests share this bias, and an end-of-run liquidation above the exit cap leaves the remainder marked at mid. Partial exits add one closed-P&L entry per chunk, which inflates trade counts in win-rate statistics.
 - `clientOrderId` is unique. A retried job cannot double-fill.
 - The account row is locked with `FOR UPDATE` before a fill is applied.
 - There is no wallet, private key, or external order route. Venue is `PAPER`.

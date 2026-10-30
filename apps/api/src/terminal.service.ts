@@ -40,7 +40,7 @@ import {
   inferObservationProvenance,
   instrumentIdFromPositionKey,
   isReasonCode,
-  mergeStrategy,
+  DEFAULT_STRATEGY,
   newId,
   operatorOrderSchema,
   productSemanticsFor,
@@ -1251,19 +1251,25 @@ export class TerminalService {
     if (engine.status === "RUNNING" && strategyPatchHasNonOperationalKeys(patchRecord)) {
       throw new ConflictException("Pause the engine before changing risk limits");
     }
-    const current = parseStrategyConfig(engine.config);
+    // Audit H1 (review F1): an invalid stored config must stay fixable, so validate stored ⊕ patch
+    // rather than parsing the stored value on its own first. Missing keys come from DEFAULT_STRATEGY.
+    const stored =
+      engine.config && typeof engine.config === "object" && !Array.isArray(engine.config)
+        ? (engine.config as Record<string, unknown>)
+        : {};
+    const current: Record<string, unknown> = { ...DEFAULT_STRATEGY, ...stored };
     if (promotedPaperStrategy(engine.activeStrategy)) {
       const strategyChanged = Object.entries(parsedPatch).some(([key, value]) => {
         if (value === undefined || isOperationalStrategyKey(key)) return false;
-        const currentValue = (current as Record<string, unknown>)[key];
+        const currentValue = current[key];
         return String(currentValue) !== String(value);
       });
       if (strategyChanged) {
         throw new ConflictException("The promoted paper strategy stays unchanged until a new operator promotion");
       }
     }
-    const next = mergeStrategy(current, parsedPatch);
-    if (!d(next.startingBalanceUsd).eq(d(current.startingBalanceUsd))) {
+    const next = parseStrategyConfig({ ...stored, ...parsedPatch });
+    if (!d(next.startingBalanceUsd).eq(d(String(current.startingBalanceUsd)))) {
       await this.resetBalance(next);
     }
     const updated = await this.prisma.engineControl.update({

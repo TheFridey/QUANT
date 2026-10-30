@@ -76,7 +76,8 @@ async function gateAndQuote(
   }
   if (input.order.side === "SELL" && freshness !== "LIVE") {
     const delayedOk = freshness === "DELAYED" && input.config.allowDelayedExits;
-    const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true;
+    // Exits reduce risk: in DATA_MODE=demo they may use DEMO quotes even with DEMO entries off (review F12).
+    const demoOk = freshness === "DEMO" && (input.config.allowDemoPaperEntries === true || input.mode === "demo");
     if (!delayedOk && !demoOk) return { ok: false, reason: freshnessReason(freshness) };
   }
   const quoted = quoteFill({
@@ -108,6 +109,17 @@ async function bookExitRemainder(
   alreadyReserved: boolean,
 ): Promise<void> {
   if (d(remainderQty).lte(0)) return;
+  // Reserve before booking. If the owner cannot reserve the remainder, book nothing: the unsold
+  // quantity stays in the position and the next cycle plans a fresh exit (review F2).
+  if (!alreadyReserved && (input.order.ownerScope ?? "LEGACY") === "STRATEGY" && input.order.strategyInstanceId) {
+    const reserved = await reserveExitQty(tx, {
+      accountId: input.accountId,
+      strategyInstanceId: input.order.strategyInstanceId,
+      pairAddress: input.order.pairAddress,
+      qty: remainderQty,
+    });
+    if (!reserved.ok) return;
+  }
   const existing = await tx.order.count({ where: { clientOrderId: { startsWith: `${input.order.clientOrderId}:rem` } } });
   await tx.order.create({
     data: {
@@ -137,14 +149,6 @@ async function bookExitRemainder(
       expiresAt: new Date(input.now.getTime() + input.config.orderExpiryMs),
     },
   });
-  if (!alreadyReserved && (input.order.ownerScope ?? "LEGACY") === "STRATEGY" && input.order.strategyInstanceId) {
-    await reserveExitQty(tx, {
-      accountId: input.accountId,
-      strategyInstanceId: input.order.strategyInstanceId,
-      pairAddress: input.order.pairAddress,
-      qty: remainderQty,
-    });
-  }
 }
 
 export async function commitProposedOrder(
@@ -318,9 +322,14 @@ export async function settlePendingOrder(
       fillObservationId: fillObservation.id,
     },
   );
+  // settlePendingOrder is the only place a pending order's exit reservation is released (review F3):
+  // here for gate/quote/ledger rejections, above for expiry and missing observation.
+  if (result.status === "REJECTED" || result.status === "EXPIRED") await releasePendingExitReservation(tx, order);
+  // Report what actually filled; a capped exit fills less than requested (review F8).
+  const after = result.status === "FILLED" ? await tx.order.findUnique({ where: { id: order.id } }) : null;
   return {
     ...result,
-    filledQty: order.qty.toString(),
+    filledQty: after ? after.filledQty.toString() : order.qty.toString(),
     side: order.side as "BUY" | "SELL",
     pairAddress: order.pairAddress,
     fillObservationId: fillObservation.id,

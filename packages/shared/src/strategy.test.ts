@@ -94,4 +94,9 @@ describe("strategy config", () => {
     expect(parsed.maxTotalDrawdownPct).toBe("10");
     expect(parsed.spreadBpsEstimate).toBe("5");
   });
+
+  it("rejects an exit impact cap below the entry caps (review F4)", () => {
+    expect(() => mergeStrategy(DEFAULT_STRATEGY, { maxExitImpactBps: "100" })).toThrow(/maxSlippageBps/);
+    expect(mergeStrategy(DEFAULT_STRATEGY, { maxExitImpactBps: "150" }).maxExitImpactBps).toBe("150");
+  });
 });
