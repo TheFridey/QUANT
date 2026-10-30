@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { AnimatedValue } from "@/components/terminal/animated-value";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
-import { setToken } from "@/lib/api";
+import { signOut } from "@/lib/api";
 import { formatLondon, formatUsd } from "@/lib/format";
 import type { DataState } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -104,8 +104,7 @@ export function CommandBar() {
             size="xs"
             variant="ghost"
             onClick={() => {
-              setToken(null);
-              router.push("/login");
+              void signOut().finally(() => router.push("/login"));
             }}
           >
             Sign out

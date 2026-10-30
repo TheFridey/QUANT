@@ -76,6 +76,18 @@ describe("FX stub + named external providers", () => {
     expect(quotes.ok).toBe(true);
   });
 
+  it("Alpaca refuses localhost and plain-HTTP endpoints with credentials present (audit L5 strict allowlist)", () => {
+    for (const [baseUrl, dataUrl] of [
+      ["http://localhost:443", "https://data.alpaca.markets"],
+      ["https://127.0.0.1:443", "https://data.alpaca.markets"],
+      ["https://paper-api.alpaca.markets", "http://localhost:443"],
+      ["https://api.alpaca.markets", "https://data.alpaca.markets"],
+    ]) {
+      const provider = new AlpacaPaperProvider({ apiKeyPresent: true, apiSecretPresent: true, baseUrl, dataUrl });
+      expect(provider.readiness(), `${baseUrl} ${dataUrl}`).toBe("INVALID_CONFIGURATION");
+    }
+  });
+
   it("Alpaca without credentials reports MISSING_CREDENTIALS and refuses orders", async () => {
     const provider = new AlpacaPaperProvider({
       apiKeyPresent: false,

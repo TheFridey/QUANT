@@ -1,11 +1,11 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, setToken } from "@/lib/api";
+import { api, setToken, takeLoginNotice } from "@/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -13,6 +13,11 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setNotice(takeLoginNotice());
+  }, []);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -58,6 +63,11 @@ export default function LoginPage() {
             onChange={(event) => setPassword(event.target.value)}
           />
         </div>
+        {notice ? (
+          <p role="status" className="text-sm text-warning">
+            {notice}
+          </p>
+        ) : null}
         {error ? <p className="text-sm text-loss">{error}</p> : null}
         <Button type="submit" disabled={pending || password.length < 8} className="w-full">
           {pending ? "Authenticating…" : "Enter command centre"}

@@ -40,8 +40,9 @@ async function main(): Promise<void> {
     next();
   });
   app.useGlobalFilters(new ApiExceptionFilter());
-  await app.listen(env.apiPort, "0.0.0.0");
-  apiLog.info({ port: env.apiPort }, "odin api listening");
+  // Audit M4: loopback by default; set API_HOST (e.g. 0.0.0.0 in a container) to widen deliberately.
+  await app.listen(env.apiPort, env.apiHost);
+  apiLog.info({ host: env.apiHost, port: env.apiPort }, "odin api listening");
 }
 
 main().catch((error: unknown) => {
