@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "ask": [
+      "Edit(/packages/risk-engine/**)",
+      "Edit(/packages/trading-engine/**)",
+      "Edit(/packages/shared/src/execution-gate.ts)",
+      "Edit(/packages/shared/src/strategy.ts)",
+      "Edit(/packages/market-data/src/*venue*)",
+      "Edit(/packages/market-data/src/*broker*)",
+      "Edit(/packages/market-data/src/execution-*)",
+      "Edit(/packages/evolution/src/promotion.ts)",
+      "Edit(/.github/workflows/**)",
+      "Bash(*LIVE_MONEY*)",
+      "PowerShell(*LIVE_MONEY*)"
+    ]
+  }
+}
