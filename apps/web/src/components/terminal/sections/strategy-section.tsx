@@ -171,6 +171,11 @@ export function StrategySection() {
           minSampleTrades: Number(activeDraft.minSamples),
         }),
       });
+      // Clear dirty before refresh so the new server revision is adopted as baseline,
+      // not treated as a mid-edit conflict (which left restore fills looking "clean").
+      dirtyRef.current = false;
+      setBaselineDraft({ ...activeDraft });
+      setServerConflict(false);
       await refresh();
       setMessage("Live paper strategy config saved (engine must be paused).");
     } catch (caught) {

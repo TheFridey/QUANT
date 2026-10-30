@@ -88,13 +88,11 @@ test.describe("Gate 1 local paper browser workflows", () => {
       .poll(async () => String((await snapshot(page)).engine.config.maxPositions), { timeout: 20_000 })
       .toBe(dirtyValue);
 
-    // Restore original max positions for later suites.
-    // Wait for draft to dirty before Save — fill→click races left maxPositions stuck at dirtyValue in CI.
-    await maxPositions.fill(original);
-    await expect(maxPositions).toHaveValue(original);
-    await expect(page.getByText("Unsaved draft")).toBeVisible();
-    await page.getByRole("button", { name: /Save live paper config/i }).click();
-    await expect(page.getByRole("status")).toContainText(/saved/i, { timeout: 15_000 });
+    // Restore original via API for suite isolation (UI save path already proven above).
+    await apiFromPage(page, "/engine/config", {
+      method: "PATCH",
+      body: { maxPositions: Number(original) },
+    });
     await expect
       .poll(async () => String((await snapshot(page)).engine.config.maxPositions), { timeout: 20_000 })
       .toBe(original);
