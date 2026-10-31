@@ -2,6 +2,9 @@ import {
   ALERT_CODES,
   admitAgainstPlan,
   allocateOpportunities,
+  applyAdmissionToDecisions,
+  applyAdmissionToOutcomes,
+  parseCyclePlanSnapshot,
   assessSecurity,
   ensureDefaultStrategyInstances,
   entriesSuspendedAlert,
@@ -19,6 +22,7 @@ import {
   strategyVersionStamp,
   toPlanIntents,
   unknownAssessment,
+  type AdmissionRecord,
   type CyclePlanSnapshot,
   type DecisionDraft,
   type ProposedOrder,
@@ -380,16 +384,16 @@ export class StageRunner {
 
       endPhase("settle");
       // Refresh authoritative book after settlement (R05). This is the admission re-check, not a new plan.
-      const recheck = await this.loadPlan(cycleId, now, tx, ctx);
-      if (!recheck) return;
       // Audit F1: admit only what the stored cycle plan decided (entries never larger than planned);
-      // risk-reducing exits are always admitted. Both plan-time and admission-time are recorded.
+      // risk-reducing exits are always admitted. Admission is applied inside loadPlan, before intent
+      // outcomes are persisted and the fairness cursor moves. Both plan-time and admission-time are recorded.
       const snapshot = await this.readCyclePlan(tx, cycleId);
-      const admission = admitAgainstPlan(snapshot, { orders: recheck.plan.orders, decisions: recheck.plan.decisions });
-      const loaded = { ...recheck, plan: { ...recheck.plan, orders: admission.orders } };
+      const loaded = await this.loadPlan(cycleId, now, tx, ctx, (plan) => admitAgainstPlan(snapshot, plan));
+      if (!loaded) return;
+      const admission = loaded.admission ?? admitAgainstPlan(snapshot, loaded.plan);
       const persisted = snapshot
-        ? recheck.plan.decisions.filter((item) => item.agent === "EXECUTOR")
-        : recheck.plan.decisions.filter((item) => item.agent === "AEGIS" || item.agent === "ATLAS" || item.agent === "EXECUTOR");
+        ? loaded.plan.decisions.filter((item) => item.agent === "EXECUTOR")
+        : loaded.plan.decisions.filter((item) => item.agent === "AEGIS" || item.agent === "ATLAS" || item.agent === "EXECUTOR");
       for (const decision of persisted) {
         await upsertDecision(tx, cycleId, decision);
       }
@@ -1042,7 +1046,7 @@ export class StageRunner {
 
   private async readCyclePlan(db: PrismaClient | Prisma.TransactionClient, cycleId: string): Promise<CyclePlanSnapshot | null> {
     const row = await db.cyclePlan.findUnique({ where: { cycleId } });
-    return row ? (row.plan as unknown as CyclePlanSnapshot) : null;
+    return row ? parseCyclePlanSnapshot(row.plan) : null;
   }
 
   /** Write the cycle plan once. If another worker won the race, use the stored one. */
@@ -1074,6 +1078,7 @@ export class StageRunner {
     now: Date,
     db: PrismaClient | Prisma.TransactionClient,
     ctxOverride?: ExecutionContext,
+    admit?: (plan: { orders: ProposedOrder[]; decisions: DecisionDraft[] }) => { orders: ProposedOrder[]; records: AdmissionRecord[] },
   ) {
     const cycle = await db.cycleRun.findUnique({ where: { id: cycleId } });
     const engine = await db.engineControl.findUnique({ where: { id: "primary" } });
@@ -1300,7 +1305,7 @@ export class StageRunner {
     // D15: MarketSelection governs new automatic ENTRY; open holdings still refresh/monitor.
     const selectionRows = await db.marketSelection.findMany();
     const marketEntryEnabled = marketSelectionMap(selectionRows);
-    const plan = planCycle({
+    const planned = planCycle({
       cycleId,
       accountId: ctx.accountId,
       engineStatus: engine.status as PlanStatus,
@@ -1329,6 +1334,15 @@ export class StageRunner {
       marketEntryEnabled,
       now,
     });
+    const admission = admit ? admit(planned) : null;
+    const plan = admission
+      ? {
+          ...planned,
+          orders: admission.orders,
+          decisions: applyAdmissionToDecisions(planned.decisions, admission.records),
+          intentOutcomes: applyAdmissionToOutcomes(planned.intentOutcomes, admission),
+        }
+      : planned;
     // Fairness cursor advances only on actually admitted entries (not rejected/deferred).
     const admittedEntryIds = plan.intentOutcomes
       .filter((o) => o.status === "ADMITTED" && o.action === "ENTER" && o.strategyInstanceId)
@@ -1396,6 +1410,7 @@ export class StageRunner {
       activeStrategy,
       marks,
       plan,
+      admission,
       instances,
       instanceAvailable,
     };

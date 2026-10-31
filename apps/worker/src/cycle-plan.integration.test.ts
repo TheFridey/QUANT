@@ -1,4 +1,4 @@
-import { DEFAULT_STRATEGY } from "@odin/shared";
+import { DEFAULT_STRATEGY, ENTRY_BLOCKING_SAFETY_CODES } from "@odin/shared";
 import { ensureFoundation } from "@odin/shared/bootstrap";
 import { PrismaClient, toJson } from "@odin/shared/db";
 import type { CyclePlanSnapshot } from "@odin/agent-core";
@@ -67,18 +67,20 @@ describe.skipIf(!enabled)("single plan per cycle (audit F1)", () => {
     await prisma.$disconnect();
   });
 
-  async function runCycle(advanceBeforeExecutorMs: number) {
+  async function runCycle(advanceBeforeExecutorMs: number, hooks: { beforePlan?: () => Promise<void>; beforeExecutor?: () => Promise<void> } = {}) {
     await prisma.cycleRun.updateMany({ where: { status: "RUNNING" }, data: { status: "FAILED", error: "TEST_RESET" } });
     clock = new Date();
     const runner = new StageRunner(prisma, feed, silentBus, "live", () => clock);
     const ingested = await runner.ingest({ trigger: `cycle-plan-${advanceBeforeExecutorMs}` });
     expect(ingested.skipped).toBe(false);
     const cycleId = ingested.cycleId;
+    await hooks.beforePlan?.();
     await runner.sentinel(cycleId);
     await runner.pulse(cycleId);
     await runner.aegis(cycleId);
     await runner.atlas(cycleId);
     clock = new Date(clock.getTime() + advanceBeforeExecutorMs);
+    await hooks.beforeExecutor?.();
     await runner.executor(cycleId);
     const row = await prisma.cyclePlan.findUniqueOrThrow({ where: { cycleId } });
     return { cycleId, snapshot: row.plan as unknown as CyclePlanSnapshot };
@@ -99,6 +101,38 @@ describe.skipIf(!enabled)("single plan per cycle (audit F1)", () => {
     for (const order of entries) expect(plannedIds.has(order.clientOrderId), order.clientOrderId).toBe(true);
   }
 
+  // Runs first: it needs a flat book, and leaves it flat.
+  it("does not execute an entry that appeared only at admission, and records it as not planned", async () => {
+    const code = ENTRY_BLOCKING_SAFETY_CODES[0]!;
+    const { cycleId, snapshot } = await runCycle(0, {
+      // Entries are suspended while the plan is made, and the suspension clears before the executor.
+      beforePlan: async () => {
+        await prisma.accountSafetyState.create({ data: { accountId: "primary", code, status: "ACTIVE" } });
+      },
+      beforeExecutor: async () => {
+        await prisma.accountSafetyState.update({
+          where: { accountId_code: { accountId: "primary", code } },
+          data: { status: "RESOLVED", resolvedAt: new Date() },
+        });
+      },
+    });
+    expect(snapshot.orders.filter((order) => order.side === "BUY")).toEqual([]);
+    expect(await prisma.order.count({ where: { cycleId, side: "BUY" } })).toBe(0);
+    const admission = await prisma.agentDecision.findFirstOrThrow({ where: { cycleId, agent: "EXECUTOR", pairAddress: "(admission)" } });
+    const records = (admission.output as { records: Array<{ result: string; side: string; clientOrderId: string }> }).records;
+    const unplanned = records.filter((row) => row.side === "BUY");
+    expect(unplanned.length).toBeGreaterThan(0);
+    expect(unplanned.every((row) => row.result === "NOT_IN_PLAN")).toBe(true);
+    // The audit trail matches what happened: no ADMITTED intent and no ACT executor row for the dropped entry.
+    const intents = await prisma.tradeIntent.findMany({ where: { cycleId, clientOrderId: { in: unplanned.map((row) => row.clientOrderId) } } });
+    expect(intents.filter((row) => row.status === "ADMITTED")).toEqual([]);
+    const executorRow = await prisma.agentDecision.findFirstOrThrow({ where: { cycleId, agent: "EXECUTOR", pairAddress } });
+    expect(executorRow.decision).toBe("REJECT");
+    expect(executorRow.reasonCodes).toContain("NOT_IN_CYCLE_PLAN");
+    const runtime = (await prisma.engineControl.findUniqueOrThrow({ where: { id: "primary" } })).runtimeState as { fairnessCursor?: string | null } | null;
+    expect(runtime?.fairnessCursor ?? null).toBeNull();
+  });
+
   it("executes the planned entry when nothing changes between stages", async () => {
     const { cycleId, snapshot } = await runCycle(0);
     expect(snapshot.orders.some((order) => order.side === "BUY")).toBe(true);
@@ -118,6 +152,8 @@ describe.skipIf(!enabled)("single plan per cycle (audit F1)", () => {
     for (const record of output.records.filter((row) => row.side === "BUY")) {
       expect(["ADMITTED", "ADMITTED_REDUCED", "REJECTED_AT_ADMISSION"]).toContain(record.result);
     }
+    // A quote older than liveMaxAgeMs at admission must not fill a new entry.
+    expect(await prisma.order.count({ where: { cycleId, side: "BUY", status: "FILLED" } })).toBe(0);
     const input = admission.input as { planTime: string; admissionTime: string };
     expect(Date.parse(input.admissionTime) - Date.parse(input.planTime)).toBeGreaterThanOrEqual(DEFAULT_STRATEGY.liveMaxAgeMs);
   });
