@@ -46,7 +46,7 @@ export function AgentsSection() {
                   <div>
                     {row?.durationMs != null ? `${row.durationMs}ms` : "—"} · {row?.inputSource ?? "—"}
                   </div>
-                  <div className="truncate text-loss/80">{row?.reasonCodes.some((code) => /FAIL|ERROR|BLOCK|REJECT/i.test(code)) ? row.reasonCodes[0] : "No errors"}</div>
+                  <div className="truncate text-loss">{row?.reasonCodes.some((code) => /FAIL|ERROR|BLOCK|REJECT/i.test(code)) ? row.reasonCodes[0] : "No errors"}</div>
                 </div>
                 {previous?.decision && row?.decision ? (
                   <div className="mt-2 h-0.5 overflow-hidden rounded bg-border">
@@ -65,7 +65,7 @@ export function AgentsSection() {
         {snapshot.decisions.length === 0 ? (
           <EmptyState title="No decisions in the latest cycle" detail="Start the engine to run the agent pipeline." />
         ) : (
-          <div className="overflow-auto">
+          <div className="overflow-auto" role="region" aria-label="Scrollable table" tabIndex={0}>
             <table className="w-full min-w-[720px] text-left text-xs">
               <thead className="sticky top-0 bg-card text-[10px] uppercase tracking-[0.12em] text-muted">
                 <tr className="border-b border-border">

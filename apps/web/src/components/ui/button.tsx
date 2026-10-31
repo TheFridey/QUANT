@@ -10,7 +10,8 @@ const buttonVariants = cva(
       variant: {
         default: "bg-primary text-primary-foreground hover:brightness-110",
         outline: "border border-border bg-transparent hover:bg-white/5",
-        danger: "bg-destructive text-white hover:brightness-110",
+        // Dark text on the destructive red meets WCAG AA contrast (white was ~2.9:1).
+        danger: "bg-destructive text-background font-semibold hover:brightness-110",
         ghost: "hover:bg-white/5",
         warning: "border border-warning/40 bg-warning/10 text-warning hover:bg-warning/15",
       },

@@ -169,7 +169,10 @@ export type Snapshot = {
   venue: "PAPER";
   execution?: {
     mode: "PAPER" | "SANDBOX" | "REFUSED" | string;
-    liveAllowed: boolean;
+    /** The PAPER/SANDBOX execution gate passed. Not live trading. */
+    executionGateOk: boolean;
+    /** Always false: live money is not wired in this build. */
+    liveEnabled: false;
     refuseReason: string | null;
     pauseNewEntries: boolean;
     allowDemoPaperEntries: boolean;
@@ -281,7 +284,7 @@ export type Snapshot = {
     filled: number;
     rejected: number;
     dropped: number;
-    families?: Array<{ family: string; count: number }>;
+    families?: Array<{ family: string; count: number; label?: string; action?: string }>;
     decisiveBlocks: Array<{ agent: string; pairAddress: string; reasonCodes: string[] }>;
     note: string;
   };
@@ -353,6 +356,10 @@ export type Snapshot = {
     highWaterMarkUsd?: string | null;
     availableFundsUsd?: string;
     exposureUsd?: string | null;
+    /** Equity minus start-of-day equity; null when marks are incomplete. */
+    dayPnlUsd?: string | null;
+    /** maxAggregateExposurePct of current equity. */
+    openRiskCapUsd?: string | null;
     currentDrawdownPct?: string | null;
     largestGainUsd?: string | null;
     largestLossUsd?: string | null;

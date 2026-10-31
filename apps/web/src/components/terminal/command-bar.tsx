@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,10 +44,11 @@ export function CommandBar() {
 
   return (
     <>
-      <header className="panel z-20 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-3 py-2">
+      {/* UI item 14: compact sticky header on small screens. */}
+      <header className="panel sticky top-0 z-20 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-3 py-2">
         <div className="min-w-[150px]">
           <div className="text-sm font-semibold tracking-[0.08em]">ODIN // QUANT</div>
-          <div className="text-[10px] uppercase tracking-[0.16em] text-muted">Command centre · London {clock}</div>
+          <div className="hidden text-[10px] uppercase tracking-[0.16em] text-muted sm:block">Command centre · London {clock}</div>
         </div>
 
         <Badge className="border-primary/40 text-primary">{mode}</Badge>
@@ -62,18 +63,24 @@ export function CommandBar() {
           {snapshot.engine.status}
         </Badge>
 
-        <StatusPill label="Socket" value={socketState} ok={socketOk} />
-        <StatusPill label="Market" value={marketLive ? "live quotes" : (dataState ?? "no data").toLowerCase()} ok={marketLive} />
-        <StatusPill
-          label="Refresh"
-          value={refreshAgeMs == null ? "—" : refreshAgeMs < 1500 ? "just now" : `${Math.round(refreshAgeMs / 1000)}s ago`}
-          ok={refreshAgeMs != null && refreshAgeMs < 15_000}
-        />
-        <StatusPill label="Agents" value={`${agentActive}/6`} ok={agentActive > 0} />
-        <StatusPill
-          label="Cycle"
-          value={snapshot.cycle ? `${snapshot.cycle.stage}` : "idle"}
-          ok={snapshot.cycle?.status === "COMPLETE" || snapshot.cycle?.status === "RUNNING"}
+        {/* UI item 5: one health pill; the individual checks are in its tooltip and in Settings. */}
+        <HealthPill
+          checks={[
+            { label: "Live connection", value: socketState, ok: socketOk },
+            { label: "Market data", value: marketLive ? "live quotes" : (dataState ?? "no data").toLowerCase(), ok: marketLive },
+            {
+              label: "Last refresh",
+              value: refreshAgeMs == null ? "—" : refreshAgeMs < 1500 ? "just now" : `${Math.round(refreshAgeMs / 1000)}s ago`,
+              ok: refreshAgeMs != null && refreshAgeMs < 15_000,
+            },
+            { label: "Agents reporting", value: `${agentActive} of 6`, ok: agentActive > 0 },
+            {
+              label: "Cycle",
+              value: snapshot.cycle ? `${snapshot.cycle.stage}` : "idle",
+              ok: snapshot.cycle?.status === "COMPLETE" || snapshot.cycle?.status === "RUNNING",
+            },
+            { label: "Redis", value: snapshot.health?.redis ?? "unknown", ok: snapshot.health?.redis === "up" },
+          ]}
         />
 
         <div className="mono ml-auto text-right">
@@ -82,12 +89,25 @@ export function CommandBar() {
             className="text-base"
             value={snapshot.portfolio.equityUsd === null ? "Incomplete marks" : formatUsd(snapshot.portfolio.equityUsd)}
           />
-          <div className="text-[10px] text-muted">
+          <div className="hidden text-[10px] text-muted sm:block">
             Cash {formatUsd(snapshot.portfolio.cashUsd)} · {snapshot.portfolio.valuation}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex items-center gap-1.5 md:hidden">
+          <HeaderMenu
+            label="Engine"
+            items={[
+              { label: "Start", disabled: !can("start"), onSelect: () => void control("/engine/start") },
+              { label: "Pause", disabled: !can("pause"), onSelect: () => void control("/engine/pause") },
+              { label: "Resume", disabled: !can("resume"), onSelect: () => void control("/engine/resume") },
+            ]}
+          />
+          <Button size="xs" variant="danger" disabled={!can("emergency_stop")} onClick={() => setEmergencyOpen(true)}>
+            Emergency stop
+          </Button>
+        </div>
+        <div className="hidden flex-wrap items-center gap-1.5 md:flex">
           <Button size="xs" disabled={!can("start")} onClick={() => void control("/engine/start")}>
             Start
           </Button>
@@ -100,15 +120,21 @@ export function CommandBar() {
           <Button size="xs" variant="danger" disabled={!can("emergency_stop")} onClick={() => setEmergencyOpen(true)}>
             Emergency stop
           </Button>
-          <Button
-            size="xs"
-            variant="ghost"
-            onClick={() => {
-              void signOut().finally(() => router.push("/login"));
-            }}
-          >
-            Sign out
-          </Button>
+        </div>
+        {/* UI item 8: Sign out lives in the account menu so Emergency stop stands alone. It revokes the
+            session server-side first (audit M5). */}
+        <div className="flex items-center">
+          <HeaderMenu
+            label="Account"
+            items={[
+              {
+                label: "Sign out",
+                onSelect: () => {
+                  void signOut().finally(() => router.push("/login"));
+                },
+              },
+            ]}
+          />
         </div>
       </header>
       {error ? <div className="border-b border-loss/40 bg-loss/10 px-3 py-1.5 text-xs text-loss">{error}</div> : null}
@@ -149,14 +175,71 @@ export function CommandBar() {
   );
 }
 
-function StatusPill({ label, value, ok }: { label: string; value: string; ok: boolean }) {
+function HealthPill({ checks }: { checks: Array<{ label: string; value: string; ok: boolean }> }) {
+  const failing = checks.filter((check) => !check.ok);
+  const healthy = failing.length === 0;
+  const detail = checks.map((check) => `${check.ok ? "OK" : "!!"} ${check.label}: ${check.value}`).join("\n");
   return (
-    <div className="hidden items-center gap-2 rounded border border-border px-2 py-1 md:flex">
-      <span className={cn("h-1.5 w-1.5 rounded-full", ok ? "bg-profit animate-odin-pulse" : "bg-loss")} />
-      <div>
-        <div className="text-[9px] uppercase tracking-[0.14em] text-muted">{label}</div>
-        <div className="text-[11px]">{value}</div>
-      </div>
+    <div
+      title={detail}
+      className={cn(
+        "flex items-center gap-2 rounded border px-2.5 py-1 text-[11px]",
+        healthy ? "border-profit/40 text-profit" : "border-warning/50 text-warning",
+      )}
+    >
+      <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", healthy ? "bg-profit" : "bg-warning")} />
+      {healthy ? "All systems normal" : `${failing.length} ${failing.length === 1 ? "check needs" : "checks need"} attention`}
+      <span className="sr-only">{detail}</span>
+    </div>
+  );
+}
+
+/** Small disclosure menu for the header (account actions; engine controls on mobile). */
+function HeaderMenu({
+  label,
+  items,
+}: {
+  label: string;
+  items: Array<{ label: string; disabled?: boolean; onSelect: () => void }>;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent ? event.key === "Escape" : !root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  return (
+    <div ref={root} className="relative">
+      <Button size="xs" variant="ghost" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        {label}
+      </Button>
+      {open ? (
+        <div role="menu" className="absolute right-0 z-30 mt-1 min-w-36 rounded border border-border bg-panel p-1 shadow-lg">
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              className="w-full rounded px-3 py-1.5 text-left text-xs hover:bg-white/5 focus-visible:bg-white/5 disabled:cursor-not-allowed disabled:text-muted"
+              onClick={() => {
+                setOpen(false);
+                item.onSelect();
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

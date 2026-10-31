@@ -6,7 +6,7 @@ import { EquityChart } from "@/components/terminal/equity-chart";
 import { EmptyState, Metric, Panel } from "@/components/terminal/panel";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { api } from "@/lib/api";
-import { formatPct, formatUsd, signedClass } from "@/lib/format";
+import { formatDrawdown, formatPct, formatUsd, signedClass } from "@/lib/format";
 import type { EquityHistory } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -51,12 +51,8 @@ export function PortfolioSection({ showChart = true }: { showChart?: boolean }) 
         <Stat label="Total return" value={formatPct(p.returnPct)} className={signedClass(p.returnPct)} />
         <Stat label="Exposure" value={formatUsd(p.exposureUsd ?? null)} />
         <Stat
-          label="Drawdown"
-          value={
-            p.currentDrawdownPct ?? p.maxDrawdownPct
-              ? `${Number(p.currentDrawdownPct ?? p.maxDrawdownPct).toFixed(2)}%`
-              : "—"
-          }
+          label="Drawdown (below HWM)"
+          value={formatDrawdown(p.currentDrawdownPct ?? p.maxDrawdownPct ?? null)}
           className="text-loss"
         />
         <Stat label="Starting capital" value={formatUsd(p.startingBalanceUsd)} />

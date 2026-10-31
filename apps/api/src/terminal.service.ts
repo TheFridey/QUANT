@@ -74,6 +74,23 @@ export class TerminalService {
     @InjectQueue(QUEUES.ingest) private readonly ingest: Queue,
   ) {}
 
+  /** Ping Redis over the ingest queue's existing client; no new connection per snapshot. */
+  private async queueRedisUp(): Promise<boolean> {
+    try {
+      const client = await Promise.race([
+        this.ingest.client,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("REDIS_TIMEOUT")), 1_000)),
+      ]);
+      const reply = await Promise.race([
+        (client as unknown as { ping(): Promise<string> }).ping(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("REDIS_TIMEOUT")), 1_000)),
+      ]);
+      return reply === "PONG";
+    } catch {
+      return false;
+    }
+  }
+
   async health(redisPing: () => Promise<boolean>) {
     const postgres = await this.pingPostgres();
     const redis = await redisPing();
@@ -482,7 +499,9 @@ export class TerminalService {
       whyNoTrades,
       execution: {
         mode: executionMode,
-        liveAllowed: liveGate.ok,
+        // UI bug 2: this is "the execution gate passed" (PAPER or SANDBOX), never "live trading allowed".
+        executionGateOk: liveGate.ok,
+        liveEnabled: false,
         refuseReason: liveGate.ok ? null : liveGate.reason,
         pauseNewEntries: config?.pauseNewEntries === true,
         allowDemoPaperEntries: config?.allowDemoPaperEntries === true,
@@ -637,6 +656,15 @@ export class TerminalService {
         highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,
         availableFundsUsd: account.cashUsd.toString(),
         exposureUsd,
+        // UI item 5: lead the Overview with day P&L and open risk against its cap.
+        dayPnlUsd:
+          account.sessionStartEquityUsd && report.valuation.equityUsd !== null
+            ? usd(d(report.valuation.equityUsd).minus(d(account.sessionStartEquityUsd.toString())))
+            : null,
+        openRiskCapUsd:
+          config && report.valuation.equityUsd !== null
+            ? usd(d(report.valuation.equityUsd).mul(d(config.maxAggregateExposurePct)).div(100))
+            : null,
         currentDrawdownPct: drawdownPct,
         largestGainUsd,
         largestLossUsd,
@@ -767,7 +795,8 @@ export class TerminalService {
       watchlist: await this.watchlist(pairs, decisions),
       health: {
         postgres: "up",
-        redis: "unknown",
+        // UI bug 3: report Redis from the queue's own connection instead of a hard-coded "unknown".
+        redis: (await this.queueRedisUp()) ? "up" : "down",
         engine: engineRow.status,
         dataState: worst(states),
         venue: "PAPER" as const,
@@ -1192,14 +1221,18 @@ export class TerminalService {
       orderBy: { receivedAt: "asc" },
       take: 300,
     });
-    const points: Array<{ time: number; priceUsd: string }> = [];
+    // UI item 10: carry 5-minute volume so the chart can show it under price.
+    const points: Array<{ time: number; priceUsd: string; volumeUsd: string | null }> = [];
     for (const row of rows) {
       if (!row.priceUsd) continue;
       const time = Math.floor(row.receivedAt.getTime() / 1000);
       const priceUsd = row.priceUsd.toString();
+      const volumeUsd = row.volume5mUsd?.toString() ?? null;
       const previous = points.at(-1);
-      if (previous && previous.time === time) previous.priceUsd = priceUsd;
-      else points.push({ time, priceUsd });
+      if (previous && previous.time === time) {
+        previous.priceUsd = priceUsd;
+        previous.volumeUsd = volumeUsd;
+      } else points.push({ time, priceUsd, volumeUsd });
     }
     return { pairAddress, points };
   }

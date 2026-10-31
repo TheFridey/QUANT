@@ -37,7 +37,7 @@ export const SECTIONS: SectionDef[] = [
   { id: "backtesting", label: "Backtesting", group: "Strategies", shortLabel: "Backtest" },
   { id: "risk", label: "Risk Management", group: "Strategies", shortLabel: "Risk" },
   { id: "capacity", label: "Capacity & Allocations", group: "Strategies", shortLabel: "Capacity" },
-  { id: "research", label: "AI Research Centre", group: "Research", shortLabel: "Centre" },
+  { id: "research", label: "Research", group: "Research", shortLabel: "Research" },
   { id: "operations", label: "Research Operations", group: "Research", shortLabel: "Ops" },
   { id: "forge", label: "FORGE Monitor", group: "Research", shortLabel: "FORGE" },
   { id: "genome", label: "Strategy Evolution", group: "Research", shortLabel: "Genome" },
@@ -63,6 +63,29 @@ export function groupForSection(id: TerminalSection): NavGroup {
   return SECTIONS.find((section) => section.id === id)?.group ?? "Desk";
 }
 
+/**
+ * UI item 13: the seven research views are tabs of one Research page. Their old URLs
+ * (/terminal/forge etc.) redirect to /terminal/research?tab=… (next.config.ts).
+ */
+export const RESEARCH_TABS = [
+  { id: "research", label: "Centre" },
+  { id: "operations", label: "Operations" },
+  { id: "forge", label: "FORGE" },
+  { id: "genome", label: "Evolution" },
+  { id: "integrity", label: "Data integrity" },
+  { id: "confidence", label: "Confidence" },
+  { id: "memory", label: "Memory" },
+] as const;
+
+export type ResearchTab = (typeof RESEARCH_TABS)[number]["id"];
+
+export function parseResearchTab(value: string | null | undefined): ResearchTab {
+  return RESEARCH_TABS.find((tab) => tab.id === value)?.id ?? "research";
+}
+
+/** Navigation entries: research sub-views are reached through the Research page's tabs. */
 export function sectionsInGroup(group: NavGroup): SectionDef[] {
-  return SECTIONS.filter((section) => section.group === group);
+  return SECTIONS.filter(
+    (section) => section.group === group && (section.group !== "Research" || section.id === "research"),
+  );
 }

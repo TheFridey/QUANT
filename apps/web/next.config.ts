@@ -11,6 +11,14 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:4318",
   },
+  // UI item 13: former research sub-pages are tabs of /terminal/research; keep their links working.
+  async redirects() {
+    return ["operations", "forge", "genome", "integrity", "confidence", "memory"].map((tab) => ({
+      source: `/terminal/${tab}`,
+      destination: `/terminal/research?tab=${tab}`,
+      permanent: false,
+    }));
+  },
 };
 
 export default nextConfig;

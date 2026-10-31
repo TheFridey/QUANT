@@ -38,7 +38,8 @@ test.describe("Gate 1 local paper browser workflows", () => {
     await page.getByRole("button", { name: /^Resume$/ }).click();
     await expect.poll(async () => (await snapshot(page)).engine.status).toBe("RUNNING");
 
-    await page.getByRole("button", { name: /Sign out/i }).click();
+    await page.getByRole("button", { name: /^Account$/ }).click();
+    await page.getByRole("menuitem", { name: /Sign out/i }).click();
     await expect(page.getByRole("heading", { name: "ODIN // QUANT" })).toBeVisible();
     await expect(page).toHaveURL(/\/login/);
   });
@@ -116,9 +117,12 @@ test.describe("Gate 1 local paper browser workflows", () => {
   test("signal/rejection reasons surface on overview and risk", async ({ page }) => {
     await login(page);
     await page.goto("/terminal");
-    await expect(page.getByText("Why no trades").first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText("Why blocked").first()).toBeVisible();
+    // UI item 5: the Overview leads with the desk summary; "why no trades" shows there while flat,
+    // and the block diagnostics live on the Risk page (checked below).
+    await expect(page.getByText("Desk summary").first()).toBeVisible({ timeout: 20_000 });
     const snap = await snapshot(page);
+    const flat = !snap.portfolio.positions.some((position) => Number(position.baseQty) > 0);
+    if (flat) await expect(page.getByText("Why no trades").first()).toBeVisible();
     const hasSignalEvidence =
       (snap.whyNoTrades?.decisiveBlocks?.length ?? 0) > 0 ||
       (snap.whyNoTrades?.families?.length ?? 0) > 0 ||
@@ -161,13 +165,16 @@ test.describe("Gate 1 local paper browser workflows", () => {
     await page.goto("/terminal/trading");
     await expect(page.getByText("Paper ticket")).toBeVisible();
     await page.getByRole("button", { name: new RegExp(`^${pair.baseSymbol}\\b`) }).first().click();
-    await page.getByLabel("Notional USD").fill("50");
-    await expect(page.getByText("Est. qty")).toBeVisible();
-    await expect(page.getByText("Est. fees")).toBeVisible();
+    await page.getByLabel("Notional (USD)").fill("50");
 
-    const buy = page.getByRole("button", { name: /^Buy$/ });
-    await expect(buy).toBeEnabled({ timeout: 30_000 });
-    await buy.click();
+    // UI item 9: review step shows the estimate before the buy is confirmed.
+    const review = page.getByRole("button", { name: /^Review buy$/ });
+    await expect(review).toBeEnabled({ timeout: 30_000 });
+    await review.click();
+    await expect(page.getByText("Est. fees")).toBeVisible();
+    await expect(page.getByText("Loss if stopped")).toBeVisible();
+    await expect(page.getByText("Open risk after trade")).toBeVisible();
+    await page.getByRole("button", { name: /^Confirm buy$/ }).click();
 
     await expect(page.getByText(/Pending|COMPLETE|FILLED|Order|cycle|cyc_/i).first()).toBeVisible({
       timeout: 20_000,
@@ -201,12 +208,15 @@ test.describe("Gate 1 local paper browser workflows", () => {
     await page.goto("/terminal/positions");
     await expect(page.getByText("Open positions")).toBeVisible();
     await expect(page.getByText(pair.baseSymbol).first()).toBeVisible();
-    await expect(page.getByText(/PROTECTED|UNPROTECTED|Recovery|Exit/i).first()).toBeVisible();
+    await expect(page.getByText(/Stop confirmed|Stop held|Stop set|No stop|Stop status|Recovery|Exit/i).first()).toBeVisible();
 
     const orderIdsAfterBuy = new Set(afterBuy.orders.map((order) => order.id));
     const closeBtn = page.getByRole("button", { name: /^Close$/ }).first();
     await expect(closeBtn).toBeEnabled();
     await closeBtn.click();
+    // UI item 11: closing asks for confirmation with estimated proceeds and slippage.
+    await expect(page.getByText("Est. proceeds")).toBeVisible();
+    await page.getByRole("button", { name: /^Confirm close$/ }).click();
     await expect
       .poll(async () => {
         const snap = await snapshot(page);
@@ -278,7 +288,7 @@ test.describe("Gate 1 local paper browser workflows", () => {
     const keyboardTargets = [
       page.getByRole("button", { name: /^Pause$/ }),
       page.getByRole("button", { name: /^Resume$/ }),
-      page.getByRole("button", { name: /Sign out/i }),
+      page.getByRole("button", { name: /^Account$/ }),
     ];
     let focused = false;
     for (const target of keyboardTargets) {
@@ -294,7 +304,7 @@ test.describe("Gate 1 local paper browser workflows", () => {
 
     // Disconnect / reconnect (offline kills socket; polling may continue)
     await page.goto("/terminal/settings");
-    const socketRow = page.locator("div.flex.justify-between").filter({ hasText: "API socket" });
+    const socketRow = page.locator("div.flex.justify-between").filter({ hasText: "Live connection" });
     await expect(socketRow).toBeVisible();
     await context.setOffline(true);
     await expect(socketRow.getByText(/down|error|connecting/i)).toBeVisible({ timeout: 20_000 });
@@ -305,7 +315,7 @@ test.describe("Gate 1 local paper browser workflows", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/terminal");
     await expect(page.getByRole("tablist", { name: "Nav groups" })).toBeVisible();
-    await page.getByRole("tab", { name: "Orders & Positions" }).click();
+    await page.getByRole("tab", { name: "Orders" }).click();
     await expect(page.getByRole("link", { name: "Ticket" })).toBeVisible();
     await page.getByRole("link", { name: "Ticket" }).click();
     await expect(page.getByText("Paper ticket").first()).toBeVisible();

@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+"use client";
+
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export function Panel({
@@ -22,8 +24,39 @@ export function Panel({
           {extra ? <div className="text-[11px] text-muted">{extra}</div> : null}
         </header>
       ) : null}
-      <div className={cn("min-h-0 flex-1 overflow-auto scroll-thin", bodyClassName)}>{children}</div>
+      <ScrollBody className={bodyClassName} label={title}>
+        {children}
+      </ScrollBody>
     </section>
+  );
+}
+
+/**
+ * Panel body that joins the tab order only while its content overflows, so keyboard users can
+ * scroll it (axe scrollable-region-focusable) without adding a tab stop to every panel.
+ */
+function ScrollBody({ className, label, children }: { className?: string; label?: string; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [scrollable, setScrollable] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const check = () =>
+      setScrollable(element.scrollHeight > element.clientHeight + 1 || element.scrollWidth > element.clientWidth + 1);
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(element);
+    for (const child of Array.from(element.children)) observer.observe(child);
+    return () => observer.disconnect();
+  }, [children]);
+  return (
+    <div
+      ref={ref}
+      className={cn("min-h-0 flex-1 overflow-auto scroll-thin", className)}
+      {...(scrollable ? { tabIndex: 0, role: "region", "aria-label": label ?? "Scrollable panel" } : {})}
+    >
+      {children}
+    </div>
   );
 }
 

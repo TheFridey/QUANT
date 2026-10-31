@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, apiBase, token } from "@/lib/api";
+import { formatDrawdown } from "@/lib/format";
 
 type StrategyVersion = {
   id: string;
@@ -318,7 +319,7 @@ export function BacktestingSection() {
                 <Metric label="Sample size" value={String(detail.metrics?.sampleSize ?? "null")} />
                 <Metric label="Return %" value={String(detail.metrics?.returnPct ?? "null")} />
                 <Metric label="Profit factor" value={String(detail.metrics?.profitFactor ?? "null")} />
-                <Metric label="Max DD %" value={String(detail.metrics?.maxDrawdownPct ?? "null")} />
+                <Metric label="Max drawdown" value={formatDrawdown(detail.metrics?.maxDrawdownPct != null ? String(detail.metrics.maxDrawdownPct) : null)} />
                 <Metric label="Sample gate" value={String(detail.validation?.sampleGate?.label ?? "null")} />
                 <Metric label="OOS return %" value={String(detail.validation?.test?.returnPct ?? "null")} />
                 <Metric label="Monte Carlo" value={String(detail.validation?.monteCarlo?.label ?? "null")} />

@@ -50,6 +50,8 @@ export function Sidebar({ active }: { active: TerminalSection }) {
   );
 }
 
+const MOBILE_GROUP_LABEL: Partial<Record<NavGroup, string>> = { "Orders & Positions": "Orders" };
+
 export function MobileNav({ active }: { active: TerminalSection }) {
   const activeGroup = groupForSection(active);
   const [openGroup, setOpenGroup] = useState<NavGroup>(activeGroup);
@@ -61,7 +63,8 @@ export function MobileNav({ active }: { active: TerminalSection }) {
 
   return (
     <div className="border-b border-border md:hidden">
-      <div className="flex gap-1 overflow-x-auto scroll-thin px-2 pt-2" role="tablist" aria-label="Nav groups">
+      {/* UI item 14: wrap the group strip instead of clipping labels off-screen. */}
+      <div className="flex flex-wrap gap-1 px-2 pt-2" role="tablist" aria-label="Nav groups">
         {NAV_GROUPS.map((group) => {
           const selected = openGroup === group;
           const containsActive = groupForSection(active) === group;
@@ -81,7 +84,7 @@ export function MobileNav({ active }: { active: TerminalSection }) {
                     : "border-border text-muted",
               )}
             >
-              {group}
+              {MOBILE_GROUP_LABEL[group] ?? group}
             </button>
           );
         })}

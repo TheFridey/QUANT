@@ -16,7 +16,8 @@ test("sign out revokes the session server-side so the old token gets 401 (audit 
   const before = await request.get(`${API_BASE}/api/terminal/snapshot`, { headers: { authorization: `Bearer ${oldToken}` } });
   expect(before.status()).toBe(200);
 
-  await page.getByRole("button", { name: /Sign out/i }).click();
+  await page.getByRole("button", { name: /^Account$/ }).click();
+  await page.getByRole("menuitem", { name: /Sign out/i }).click();
   await expect(page).toHaveURL(/\/login/);
   expect(await page.evaluate(() => sessionStorage.getItem("odin_token"))).toBeNull();
 
