@@ -330,6 +330,36 @@ describe("§5 attributed concurrent intents", () => {
     expect(exitOk.orders.some((o) => o.side === "SELL")).toBe(true);
   });
 
+  it("instance ENTER on a pair quoted in a non-allowlisted token is rejected (QUOTE_NOT_ALLOWED)", () => {
+    // Shape of a live 2026-10-31 observation: HELL quoted in a tokenised-stock mint, not SOL/USDC.
+    const pairAddress = "HellAmdPair11111111111111111111111111111111";
+    const hell: CyclePair = {
+      ...fxPair(),
+      source: "dexscreener",
+      chainId: "solana",
+      pairAddress,
+      dexId: "pumpswap",
+      baseAddress: "A75Xx6SeHellMint1111111111111111111111111111",
+      baseSymbol: "HELL",
+      baseName: "Hell",
+      quoteAddress: "AMD8XrStockMint11111111111111111111111111111",
+      quoteSymbol: "AMD",
+      priceUsd: "0.01",
+      liquidityUsd: "139870",
+      volume24hUsd: "100224",
+      freshness: "LIVE",
+    };
+    const plan = planCycle(
+      planInput({
+        pairs: [hell],
+        marks: { [pairAddress]: { priceUsd: "0.01", freshness: "LIVE" } },
+        instanceIntents: [intentFor("stratinst_crypto", pairAddress, "ENTER")],
+      }),
+    );
+    expect(plan.orders).toHaveLength(0);
+    expect(plan.intentOutcomes?.some((outcome) => outcome.reason === "QUOTE_NOT_ALLOWED")).toBe(true);
+  });
+
   it("empty instance output does not invent unrelated auto-entry", () => {
     const pair = fxPair({ priceChangeM5Pct: "5", priceChangeH1Pct: "2" });
     const plan = planCycle(
