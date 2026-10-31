@@ -315,7 +315,7 @@ test.describe("Gate 1 local paper browser workflows", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/terminal");
     await expect(page.getByRole("tablist", { name: "Nav groups" })).toBeVisible();
-    await page.getByRole("tab", { name: "Orders & Positions" }).click();
+    await page.getByRole("tab", { name: "Orders" }).click();
     await expect(page.getByRole("link", { name: "Ticket" })).toBeVisible();
     await page.getByRole("link", { name: "Ticket" }).click();
     await expect(page.getByText("Paper ticket").first()).toBeVisible();
