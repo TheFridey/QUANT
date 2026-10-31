@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // Starts `next dev` / `next start` bound to loopback unless WEB_HOST says otherwise (audit M4).
 // Usage: node scripts/next-serve.mjs <dev|start>
 import { spawn } from "node:child_process";
