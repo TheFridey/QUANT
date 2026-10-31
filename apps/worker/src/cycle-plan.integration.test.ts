@@ -67,7 +67,7 @@ describe.skipIf(!enabled)("single plan per cycle (audit F1)", () => {
     await prisma.$disconnect();
   });
 
-  async function runCycle(advanceBeforeExecutorMs: number, hooks: { beforePlan?: () => Promise<void>; beforeExecutor?: () => Promise<void> } = {}) {
+  async function runCycle(advanceBeforeExecutorMs: number, hooks: { beforePlan?: () => Promise<void>; beforeExecutor?: (cycleId: string) => Promise<void> } = {}) {
     await prisma.cycleRun.updateMany({ where: { status: "RUNNING" }, data: { status: "FAILED", error: "TEST_RESET" } });
     clock = new Date();
     const runner = new StageRunner(prisma, feed, silentBus, "live", () => clock);
@@ -80,10 +80,10 @@ describe.skipIf(!enabled)("single plan per cycle (audit F1)", () => {
     await runner.aegis(cycleId);
     await runner.atlas(cycleId);
     clock = new Date(clock.getTime() + advanceBeforeExecutorMs);
-    await hooks.beforeExecutor?.();
+    await hooks.beforeExecutor?.(cycleId);
     await runner.executor(cycleId);
-    const row = await prisma.cyclePlan.findUniqueOrThrow({ where: { cycleId } });
-    return { cycleId, snapshot: row.plan as unknown as CyclePlanSnapshot };
+    const row = await prisma.cyclePlan.findUnique({ where: { cycleId } });
+    return { cycleId, snapshot: (row?.plan ?? null) as unknown as CyclePlanSnapshot };
   }
 
   async function assertProjectionsMatch(cycleId: string, snapshot: CyclePlanSnapshot) {
@@ -156,6 +156,57 @@ describe.skipIf(!enabled)("single plan per cycle (audit F1)", () => {
     expect(await prisma.order.count({ where: { cycleId, side: "BUY", status: "FILLED" } })).toBe(0);
     const input = admission.input as { planTime: string; admissionTime: string };
     expect(Date.parse(input.admissionTime) - Date.parse(input.planTime)).toBeGreaterThanOrEqual(DEFAULT_STRATEGY.liveMaxAgeMs);
+  });
+
+  it("legacy cycle without a stored plan: the executor uses the re-check as before", async () => {
+    const { cycleId } = await runCycle(0, {
+      beforeExecutor: async (id) => {
+        await prisma.cyclePlan.delete({ where: { cycleId: id } });
+      },
+    });
+    const admission = await prisma.agentDecision.findFirstOrThrow({ where: { cycleId, agent: "EXECUTOR", pairAddress: "(admission)" } });
+    expect(admission.reasonCodes).toEqual(["CYCLE_PLAN_MISSING"]);
+    const records = (admission.output as { records: Array<{ result: string }> }).records;
+    expect(records.every((row) => row.result === "NO_SNAPSHOT")).toBe(true);
+    // The executor still writes AEGIS/ATLAS from its own plan, exactly as before cycle plans existed.
+    expect(await prisma.agentDecision.count({ where: { cycleId, agent: "ATLAS" } })).toBeGreaterThan(0);
+  });
+
+  it("a retried SENTINEL reuses the stored plan instead of recomputing", async () => {
+    await prisma.cycleRun.updateMany({ where: { status: "RUNNING" }, data: { status: "FAILED", error: "TEST_RESET" } });
+    clock = new Date();
+    const runner = new StageRunner(prisma, feed, silentBus, "live", () => clock);
+    const { cycleId } = await runner.ingest({ trigger: "cycle-plan-sentinel-retry" });
+    await runner.sentinel(cycleId);
+    const first = await prisma.cyclePlan.findUniqueOrThrow({ where: { cycleId } });
+    // A retry after the stage marker was lost, with the clock moved on.
+    await prisma.cycleRun.update({ where: { id: cycleId }, data: { stage: "created" } });
+    clock = new Date(clock.getTime() + 60_000);
+    await runner.sentinel(cycleId);
+    const second = await prisma.cyclePlan.findUniqueOrThrow({ where: { cycleId } });
+    expect(second.plannedAt.toISOString()).toBe(first.plannedAt.toISOString());
+    expect(second.plan).toEqual(first.plan);
+    await prisma.cycleRun.update({ where: { id: cycleId }, data: { status: "FAILED", error: "TEST_RESET" } });
+  });
+
+  it("a malformed stored plan refuses entries but still runs exits", async () => {
+    expect(await prisma.position.count({ where: { baseQty: { gt: 0 } } })).toBeGreaterThan(0);
+    const { cycleId } = await runCycle(0, {
+      beforeExecutor: async (id) => {
+        const stored = await prisma.cyclePlan.findUniqueOrThrow({ where: { cycleId: id } });
+        await prisma.cyclePlan.delete({ where: { cycleId: id } });
+        const plan = stored.plan as unknown as CyclePlanSnapshot;
+        await prisma.cyclePlan.create({
+          data: { cycleId: id, plannedAt: stored.plannedAt, plan: toJson({ ...plan, orders: [{ clientOrderId: "bad", pairAddress, qty: "0" }] }) },
+        });
+        await prisma.engineControl.update({ where: { id: "primary" }, data: { flattenRequested: true } });
+      },
+    });
+    const admission = await prisma.agentDecision.findFirstOrThrow({ where: { cycleId, agent: "EXECUTOR", pairAddress: "(admission)" } });
+    expect(admission.reasonCodes).toEqual(["CYCLE_PLAN_INVALID"]);
+    expect(await prisma.order.count({ where: { cycleId, side: "BUY" } })).toBe(0);
+    expect(await prisma.order.count({ where: { cycleId, side: "SELL", status: "FILLED" } })).toBeGreaterThan(0);
+    expect(await prisma.durableAlert.count({ where: { code: "CYCLE_PLAN_INVALID" } })).toBeGreaterThan(0);
   });
 
   it("refuses to rewrite a stored plan", async () => {

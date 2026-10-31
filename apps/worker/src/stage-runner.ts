@@ -14,6 +14,8 @@ import {
   instanceAvailableUsd,
   uniqueFunnelEvents,
   configInvalidAlert,
+  cyclePlanInvalidAlert,
+  InvalidCyclePlanError,
   liveGateAlert,
   marketSelectionMap,
   parseActiveStrategyIdentity,
@@ -387,7 +389,18 @@ export class StageRunner {
       // Audit F1: admit only what the stored cycle plan decided (entries never larger than planned);
       // risk-reducing exits are always admitted. Admission is applied inside loadPlan, before intent
       // outcomes are persisted and the fairness cursor moves. Both plan-time and admission-time are recorded.
-      const snapshot = await this.readCyclePlan(tx, cycleId);
+      // A malformed stored plan fails closed for entries only: an empty plan admits no entry, while
+      // risk-reducing exits from the re-check are still admitted and protection still runs.
+      let snapshot: CyclePlanSnapshot | null;
+      let planInvalid = false;
+      try {
+        snapshot = await this.readCyclePlan(tx, cycleId);
+      } catch (error) {
+        if (!(error instanceof InvalidCyclePlanError)) throw error;
+        planInvalid = true;
+        await this.persistAlert(tx, cyclePlanInvalidAlert(cycleId, error.message), ctx.accountId);
+        snapshot = { cycleId, plannedAt: now.toISOString(), decisions: [], orders: [], watchlist: [], intentOutcomes: [] };
+      }
       const loaded = await this.loadPlan(cycleId, now, tx, ctx, (plan) => admitAgainstPlan(snapshot, plan));
       if (!loaded) return;
       const admission = loaded.admission ?? admitAgainstPlan(snapshot, loaded.plan);
@@ -403,8 +416,8 @@ export class StageRunner {
         pairAddress: "(admission)",
         decision: admission.records.some((row) => row.result === "NOT_IN_PLAN" || row.result === "REJECTED_AT_ADMISSION") ? "HOLD" : "PASS",
         confidence: "1.000000",
-        reasonCodes: [snapshot ? "CYCLE_PLAN_ADMISSION" : "CYCLE_PLAN_MISSING"],
-        input: { planTime: snapshot?.plannedAt ?? null, admissionTime: now.toISOString() },
+        reasonCodes: [planInvalid ? "CYCLE_PLAN_INVALID" : snapshot ? "CYCLE_PLAN_ADMISSION" : "CYCLE_PLAN_MISSING"],
+        input: { planTime: planInvalid ? null : (snapshot?.plannedAt ?? null), admissionTime: now.toISOString() },
         output: { records: admission.records },
         inputSource: "cycle-plan",
         durationMs: 0,
