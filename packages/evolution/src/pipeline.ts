@@ -190,7 +190,8 @@ export async function runResearchPipeline(input: {
         hypothesisId: input.hypothesis.id ?? "hyp",
       },
     });
-    if (execution.signalsClaimed) {
+    // The runner already enforces one validated signal per bar; refuse to pad a short result with HOLD.
+    if (execution.signalsClaimed && execution.signals.length === observations.length) {
       simulation = simulateResearchPath({
         observations,
         signals: observations.map((row, index) => ({

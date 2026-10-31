@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { bubblewrapCiProbeArgs, sandboxLibraryMounts } from "./sandbox-runner.js";
+import { bubblewrapCiProbeArgs, isolationAvailable, probeIsolation, sandboxLibraryMounts } from "./sandbox-runner.js";
+
+const isolationSkip = isolationAvailable() ? "" : ` [skipped: isolation unavailable — ${probeIsolation().reason}]`;
 
 describe("bubblewrap CI probe", () => {
   it("uses the runner library mounts and the workflow runs that command", () => {
@@ -17,7 +19,7 @@ describe("bubblewrap CI probe", () => {
     expect(runner).toContain("...sandboxLibraryMounts()");
   });
 
-  it("executes the same probe command the workflow runs", () => {
+  it.skipIf(!isolationAvailable())(`executes the same probe command the workflow runs${isolationSkip}`, () => {
     const version = spawnSync("bwrap", ["--version"], { encoding: "utf8" });
     expect(version.status, version.stderr || version.error?.message).toBe(0);
     const probe = spawnSync("bwrap", bubblewrapCiProbeArgs(), { encoding: "utf8" });

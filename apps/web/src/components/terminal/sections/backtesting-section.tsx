@@ -27,6 +27,7 @@ type BacktestListItem = {
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
+  sandboxEra?: string;
 };
 
 type BacktestDetail = BacktestListItem & {
@@ -281,7 +282,17 @@ export function BacktestingSection() {
                   <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setSelectedId(run.id)}>
                     <div className="flex justify-between gap-2">
                       <span className="truncate font-medium">{run.label ?? run.id}</span>
-                      <span className="text-[10px] uppercase text-muted">{run.status}</span>
+                      <span className="flex items-center gap-1">
+                        {run.sandboxEra === "PRE_SANDBOX_FIX" ? (
+                          <span
+                            className="rounded border border-loss/50 px-1 text-[10px] text-loss"
+                            title="Produced before the 30 Oct 2026 sandbox integrity fix. Not valid promotion evidence."
+                          >
+                            Pre-fix result
+                          </span>
+                        ) : null}
+                        <span className="text-[10px] uppercase text-muted">{run.status}</span>
+                      </span>
                     </div>
                     <div className="mono text-[11px] text-muted">
                       {run.strategyName ?? "?"} v{run.strategyVersion ?? "?"} · sample=
