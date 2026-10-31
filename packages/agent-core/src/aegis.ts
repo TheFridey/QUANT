@@ -33,7 +33,7 @@ export type HolderProviderPayload = {
 export type AegisVerdict = {
   assessment: SecurityAssessment;
   decision: DecisionDraft;
-  /** Hard-stop simulated entry when true (BLOCK or REVIEW). UNKNOWN from unavailable provider does not hard-stop. */
+  /** Hard-stop entry when true: BLOCK/REVIEW, or UNKNOWN for a Solana token (UNKNOWN is not PASS). */
   blocksEntry: boolean;
 };
 
@@ -142,6 +142,165 @@ export function assessSecurity(input: {
   };
 }
 
+/** Mint facts from on-chain RPC (see @odin/market-data SolanaRpcSecurityClient). */
+export type OnChainMintPayload =
+  | {
+      ok: true;
+      fetchedAt: string;
+      programId: string;
+      mintAuthority: string | null;
+      freezeAuthority: string | null;
+      supply: string;
+      extensions: Array<{ extension: string; state: Record<string, unknown> }>;
+    }
+  | { ok: false; code: string; error: string };
+
+export type OnChainHolderPayload = { ok: true; top10Pct: string } | { ok: false; code: string; error: string };
+
+const NATIVE_SOL_MINT = "So11111111111111111111111111111111111111112";
+const TOKEN_PROGRAMS = new Set([
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+]);
+
+/**
+ * Independent security assessment from on-chain mint state: mint/freeze authority, Token-2022
+ * transfer restrictions, top-10 holder concentration and liquidity. A token whose holder data is
+ * unavailable stays UNKNOWN (never PASS) unless a finding already makes it REVIEW/BLOCK. The native
+ * SOL mint has no meaningful holder distribution (its supply is only the wrapped amount), so its
+ * verified authority-free state is sufficient.
+ */
+export function assessOnChainSecurity(input: {
+  tokenAddress: string;
+  mint: OnChainMintPayload | null;
+  holders: OnChainHolderPayload | null;
+  liquidityUsd: string | null;
+}): SecurityAssessment {
+  const now = new Date();
+  if (!input.mint || !input.mint.ok) {
+    return unknownAssessment(input.tokenAddress, "unavailable", now, ["SECURITY_UNKNOWN", "UPSTREAM_UNAVAILABLE"]);
+  }
+  const mint = input.mint;
+  const fields: SecurityAssessment["fields"] = {
+    programId: mint.programId,
+    mintAuthority: mint.mintAuthority,
+    freezeAuthority: mint.freezeAuthority,
+    supply: mint.supply,
+  };
+  const reasonCodes: ReasonCode[] = [];
+  let category: SecurityCategory = "PASS";
+  let transferRestricted: boolean | null = false;
+
+  if (!TOKEN_PROGRAMS.has(mint.programId)) {
+    return {
+      ...unknownAssessment(input.tokenAddress, "solana_rpc", now, ["SECURITY_UNKNOWN"]),
+      fetchedAt: mint.fetchedAt,
+      fields,
+    };
+  }
+  const mintAuthority = mint.mintAuthority === null ? "revoked" : "present";
+  const freezeAuthority = mint.freezeAuthority === null ? "revoked" : "present";
+  if (mintAuthority === "present") {
+    reasonCodes.push("MINT_AUTHORITY_PRESENT");
+    category = elevate(category, "REVIEW");
+  }
+  if (freezeAuthority === "present") {
+    reasonCodes.push("FREEZE_AUTHORITY_PRESENT");
+    category = elevate(category, "REVIEW");
+  }
+
+  const extensions = mint.extensions.map((row) => row.extension);
+  const fraudIndicators: string[] = [];
+  for (const row of mint.extensions) {
+    const finding = extensionFinding(row);
+    if (finding === "BLOCK") {
+      transferRestricted = true;
+      fraudIndicators.push(`token2022:${row.extension}`);
+      category = elevate(category, "BLOCK");
+    } else if (finding === "REVIEW") {
+      category = elevate(category, "REVIEW");
+      if (!reasonCodes.includes("SECURITY_REVIEW")) reasonCodes.push("SECURITY_REVIEW");
+    }
+  }
+  if (extensions.length > 0) fields.token2022Extensions = extensions.join(",");
+
+  const liquidityFragile =
+    input.liquidityUsd !== null && d(input.liquidityUsd).gt(0) ? d(input.liquidityUsd).lt("10000") : null;
+  if (liquidityFragile === true) {
+    reasonCodes.push("LIQUIDITY_FRAGILE");
+    category = elevate(category, "REVIEW");
+  }
+
+  const native = input.tokenAddress === NATIVE_SOL_MINT;
+  fields.nativeMint = native;
+  let holderConcentration: string | null = null;
+  if (input.holders?.ok) {
+    holderConcentration = d(input.holders.top10Pct).toFixed(6);
+    if (d(holderConcentration).gte("50")) {
+      reasonCodes.push("HOLDER_CONCENTRATION");
+      category = elevate(category, "REVIEW");
+    }
+    if (d(holderConcentration).gte("80")) category = elevate(category, "BLOCK");
+  } else if (!native && category === "PASS") {
+    // Holder distribution is part of the contract: without it the assessment is incomplete.
+    category = "UNKNOWN";
+    reasonCodes.push("SECURITY_UNKNOWN", "UPSTREAM_UNAVAILABLE");
+    fields.holderData = input.holders && !input.holders.ok ? input.holders.error : "not_requested";
+  }
+
+  if (category === "PASS") reasonCodes.push("SECURITY_PASS");
+  else if (category === "REVIEW" && !reasonCodes.includes("SECURITY_REVIEW")) reasonCodes.push("SECURITY_REVIEW");
+  else if (category === "BLOCK" && !reasonCodes.includes("SECURITY_BLOCK")) reasonCodes.push("SECURITY_BLOCK");
+
+  const confidence =
+    category === "PASS" ? "0.850000" : category === "BLOCK" ? "0.950000" : category === "REVIEW" ? "0.700000" : "0.000000";
+  return {
+    tokenAddress: input.tokenAddress,
+    category,
+    confidence,
+    reasonCodes,
+    mintAuthority,
+    freezeAuthority,
+    transferRestricted,
+    token2022Extensions: extensions.length > 0 ? extensions : null,
+    holderConcentrationTop10Pct: holderConcentration,
+    suspiciousDeployer: null,
+    liquidityFragile,
+    largeWalletMove: null,
+    fraudIndicators,
+    source: "solana_rpc",
+    fetchedAt: mint.fetchedAt,
+    stale: false,
+    fields,
+  };
+}
+
+/** Token-2022 extensions that can trap or tax a holder. Informational ones return null. */
+function extensionFinding(row: { extension: string; state: Record<string, unknown> }): "BLOCK" | "REVIEW" | null {
+  switch (row.extension) {
+    case "nonTransferable":
+      return "BLOCK";
+    case "defaultAccountState":
+      return row.state.accountState === "frozen" ? "BLOCK" : null;
+    case "pausableConfig":
+      return row.state.paused === true ? "BLOCK" : "REVIEW";
+    case "transferHook":
+      return typeof row.state.programId === "string" && row.state.programId.length > 0 ? "REVIEW" : null;
+    case "permanentDelegate":
+      return typeof row.state.delegate === "string" && row.state.delegate.length > 0 ? "REVIEW" : null;
+    case "transferFeeConfig": {
+      const fees = [row.state.newerTransferFee, row.state.olderTransferFee].map((fee) =>
+        fee && typeof fee === "object" ? (fee as { transferFeeBasisPoints?: unknown }).transferFeeBasisPoints : 0,
+      );
+      return fees.some((bps) => typeof bps === "number" && bps > 0) ? "REVIEW" : null;
+    }
+    case "confidentialTransferMint":
+      return "REVIEW";
+    default:
+      return null;
+  }
+}
+
 function concentrationFromHolders(holders: Extract<HolderProviderPayload, { ok: true }>): string | null {
   const top = holders.fields.top10HolderPercent ?? holders.fields.top10Percent ?? holders.fields.top10;
   if (typeof top === "number") return d(String(top)).toFixed(6);
@@ -166,9 +325,13 @@ export function runAegis(input: {
     input.assessment ??
     unknownAssessment(input.pair.baseAddress, "unavailable", new Date(), ["SECURITY_UNKNOWN", "UPSTREAM_UNAVAILABLE"]);
 
-  // UNKNOWN ≠ PASS. Unavailable provider does not hard-block paper entries; BLOCK/REVIEW do.
+  // UNKNOWN ≠ PASS: a Solana token entry needs a positive assessment. FX/ETF paper instruments have
+  // no token-security surface, so only REVIEW/BLOCK stop them. Exits are never blocked by security.
   const blocksEntry =
-    input.side === "BUY" && (assessment.category === "BLOCK" || assessment.category === "REVIEW");
+    input.side === "BUY" &&
+    (assessment.category === "BLOCK" ||
+      assessment.category === "REVIEW" ||
+      (assessment.category === "UNKNOWN" && input.pair.chainId === "solana"));
 
   let decision: DecisionDraft["decision"] = "PASS";
   const reasons: ReasonCode[] = [...assessment.reasonCodes];

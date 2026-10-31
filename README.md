@@ -11,7 +11,7 @@ Paper-only Solana research terminal. It records DexScreener snapshots, runs six 
 - Opens a paper account at the configured starting balance (`startingBalanceUsd`, default below) and rejects orders that fail data or risk gates.
 - Streams cycle updates to the terminal over Socket.IO. The screen reloads figures from PostgreSQL and shows per-agent status, input source, duration, and outcome.
 
-Birdeye candles, token security, and holder stats are optional. Without `BIRDEYE_API_KEY` those routes return `UNAVAILABLE` and AEGIS records `UNKNOWN` (not PASS). Without an LLM key the mock provider serves offline advisory text only.
+Birdeye candles, token security, and holder stats are optional. Without `BIRDEYE_API_KEY`, AEGIS reads on-chain mint state over read-only Solana RPC (`SOLANA_RPC_URL`); tokens it cannot fully assess stay `UNKNOWN`, which is not PASS and blocks Solana entries. Without an LLM key the mock provider serves offline advisory text only.
 
 ## Risk limits
 

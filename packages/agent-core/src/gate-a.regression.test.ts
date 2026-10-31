@@ -1,6 +1,7 @@
 import { DEFAULT_STRATEGY, type CyclePair } from "@odin/shared";
 import { describe, expect, it } from "vitest";
 import { planCycle, type PlanInput } from "./plan.js";
+import { withPassingSecurity } from "./test-security.js";
 
 const pairA = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
 const pairB = "7qbRF6YsyGuLUVs6Y1q64bdVrfe4ZcUUz1JRdoVNUJnm";
@@ -35,7 +36,7 @@ function pair(address: string, overrides: Partial<CyclePair> = {}): CyclePair {
 
 function base(overrides: Partial<PlanInput> = {}): PlanInput {
   const quote = pair(pairA);
-  return {
+  return withPassingSecurity({
     cycleId: "cyc_gate_a",
     engineStatus: "RUNNING",
     config: DEFAULT_STRATEGY,
@@ -51,7 +52,7 @@ function base(overrides: Partial<PlanInput> = {}): PlanInput {
     aggregateExposureUsd: "0.00000000",
     now: new Date("2026-10-28T16:00:00.000Z"),
     ...overrides,
-  };
+  });
 }
 
 describe("Gate A regressions", () => {

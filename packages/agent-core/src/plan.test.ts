@@ -1,9 +1,17 @@
 import { DEFAULT_STRATEGY, type CyclePair } from "@odin/shared";
 import { describe, expect, it } from "vitest";
-import { assessSecurity, runAegis, unknownAssessment } from "./aegis.js";
+import {
+  assessOnChainSecurity,
+  assessSecurity,
+  runAegis,
+  unknownAssessment,
+  type OnChainHolderPayload,
+  type OnChainMintPayload,
+} from "./aegis.js";
 import { computePulseSignal } from "./pulse.js";
 import { planCycle, type PlanInput } from "./plan.js";
 import { rankWatchlist, runSentinel } from "./sentinel.js";
+import { withPassingSecurity } from "./test-security.js";
 
 const pairAddress = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
 
@@ -37,7 +45,7 @@ function pair(overrides: Partial<CyclePair> = {}): CyclePair {
 
 function input(overrides: Partial<PlanInput> = {}): PlanInput {
   const quote = pair();
-  return {
+  return withPassingSecurity({
     cycleId: "cyc_test",
     engineStatus: "RUNNING",
     config: DEFAULT_STRATEGY,
@@ -52,7 +60,7 @@ function input(overrides: Partial<PlanInput> = {}): PlanInput {
     highWaterMarkUsd: DEFAULT_STRATEGY.startingBalanceUsd,
     aggregateExposureUsd: "0.00000000",
     ...overrides,
-  };
+  });
 }
 
 describe("agent plan", () => {
@@ -211,6 +219,76 @@ describe("aegis security", () => {
       side: "BUY",
     });
     expect(verdict.decision.decision).not.toBe("PASS");
-    expect(verdict.blocksEntry).toBe(false);
+    // UNKNOWN must never act as PASS: a BUY without a positive assessment is blocked.
+    expect(verdict.blocksEntry).toBe(true);
+  });
+});
+
+describe("aegis on-chain assessment", () => {
+  const JUP = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN";
+  const WSOL = "So11111111111111111111111111111111111111112";
+  const holders = { ok: true as const, top10Pct: "10" };
+  const mint = (overrides: Partial<Extract<OnChainMintPayload, { ok: true }>> = {}): OnChainMintPayload => ({
+    ok: true,
+    fetchedAt: "2026-10-31T13:00:00.000Z",
+    programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    mintAuthority: null,
+    freezeAuthority: null,
+    supply: "6861485837037475",
+    extensions: [],
+    ...overrides,
+  });
+  const assess = (mintPayload: OnChainMintPayload, holderPayload: OnChainHolderPayload | null = holders, liquidityUsd = "500000") =>
+    assessOnChainSecurity({ tokenAddress: JUP, mint: mintPayload, holders: holderPayload, liquidityUsd });
+
+  it("passes a revoked-authority mint only when holder concentration is known and low", () => {
+    const pass = assess(mint(), { ok: true, top10Pct: "22.5" });
+    expect(pass.category).toBe("PASS");
+    expect(pass.source).toBe("solana_rpc");
+    expect(pass.holderConcentrationTop10Pct).toBe("22.500000");
+  });
+
+  it("keeps an otherwise clean mint UNKNOWN when holder data is unavailable (never PASS)", () => {
+    const unknown = assess(mint(), { ok: false, code: "UPSTREAM", error: "Solana RPC error 429 for getTokenLargestAccounts" });
+    expect(unknown.category).toBe("UNKNOWN");
+    expect(unknown.reasonCodes).toContain("SECURITY_UNKNOWN");
+    expect(runAegis({ pair: pair(), assessment: unknown, hasIntent: true, side: "BUY" }).blocksEntry).toBe(true);
+  });
+
+  it("passes the native SOL mint on verified authority-free state alone", () => {
+    const native = assessOnChainSecurity({ tokenAddress: WSOL, mint: mint({ supply: "0" }), holders: null, liquidityUsd: "25000000" });
+    expect(native.category).toBe("PASS");
+    expect(native.fields.nativeMint).toBe(true);
+  });
+
+  it("flags authorities, Token-2022 restrictions, concentration and fragile liquidity", () => {
+    expect(assess(mint({ mintAuthority: "Auth111" })).category).toBe("REVIEW");
+    expect(assess(mint({ freezeAuthority: "Frz111" })).reasonCodes).toContain("FREEZE_AUTHORITY_PRESENT");
+    const frozen = assess(
+      mint({ programId: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", extensions: [{ extension: "nonTransferable", state: {} }] }),
+    );
+    expect(frozen.category).toBe("BLOCK");
+    expect(frozen.transferRestricted).toBe(true);
+    expect(assess(mint({ extensions: [{ extension: "transferHook", state: { programId: "Hook111" } }] })).category).toBe("REVIEW");
+    expect(
+      assess(mint({ extensions: [{ extension: "transferFeeConfig", state: { newerTransferFee: { transferFeeBasisPoints: 500 } } }] })).category,
+    ).toBe("REVIEW");
+    expect(assess(mint(), { ok: true, top10Pct: "85" }).category).toBe("BLOCK");
+    expect(assess(mint(), holders, "5000").reasonCodes).toContain("LIQUIDITY_FRAGILE");
+    expect(assess(mint({ programId: "Other111" })).category).toBe("UNKNOWN");
+    expect(assess({ ok: false, code: "UPSTREAM", error: "x" }).category).toBe("UNKNOWN");
+  });
+
+  it("never blocks exits, and does not demand token security from FX paper instruments", () => {
+    const unknown = unknownAssessment("mint", "unavailable", new Date(), ["SECURITY_UNKNOWN"]);
+    expect(runAegis({ pair: pair(), assessment: unknown, hasIntent: true, side: "SELL" }).blocksEntry).toBe(false);
+    expect(
+      runAegis({ pair: pair({ chainId: "fx", source: "fx_stub" }), assessment: unknown, hasIntent: true, side: "BUY" }).blocksEntry,
+    ).toBe(false);
+  });
+
+  it("rejects a live Solana entry when no security assessment exists", () => {
+    expect(planCycle(input()).orders.length).toBeGreaterThan(0);
+    expect(planCycle({ ...input(), securityByMint: {} }).orders).toHaveLength(0);
   });
 });
