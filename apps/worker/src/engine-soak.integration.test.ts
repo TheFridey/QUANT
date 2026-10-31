@@ -12,8 +12,17 @@ const databaseUrl = process.env.DATABASE_URL_TEST;
 const enabled = Boolean(databaseUrl && databaseUrl.includes("odin_test"));
 const soakSeconds = Math.max(1, Number(process.env.SOAK_SECONDS ?? "8"));
 
-const pairAddress = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
-const config = { ...DEFAULT_STRATEGY, multiMarketPaperIngest: false, paperLatencyMs: 0 };
+// Audit B5: soak at the default universe size (24 pairs) so executor transactions carry real load.
+const UNIVERSE = 24;
+const BASE58_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+const pairAddresses = Array.from({ length: UNIVERSE }, (_, index) => `Soak${BASE58_LETTERS[index]}`.padEnd(44, "1"));
+const config = { ...DEFAULT_STRATEGY, multiMarketPaperIngest: false, paperLatencyMs: 0, universeLimit: UNIVERSE };
+
+function percentile(values: number[], p: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)] ?? null;
+}
 
 describe.skipIf(!enabled)("engine soak StageRunner+DB", () => {
   let prisma: PrismaClient;
@@ -45,30 +54,28 @@ describe.skipIf(!enabled)("engine soak StageRunner+DB", () => {
           return {
             ok: true,
             fetchedAt: new Date().toISOString(),
-            data: [
-              {
-                source: "dexscreener",
-                chainId: "solana",
-                pairAddress,
-                dexId: "orca",
-                url: `https://dexscreener.com/solana/${pairAddress}`,
-                baseAddress: "So11111111111111111111111111111111111111112",
-                baseSymbol: "SOL",
-                baseName: "Wrapped SOL",
-                quoteAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                quoteSymbol: "USDC",
-                priceUsd: "100",
-                liquidityUsd: "1000000",
-                volume24hUsd: "5000000",
-                volume5mUsd: "10000",
-                priceChangeM5Pct: String(1 + Math.random() * 3),
-                priceChangeH1Pct: "1.2",
-                priceChangeH24Pct: "4",
-                txnsM5Buys: 80,
-                txnsM5Sells: 20,
-                raw: { soak: true },
-              },
-            ],
+            data: pairAddresses.map((pairAddress, index) => ({
+              source: "dexscreener",
+              chainId: "solana",
+              pairAddress,
+              dexId: "orca",
+              url: `https://dexscreener.com/solana/${pairAddress}`,
+              baseAddress: `Base${BASE58_LETTERS[index]}`.padEnd(44, "1"),
+              baseSymbol: `SK${BASE58_LETTERS[index]}`,
+              baseName: `Soak ${BASE58_LETTERS[index]}`,
+              quoteAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              quoteSymbol: "USDC",
+              priceUsd: String(100 + index + Math.random()),
+              liquidityUsd: "1000000",
+              volume24hUsd: "5000000",
+              volume5mUsd: "10000",
+              priceChangeM5Pct: String(Math.random() * 6 - 2),
+              priceChangeH1Pct: "1.2",
+              priceChangeH24Pct: "4",
+              txnsM5Buys: 80,
+              txnsM5Sells: 20,
+              raw: { soak: true },
+            })),
           };
         },
       };
@@ -79,6 +86,8 @@ describe.skipIf(!enabled)("engine soak StageRunner+DB", () => {
       let cycles = 0;
       let fills = 0;
       let errors = 0;
+      const transactionMs: number[] = [];
+      const ingestToExecutorMs: number[] = [];
 
       while (Date.now() < deadline) {
         try {
@@ -86,13 +95,18 @@ describe.skipIf(!enabled)("engine soak StageRunner+DB", () => {
             where: { status: "RUNNING" },
             data: { status: "FAILED", error: "SOAK_RESET", finishedAt: new Date() },
           });
+          const ingestStarted = Date.now();
           const ingested = await runner.ingest({ trigger: `soak-${cycles}` });
           if (!ingested.skipped) {
             await runner.sentinel(ingested.cycleId);
             await runner.pulse(ingested.cycleId);
             await runner.aegis(ingested.cycleId);
             await runner.atlas(ingested.cycleId);
+            ingestToExecutorMs.push(Date.now() - ingestStarted);
             await runner.executor(ingested.cycleId);
+            const cycle = await prisma.cycleRun.findUnique({ where: { id: ingested.cycleId } });
+            const timings = cycle?.executorTimings as Record<string, number> | null;
+            if (timings && typeof timings.transaction === "number") transactionMs.push(timings.transaction);
             await runner.archivist(ingested.cycleId);
             fills += await prisma.fill.count({ where: { order: { cycleId: ingested.cycleId } } });
             cycles += 1;
@@ -114,8 +128,13 @@ describe.skipIf(!enabled)("engine soak StageRunner+DB", () => {
           cyclesCompleted: cycles,
           fillsObserved: fills,
           errors,
+          universe: UNIVERSE,
+          executorTransactionMs: { p50: percentile(transactionMs, 50), p95: percentile(transactionMs, 95), max: percentile(transactionMs, 100) },
+          ingestToExecutorMs: { p50: percentile(ingestToExecutorMs, 50), p95: percentile(ingestToExecutorMs, 95) },
         }),
       );
+      // Every executor run records its phase timings (audit H3).
+      expect(transactionMs.length).toBe(cycles);
 
       expect(errors).toBe(0);
       expect(cycles).toBeGreaterThan(0);

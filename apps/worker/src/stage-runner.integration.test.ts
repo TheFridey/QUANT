@@ -7,7 +7,8 @@ import { silentBus, StageRunner, type MarketFeed } from "./stage-runner.js";
 
 const databaseUrl = process.env.DATABASE_URL_TEST;
 const enabled = Boolean(databaseUrl && databaseUrl.includes("odin_test"));
-const solanaOnlyConfig = { ...DEFAULT_STRATEGY, multiMarketPaperIngest: false };
+// Same-cycle fill mechanics: latency 0 (the 1 s default defers fills to the next cycle).
+const solanaOnlyConfig = { ...DEFAULT_STRATEGY, multiMarketPaperIngest: false, paperLatencyMs: 0 };
 
 describe.skipIf(!enabled)("paper cycle persistence", () => {
   let prisma: PrismaClient;

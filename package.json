@@ -7,7 +7,8 @@
   },
   "scripts": {
     "dev": "pnpm build:packages && pnpm exec concurrently -n api,worker,web -c blue,magenta,green \"pnpm --filter @odin/api dev\" \"pnpm --filter @odin/worker dev\" \"pnpm --filter @odin/web dev\"",
-    "build:packages": "tsc -b --pretty false",
+    "postinstall": "node packages/evolution/scripts/build-sandbox.mjs",
+    "build:packages": "node packages/evolution/scripts/build-sandbox.mjs && tsc -b --pretty false",
     "build": "pnpm build:packages && pnpm --filter @odin/api --filter @odin/worker --filter @odin/web build",
     "typecheck": "tsc -b --pretty false && pnpm --filter @odin/api --filter @odin/worker --filter @odin/web typecheck",
     "test": "vitest run",

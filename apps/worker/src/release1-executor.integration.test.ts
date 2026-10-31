@@ -52,7 +52,7 @@ describe.skipIf(!enabled)("release1 executor regressions", () => {
     await ensureFoundation(prisma, {
       email: process.env.ADMIN_EMAIL ?? "admin@odin.local",
       password: process.env.ADMIN_PASSWORD ?? "odin-paper-dev",
-      config: { ...DEFAULT_STRATEGY, multiMarketPaperIngest: false, marketDataPaperFxIngest: true },
+      config: { ...DEFAULT_STRATEGY, multiMarketPaperIngest: false, marketDataPaperFxIngest: true, paperLatencyMs: 0 },
     });
     await prisma.engineControl.update({
       where: { id: "primary" },
@@ -60,6 +60,8 @@ describe.skipIf(!enabled)("release1 executor regressions", () => {
         status: "RUNNING",
         config: toJson({
           ...DEFAULT_STRATEGY,
+          // Same-cycle fill mechanics: latency 0 (the 1 s default defers fills to the next cycle).
+          paperLatencyMs: 0,
           multiMarketPaperIngest: false,
           marketDataPaperFxIngest: true,
           tradingEnvironment: "MARKET_DATA_PAPER",

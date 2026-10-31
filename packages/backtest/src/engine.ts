@@ -106,6 +106,14 @@ export function runBacktest(observations: BacktestObservation[], params: Backtes
       if (filled.closedPnl !== null) closedTradePnls.push(filled.closedPnl);
       if (filled.position) positions.set(order.pairAddress, filled.position);
       else positions.delete(order.pairAddress);
+      if (filled.remainderQty && d(filled.remainderQty).gt(0)) {
+        stillPending.push({
+          ...order,
+          id: `${order.id}_rem`,
+          qty: filled.remainderQty,
+          reasonCodes: [...order.reasonCodes, "EXIT_PARTIAL_REMAINDER"],
+        });
+      }
     }
     pending.length = 0;
     pending.push(...stillPending);
@@ -222,7 +230,9 @@ export function runBacktest(observations: BacktestObservation[], params: Backtes
         reasonCodes: [...filled.trade.reasonCodes, "FORCE_LIQUIDATE_AT_END"],
       });
       if (filled.closedPnl !== null) closedTradePnls.push(filled.closedPnl);
-      positions.delete(pairAddress);
+      // A capped liquidation leaves the rest open and marked to market rather than deleting it.
+      if (filled.position) positions.set(pairAddress, filled.position);
+      else positions.delete(pairAddress);
     }
     pushEquity(params.endAt);
   }
@@ -319,6 +329,8 @@ function tryFill(
       trade: Omit<SimulatedTrade, "id">;
       closedPnl: string | null;
       position: OpenPosition | null;
+      /** Exit quantity left unfilled by the exit policy; retried on the next observation. */
+      remainderQty?: string;
     }
   | { ok: false; reason: string } {
   if (obs.priceUsd === null || d(obs.priceUsd).lte(0)) return { ok: false, reason: "MISSING_PRICE" };
@@ -389,17 +401,22 @@ function tryFill(
     maxSlippageBps: config.maxSlippageBps,
     spreadBpsEstimate: config.spreadBpsEstimate,
     maxPriceImpactBps: config.maxPriceImpactBps,
+    // Same exit execution policy as the live engine: never rejected for impact, capped at maxExitImpactBps.
+    exitPolicy: { maxExitImpactBps: config.maxExitImpactBps },
   });
   if (!sellQuote.ok) return { ok: false, reason: sellQuote.reason };
   const sell = sellQuote.fill;
   const proceeds = d(sell.notionalUsd).minus(d(sell.feeUsd));
   const costBasis = d(held.avgCostUsd).mul(d(sell.qty));
   const pnl = usd(proceeds.minus(costBasis));
+  const remainingQty = d(held.qty).minus(d(sell.qty));
   return {
     ok: true,
     cash: cash.plus(proceeds),
     closedPnl: pnl,
-    position: null,
+    // Keep whatever was not sold; a partial exit never makes the rest of the position disappear.
+    position: remainingQty.gt(0) ? { ...held, qty: remainingQty.toFixed(8) } : null,
+    remainderQty: sell.remainderQty,
     trade: {
       pairAddress: order.pairAddress,
       baseSymbol: order.baseSymbol,

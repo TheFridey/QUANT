@@ -107,6 +107,9 @@ describe("multi-market paper E2E", () => {
         highWaterMarkUsd: config.startingBalanceUsd,
         pairs,
         marks,
+        // A fixed Wednesday afternoon: FX/ETF/commodity sessions are open. Using the wall clock made
+        // this fail every weekend (sessions closed), unrelated to the code under test.
+        now: new Date("2026-10-28T14:00:00.000Z"),
       }),
     );
 

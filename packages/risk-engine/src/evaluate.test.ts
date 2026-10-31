@@ -1,6 +1,6 @@
 import { DEFAULT_STRATEGY } from "@odin/shared";
 import { describe, expect, it } from "vitest";
-import { evaluateCircuitBreaker, evaluateRisk } from "./evaluate.js";
+import { dailyLossLimitUsd, evaluateCircuitBreaker, evaluateRisk } from "./evaluate.js";
 
 const base = {
   engineStatus: "RUNNING" as const,
@@ -96,5 +96,27 @@ describe("circuit breaker", () => {
         maxTotalDrawdownPct: "10",
       }).reasonCodes,
     ).toContain("TOTAL_DRAWDOWN_LIMIT");
+  });
+
+  it("measures the daily loss limit against start-of-day equity, not starting balance (audit L3)", () => {
+    // Growth day: account grew from $100 to $200. 3% of day-start equity is $6, not $3.
+    const grown = { ...base, startingBalanceUsd: "100.00000000", dayStartEquityUsd: "200.00000000", equityUsd: "196.00000000", highWaterMarkUsd: "200.00000000" };
+    expect(evaluateRisk({ ...grown, dailyPnlUsd: "-4.00000000" }).reasonCodes).not.toContain("DAILY_LOSS_LIMIT");
+    expect(evaluateRisk({ ...grown, dailyPnlUsd: "-6.00000000" }).reasonCodes).toContain("DAILY_LOSS_LIMIT");
+    // Drawdown day: account fell from $100 to $50. 3% of day-start equity is $1.50 — tighter than $3.
+    const shrunk = { ...base, startingBalanceUsd: "100.00000000", dayStartEquityUsd: "50.00000000", equityUsd: "48.50000000", highWaterMarkUsd: "100.00000000", maxTotalDrawdownPct: "60" };
+    expect(evaluateRisk({ ...shrunk, dailyPnlUsd: "-1.50000000" }).reasonCodes).toContain("DAILY_LOSS_LIMIT");
+    expect(evaluateRisk({ ...shrunk, dailyPnlUsd: "-1.00000000" }).reasonCodes).not.toContain("DAILY_LOSS_LIMIT");
+    const breaker = evaluateCircuitBreaker({
+      dailyPnlUsd: "-1.50000000",
+      startingBalanceUsd: "100.00000000",
+      dayStartEquityUsd: "50.00000000",
+      maxDailyLossPct: "3",
+      equityUsd: "48.50000000",
+      highWaterMarkUsd: "100.00000000",
+      maxTotalDrawdownPct: "60",
+    });
+    expect(breaker.reasonCodes).toContain("DAILY_LOSS_LIMIT");
+    expect(dailyLossLimitUsd({ startingBalanceUsd: "100", dayStartEquityUsd: null, maxDailyLossPct: "3" }).toFixed(2)).toBe("3.00");
   });
 });

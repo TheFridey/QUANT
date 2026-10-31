@@ -2,7 +2,7 @@ import { classifyFreshness, d, newId, type DataMode, type ReasonCode, type Strat
 import { Prisma, type PrismaClient } from "@odin/shared/db";
 import { findEligibleFillObservation } from "./eligible-observation.js";
 import { applyFill, type BookState } from "./ledger.js";
-import { quoteFill } from "./fill.js";
+import { quoteFill, type FillQuote } from "./fill.js";
 import { ensurePositionLifecycleOnOpen, reduceProtectionForFill } from "./position-lifecycle.js";
 import {
   releaseExitQty,
@@ -38,6 +38,117 @@ export type CommitOrder = {
 
 export async function lockAccount(tx: Prisma.TransactionClient, accountId: string): Promise<void> {
   await tx.$queryRaw`SELECT id FROM "PaperAccount" WHERE id = ${accountId} FOR UPDATE`;
+}
+
+type FillGateInput = { order: CommitOrder; config: StrategyConfig; mode: DataMode; now: Date };
+type MarketObservation = Prisma.MarketObservationGetPayload<object>;
+
+/** Long-only book: every non-ENTRY SELL (EXIT, FLATTEN, protection close, OPERATOR) reduces risk. */
+export function isRiskReducing(order: Pick<CommitOrder, "side" | "intent">): boolean {
+  return order.side === "SELL" && order.intent !== "ENTRY";
+}
+
+/**
+ * Single freshness → liquidity → quote gate shared by both fill paths (immediate and pending).
+ * Entries need LIVE data; DELAYED never opens risk. DEMO entries need the flag AND DATA_MODE=demo.
+ * Risk-reducing SELLs use the exit execution policy instead of the entry impact caps.
+ */
+async function gateAndQuote(
+  tx: Prisma.TransactionClient,
+  input: FillGateInput,
+): Promise<{ ok: true; observation: MarketObservation; fill: FillQuote } | { ok: false; reason: ReasonCode }> {
+  const observation = await tx.marketObservation.findUnique({ where: { id: input.order.observationId } });
+  if (!observation || observation.priceUsd === null) return { ok: false, reason: "MISSING_PRICE" };
+  const instrumentKey = input.order.instrumentId ?? input.order.pairAddress;
+  const needsDexLiquidity =
+    !instrumentKey.startsWith("fx:") && !instrumentKey.startsWith("etf:") && !instrumentKey.startsWith("commodity:");
+  if (needsDexLiquidity && observation.liquidityUsd === null) return { ok: false, reason: "MISSING_LIQUIDITY" };
+  const freshness = resolveObservationFreshness(observation.freshness, {
+    mode: input.mode,
+    receivedAt: observation.receivedAt,
+    now: input.now,
+    liveMaxAgeMs: input.config.liveMaxAgeMs,
+    delayedMaxAgeMs: input.config.delayedMaxAgeMs,
+  });
+  if (input.order.side === "BUY" && freshness !== "LIVE") {
+    const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true && input.mode === "demo";
+    if (!demoOk) return { ok: false, reason: freshnessReason(freshness) };
+  }
+  if (input.order.side === "SELL" && freshness !== "LIVE") {
+    const delayedOk = freshness === "DELAYED" && input.config.allowDelayedExits;
+    // Exits reduce risk: in DATA_MODE=demo they may use DEMO quotes even with DEMO entries off (review F12).
+    const demoOk = freshness === "DEMO" && (input.config.allowDemoPaperEntries === true || input.mode === "demo");
+    if (!delayedOk && !demoOk) return { ok: false, reason: freshnessReason(freshness) };
+  }
+  const quoted = quoteFill({
+    side: input.order.side,
+    midPriceUsd: observation.priceUsd.toString(),
+    quantity: input.order.qty,
+    liquidityUsd: observation.liquidityUsd?.toString() ?? "0",
+    feeBps: input.config.feeBps,
+    maxSlippageBps: input.config.maxSlippageBps,
+    spreadBpsEstimate: input.config.spreadBpsEstimate,
+    maxPriceImpactBps: input.config.maxPriceImpactBps,
+    instrumentId: instrumentKey,
+    exitPolicy: isRiskReducing(input.order) ? { maxExitImpactBps: input.config.maxExitImpactBps } : null,
+  });
+  if (!quoted.ok) return { ok: false, reason: quoted.reason };
+  return { ok: true, observation, fill: quoted.fill };
+}
+
+/**
+ * Exit policy remainder: the part of a risk-reducing SELL above maxExitImpactBps becomes a new
+ * PENDING order, eligible now, that the next cycle's settle phase retries against a fresh quote.
+ * A remainder of an already-pending STRATEGY exit keeps that order's reservation (settlement
+ * released only the filled qty); a remainder of an immediate fill reserves its own qty.
+ */
+async function bookExitRemainder(
+  tx: Prisma.TransactionClient,
+  input: { accountId: string; cycleId: string; order: CommitOrder; config: StrategyConfig; now: Date },
+  remainderQty: string,
+  alreadyReserved: boolean,
+): Promise<void> {
+  if (d(remainderQty).lte(0)) return;
+  // Reserve before booking. If the owner cannot reserve the remainder, book nothing: the unsold
+  // quantity stays in the position and the next cycle plans a fresh exit (review F2).
+  if (!alreadyReserved && (input.order.ownerScope ?? "LEGACY") === "STRATEGY" && input.order.strategyInstanceId) {
+    const reserved = await reserveExitQty(tx, {
+      accountId: input.accountId,
+      strategyInstanceId: input.order.strategyInstanceId,
+      pairAddress: input.order.pairAddress,
+      qty: remainderQty,
+    });
+    if (!reserved.ok) return;
+  }
+  const existing = await tx.order.count({ where: { clientOrderId: { startsWith: `${input.order.clientOrderId}:rem` } } });
+  await tx.order.create({
+    data: {
+      clientOrderId: `${input.order.clientOrderId}:rem${existing + 1}`,
+      cycleId: input.cycleId,
+      accountId: input.accountId,
+      pairAddress: input.order.pairAddress,
+      baseSymbol: input.order.baseSymbol,
+      side: "SELL",
+      intent: input.order.intent,
+      status: "PENDING",
+      qty: remainderQty,
+      filledQty: 0,
+      observationId: input.order.observationId,
+      decisionObservationId: input.order.observationId,
+      reasonCodes: [...input.order.reasonCodes, "EXIT_PARTIAL_REMAINDER", "ORDER_PENDING"],
+      executionMode: input.order.executionMode ?? "PAPER",
+      venue: input.order.venue ?? "PAPER",
+      instrumentId: input.order.instrumentId ?? null,
+      strategyVersion: input.order.strategyVersion ?? null,
+      strategyInstanceId: input.order.strategyInstanceId ?? null,
+      intentId: input.order.intentId ?? null,
+      ownerScope: input.order.ownerScope ?? "LEGACY",
+      submissionState: input.order.submissionState ?? "LOCAL",
+      submittedAt: input.now,
+      eligibleAt: input.now,
+      expiresAt: new Date(input.now.getTime() + input.config.orderExpiryMs),
+    },
+  });
 }
 
 export async function commitProposedOrder(
@@ -211,9 +322,14 @@ export async function settlePendingOrder(
       fillObservationId: fillObservation.id,
     },
   );
+  // settlePendingOrder is the only place a pending order's exit reservation is released (review F3):
+  // here for gate/quote/ledger rejections, above for expiry and missing observation.
+  if (result.status === "REJECTED" || result.status === "EXPIRED") await releasePendingExitReservation(tx, order);
+  // Report what actually filled; a capped exit fills less than requested (review F8).
+  const after = result.status === "FILLED" ? await tx.order.findUnique({ where: { id: order.id } }) : null;
   return {
     ...result,
-    filledQty: order.qty.toString(),
+    filledQty: after ? after.filledQty.toString() : order.qty.toString(),
     side: order.side as "BUY" | "SELL",
     pairAddress: order.pairAddress,
     fillObservationId: fillObservation.id,
@@ -235,66 +351,7 @@ async function fillExistingPending(
   expiresAt: Date | null,
   provenance?: { decisionObservationId: string | null; fillObservationId: string },
 ): Promise<{ status: "FILLED" | "REJECTED" | "EXPIRED"; reason: ReasonCode | null }> {
-  const observation = await tx.marketObservation.findUnique({ where: { id: input.order.observationId } });
-  if (!observation || observation.priceUsd === null) {
-    await tx.order.update({
-      where: { id: orderId },
-      data: { status: "REJECTED", rejectReason: "MISSING_PRICE" },
-    });
-    return { status: "REJECTED", reason: "MISSING_PRICE" };
-  }
-  const instrumentKey = input.order.instrumentId ?? input.order.pairAddress;
-  const needsDexLiquidity = !instrumentKey.startsWith("fx:") && !instrumentKey.startsWith("etf:") && !instrumentKey.startsWith("commodity:");
-  if (needsDexLiquidity && observation.liquidityUsd === null) {
-    await tx.order.update({
-      where: { id: orderId },
-      data: { status: "REJECTED", rejectReason: "MISSING_LIQUIDITY" },
-    });
-    return { status: "REJECTED", reason: "MISSING_LIQUIDITY" };
-  }
-  const freshness = resolveObservationFreshness(observation.freshness, {
-    mode: input.mode,
-    receivedAt: observation.receivedAt,
-    now: input.now,
-    liveMaxAgeMs: input.config.liveMaxAgeMs,
-    delayedMaxAgeMs: input.config.delayedMaxAgeMs,
-  });
-  if (input.order.side === "BUY" && freshness !== "LIVE") {
-    const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true;
-    const delayedOk = freshness === "DELAYED" && input.config.allowDemoPaperEntries === true;
-    if (!demoOk && !delayedOk) {
-      const reason = freshnessReason(freshness);
-      await tx.order.update({
-        where: { id: orderId },
-        data: { status: "REJECTED", rejectReason: reason },
-      });
-      return { status: "REJECTED", reason };
-    }
-  }
-  if (input.order.side === "SELL" && freshness !== "LIVE") {
-    const delayedOk = freshness === "DELAYED" && input.config.allowDelayedExits;
-    const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true;
-    if (!delayedOk && !demoOk) {
-      const reason = freshnessReason(freshness);
-      await tx.order.update({
-        where: { id: orderId },
-        data: { status: "REJECTED", rejectReason: reason },
-      });
-      return { status: "REJECTED", reason };
-    }
-  }
-
-  const quoted = quoteFill({
-    side: input.order.side,
-    midPriceUsd: observation.priceUsd.toString(),
-    quantity: input.order.qty,
-    liquidityUsd: observation.liquidityUsd?.toString() ?? "0",
-    feeBps: input.config.feeBps,
-    maxSlippageBps: input.config.maxSlippageBps,
-    spreadBpsEstimate: input.config.spreadBpsEstimate,
-    maxPriceImpactBps: input.config.maxPriceImpactBps,
-    instrumentId: input.order.instrumentId ?? input.order.pairAddress,
-  });
+  const quoted = await gateAndQuote(tx, input);
   if (!quoted.ok) {
     await tx.order.update({
       where: { id: orderId },
@@ -302,6 +359,7 @@ async function fillExistingPending(
     });
     return { status: "REJECTED", reason: quoted.reason };
   }
+  const observation = quoted.observation;
 
   const account = await tx.paperAccount.findUnique({ where: { id: input.accountId } });
   const positions = await tx.position.findMany({ where: { accountId: input.accountId } });
@@ -428,6 +486,7 @@ async function fillExistingPending(
     where: { id: input.accountId },
     data: { cashUsd: applied.state.cashUsd },
   });
+  await bookExitRemainder(tx, input, quoted.fill.remainderQty, true);
   return { status: "FILLED", reason: "FILLED" };
 }
 
@@ -444,61 +503,12 @@ async function fillCommittedOrder(
   eligibleAt: Date,
   expiresAt: Date | null,
 ): Promise<{ status: "FILLED" | "REJECTED"; reason: ReasonCode | null }> {
-  const observation = await tx.marketObservation.findUnique({ where: { id: input.order.observationId } });
-  if (!observation || observation.priceUsd === null) {
-    await reject(tx, input, "MISSING_PRICE", expiresAt, eligibleAt);
-    return { status: "REJECTED", reason: "MISSING_PRICE" };
-  }
-  const instrumentKey = input.order.instrumentId ?? input.order.pairAddress;
-  const needsDexLiquidity =
-    !instrumentKey.startsWith("fx:") &&
-    !instrumentKey.startsWith("etf:") &&
-    !instrumentKey.startsWith("commodity:");
-  if (needsDexLiquidity && observation.liquidityUsd === null) {
-    await reject(tx, input, "MISSING_LIQUIDITY", expiresAt, eligibleAt);
-    return { status: "REJECTED", reason: "MISSING_LIQUIDITY" };
-  }
-  const freshness = resolveObservationFreshness(observation.freshness, {
-    mode: input.mode,
-    receivedAt: observation.receivedAt,
-    now: input.now,
-    liveMaxAgeMs: input.config.liveMaxAgeMs,
-    delayedMaxAgeMs: input.config.delayedMaxAgeMs,
-  });
-  if (input.order.side === "BUY" && freshness !== "LIVE") {
-    const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true;
-    const delayedOk = freshness === "DELAYED" && input.config.allowDemoPaperEntries === true;
-    if (!demoOk && !delayedOk) {
-      const reason = freshnessReason(freshness);
-      await reject(tx, input, reason, expiresAt, eligibleAt);
-      return { status: "REJECTED", reason };
-    }
-  }
-  if (input.order.side === "SELL" && freshness !== "LIVE") {
-    const delayedOk = freshness === "DELAYED" && input.config.allowDelayedExits;
-    const demoOk = freshness === "DEMO" && input.config.allowDemoPaperEntries === true;
-    if (!delayedOk && !demoOk) {
-      const reason = freshnessReason(freshness);
-      await reject(tx, input, reason, expiresAt, eligibleAt);
-      return { status: "REJECTED", reason };
-    }
-  }
-
-  const quoted = quoteFill({
-    side: input.order.side,
-    midPriceUsd: observation.priceUsd.toString(),
-    quantity: input.order.qty,
-    liquidityUsd: observation.liquidityUsd?.toString() ?? "0",
-    feeBps: input.config.feeBps,
-    maxSlippageBps: input.config.maxSlippageBps,
-    spreadBpsEstimate: input.config.spreadBpsEstimate,
-    maxPriceImpactBps: input.config.maxPriceImpactBps,
-    instrumentId: input.order.instrumentId ?? input.order.pairAddress,
-  });
+  const quoted = await gateAndQuote(tx, input);
   if (!quoted.ok) {
     await reject(tx, input, quoted.reason, expiresAt, eligibleAt);
     return { status: "REJECTED", reason: quoted.reason };
   }
+  const observation = quoted.observation;
 
   const account = await tx.paperAccount.findUnique({ where: { id: input.accountId } });
   const positions = await tx.position.findMany({ where: { accountId: input.accountId } });
@@ -628,6 +638,7 @@ async function fillCommittedOrder(
     where: { id: input.accountId },
     data: { cashUsd: applied.state.cashUsd },
   });
+  await bookExitRemainder(tx, input, quoted.fill.remainderQty, false);
   return { status: "FILLED", reason: "FILLED" };
 }
 
@@ -741,6 +752,7 @@ export async function applyExternalFill(
       estimatedCostUsd: notional.plus(fee).toFixed(8),
       spreadBps: "0",
       impactBps: "0",
+      remainderQty: "0",
     },
   });
   if (!applied.ok) return { status: "REJECTED", reason: applied.reason };

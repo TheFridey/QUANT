@@ -203,6 +203,8 @@ model BacktestRun {
   equityCurve       Json?
   reportHtml        String?
   error             String?
+  /// PRE_SANDBOX_FIX for rows created before the streaming fd-3 sandbox (audit C1/C2); never promotion evidence.
+  sandboxEra        String               @default("STREAMING_FD3")
   startedAt         DateTime
   finishedAt        DateTime?
   createdAt         DateTime             @default(now())
@@ -307,6 +309,8 @@ model CycleRun {
   strategyRevision    String?
   riskRevision        String?
   pinnedContext       Json?
+  /// Executor phase durations in ms (settle, plan, reconcile, admit, protect, transaction) — audit H3.
+  executorTimings     Json?
 
   @@index([status, startedAt])
   @@index([startedAt])
@@ -549,6 +553,8 @@ model ExperimentReport {
   configHash      String?
   datasetHash     String?
   backtestRunId   String?
+  /// PRE_SANDBOX_FIX for rows created before the streaming fd-3 sandbox (audit C1/C2); never promotion evidence.
+  sandboxEra      String   @default("STREAMING_FD3")
   createdAt       DateTime @default(now())
 
   @@index([hypothesisId, createdAt])
@@ -567,6 +573,8 @@ model StrategyArtifact {
   artifactHash    String   @unique
   runtimeLoadable Boolean  @default(false)
   meta            Json?
+  /// PRE_SANDBOX_FIX for rows created before the streaming fd-3 sandbox (audit C1/C2); never promotion evidence.
+  sandboxEra      String   @default("STREAMING_FD3")
   createdBy       String
   createdAt       DateTime @default(now())
 

@@ -100,6 +100,7 @@ export function planCycle(input: PlanInput): {
   const breaker = evaluateCircuitBreaker({
     dailyPnlUsd: dailyPnl,
     startingBalanceUsd: input.startingBalanceUsd,
+    dayStartEquityUsd: input.dayStartEquityUsd ?? null,
     maxDailyLossPct: input.config.maxDailyLossPct,
     equityUsd: valuedSeed.equityUsd,
     highWaterMarkUsd: input.highWaterMarkUsd ?? valuedSeed.equityUsd,
@@ -155,6 +156,7 @@ export function planCycle(input: PlanInput): {
       maxPositions: input.config.maxPositions,
       dailyPnlUsd: dailyPnl,
       startingBalanceUsd: input.startingBalanceUsd,
+      dayStartEquityUsd: input.dayStartEquityUsd ?? null,
       maxDailyLossPct: input.config.maxDailyLossPct,
       valuation: valued.valuation,
       equityUsd: valued.equityUsd,
@@ -874,6 +876,7 @@ function executeOrder(
       decision: row("EXECUTOR", pair, "REJECT", ["NON_POSITIVE_QTY"], "1.000000", audit, {}, "quote", Date.now() - started),
     };
   }
+  const riskReducing = side === "SELL" && intent !== "ENTRY";
   const quoted = quoteFill({
     side,
     midPriceUsd: pair.priceUsd,
@@ -883,6 +886,8 @@ function executeOrder(
     maxSlippageBps: config.maxSlippageBps,
     spreadBpsEstimate: config.spreadBpsEstimate,
     maxPriceImpactBps: config.maxPriceImpactBps,
+    // Exit execution policy: risk-reducing SELLs are never rejected for impact (audit C3).
+    exitPolicy: riskReducing ? { maxExitImpactBps: config.maxExitImpactBps } : null,
   });
   if (!quoted.ok) {
     return {
@@ -925,7 +930,8 @@ function executeOrder(
       baseSymbol: pair.baseSymbol,
       side,
       intent,
-      qty: quoted.fill.qty,
+      // A capped exit still asks for the full quantity; the store books the rest as a pending reduce order.
+      qty: riskReducing ? d(quantity).toFixed(8) : quoted.fill.qty,
       observationId: pair.observationId,
       reasonCodes,
       eligibleAt: eligibleAt.toISOString(),

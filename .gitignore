@@ -11,6 +11,7 @@ test-results
 packages/shared/src/generated
 .turbo
 agent-tools
+packages/evolution/sandbox/build
 
 # Claude Code: operator-only unlock marker and personal settings
 .claude/protected-edits.unlock

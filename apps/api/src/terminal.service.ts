@@ -40,7 +40,7 @@ import {
   inferObservationProvenance,
   instrumentIdFromPositionKey,
   isReasonCode,
-  mergeStrategy,
+  DEFAULT_STRATEGY,
   newId,
   operatorOrderSchema,
   productSemanticsFor,
@@ -58,6 +58,7 @@ import {
   type StrategyConfig,
 } from "@odin/shared";
 import { PrismaClient, toJson } from "@odin/shared/db";
+import { resetPaperBalance } from "./paper-balance.js";
 import {
   allowedActions,
   compareDesiredVsConfirmed,
@@ -371,6 +372,7 @@ export class TerminalService {
           : usd(d(report.valuation.equityUsd).minus(d(account.sessionStartEquityUsd.toString())))
         : report.valuation.realizedPnlUsd,
       startingBalanceUsd: account.startingBalanceUsd.toString(),
+      dayStartEquityUsd: account.sessionStartEquityUsd?.toString() ?? null,
       maxDailyLossPct: config?.maxDailyLossPct ?? "3",
       equityUsd: report.valuation.equityUsd,
       highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,
@@ -1242,39 +1244,49 @@ export class TerminalService {
       }
     }
     const parsedPatch = strategyPatchSchema.parse(patch);
-    const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
-    if (!engine) throw new NotFoundException("Engine is not initialised");
-    const patchRecord = parsedPatch as Record<string, unknown>;
-    const operationalOnly = strategyPatchOnlyOperational(patchRecord);
-    // D16: operational flags work while RUNNING; strategy/risk patches still require pause.
-    if (engine.status === "RUNNING" && strategyPatchHasNonOperationalKeys(patchRecord)) {
-      throw new ConflictException("Pause the engine before changing risk limits");
-    }
-    const current = parseStrategyConfig(engine.config);
-    if (promotedPaperStrategy(engine.activeStrategy)) {
-      const strategyChanged = Object.entries(parsedPatch).some(([key, value]) => {
-        if (value === undefined || isOperationalStrategyKey(key)) return false;
-        const currentValue = (current as Record<string, unknown>)[key];
-        return String(currentValue) !== String(value);
-      });
-      if (strategyChanged) {
-        throw new ConflictException("The promoted paper strategy stays unchanged until a new operator promotion");
+    // Audit C4 (review): the same engine-row lock as promotion, so a PATCH can never overwrite a
+    // promotion that committed after this request read the engine.
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "EngineControl" WHERE id = ${"primary"} FOR UPDATE`;
+      const engine = await tx.engineControl.findUnique({ where: { id: "primary" } });
+      if (!engine) throw new NotFoundException("Engine is not initialised");
+      const patchRecord = parsedPatch as Record<string, unknown>;
+      const operationalOnly = strategyPatchOnlyOperational(patchRecord);
+      // D16: operational flags work while RUNNING; strategy/risk patches still require pause.
+      if (engine.status === "RUNNING" && strategyPatchHasNonOperationalKeys(patchRecord)) {
+        throw new ConflictException("Pause the engine before changing risk limits");
       }
-    }
-    const next = mergeStrategy(current, parsedPatch);
-    if (!d(next.startingBalanceUsd).eq(d(current.startingBalanceUsd))) {
-      await this.resetBalance(next);
-    }
-    const updated = await this.prisma.engineControl.update({
-      where: { id: "primary" },
-      data: { config: toJson(next), updatedBy: actor },
-    });
-    return {
-      config: parseStrategyConfig(updated.config),
-      status: updated.status,
-      operationalOnly,
-      configRevision: updated.updatedAt.toISOString(),
-    };
+      // Audit H1 (review F1): an invalid stored config must stay fixable, so validate stored ⊕ patch
+      // rather than parsing the stored value on its own first. Missing keys come from DEFAULT_STRATEGY.
+      const stored =
+        engine.config && typeof engine.config === "object" && !Array.isArray(engine.config)
+          ? (engine.config as Record<string, unknown>)
+          : {};
+      const current: Record<string, unknown> = { ...DEFAULT_STRATEGY, ...stored };
+      if (promotedPaperStrategy(engine.activeStrategy)) {
+        const strategyChanged = Object.entries(parsedPatch).some(([key, value]) => {
+          if (value === undefined || isOperationalStrategyKey(key)) return false;
+          return String(current[key]) !== String(value);
+        });
+        if (strategyChanged) {
+          throw new ConflictException("The promoted paper strategy stays unchanged until a new operator promotion");
+        }
+      }
+      const next = parseStrategyConfig({ ...stored, ...parsedPatch });
+      if (!d(next.startingBalanceUsd).eq(d(String(current.startingBalanceUsd)))) {
+        await resetPaperBalance(tx, next.startingBalanceUsd, "Reset paper starting balance");
+      }
+      const updated = await tx.engineControl.update({
+        where: { id: "primary" },
+        data: { config: toJson(next), updatedBy: actor },
+      });
+      return {
+        config: parseStrategyConfig(updated.config),
+        status: updated.status,
+        operationalOnly,
+        configRevision: updated.updatedAt.toISOString(),
+      };
+    }, { timeout: 15_000, maxWait: 10_000 });
   }
 
   async submitOrder(body: unknown) {
@@ -1415,26 +1427,6 @@ export class TerminalService {
   async birdeyeOhlcv(tokenAddress: string) {
     const now = Math.floor(Date.now() / 1000);
     return new BirdeyeClient(process.env.BIRDEYE_API_KEY || undefined).getOhlcv(tokenAddress, "15m", now - 60 * 60 * 24, now);
-  }
-
-  private async resetBalance(config: StrategyConfig) {
-    const orders = await this.prisma.order.count();
-    if (orders > 0) throw new ConflictException("Starting balance can change only before any paper order exists");
-    const amount = usd(d(config.startingBalanceUsd));
-    await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(641001)`;
-      await tx.paperAccount.update({ where: { id: "primary" }, data: { cashUsd: amount, startingBalanceUsd: amount } });
-      await tx.ledgerEntry.deleteMany({ where: { accountId: "primary", type: "OPENING_BALANCE" } });
-      await tx.ledgerEntry.create({
-        data: {
-          accountId: "primary",
-          type: "OPENING_BALANCE",
-          amountUsd: amount,
-          affectsCash: true,
-          note: "Reset paper starting balance",
-        },
-      });
-    });
   }
 
   private freshnessForObservation(
