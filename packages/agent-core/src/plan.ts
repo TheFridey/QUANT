@@ -7,6 +7,7 @@ import {
   findInstrument,
   intentIdFor,
   intentIdempotencyKey,
+  isTradableQuote,
   type CyclePair,
   type OrderIntent,
   type OrderOwnerScope,
@@ -423,6 +424,12 @@ export function planCycle(input: PlanInput): {
       // ENTER
       if (sentinel.get(pair.pairAddress)?.decision === "REJECT") {
         settle("REJECTED", "BLOCKED_BY_SENTINEL");
+        continue;
+      }
+      // Same quote allowlist the global PULSE path enforces: paper books settle against SOL/USD
+      // stable quotes (or fiat for FX/ETF), never against an arbitrary token quote.
+      if (!isTradableQuote(pair.quoteAddress)) {
+        settle("REJECTED", "QUOTE_NOT_ALLOWED");
         continue;
       }
       const aegis = runAegis({ pair, assessment: securityFor(input, pair), hasIntent: true, side: "BUY" });
