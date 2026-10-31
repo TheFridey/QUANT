@@ -1,6 +1,6 @@
 # AGENTS.md
 
-ODIN // QUANT: Solana research terminal and paper-trading system. pnpm monorepo (`apps/api` NestJS on 4318, `apps/web` Next.js on 4317, `apps/worker` BullMQ jobs; `packages/*` shared libraries). PostgreSQL 16 + Redis 7 via `docker compose`. Prisma lives in `packages/shared`. Read `docs/ARCHITECTURE.md` before cross-package changes; launch status and decisions are in `docs/launch/`.
+ODIN // QUANT: Solana research terminal and paper-trading system. pnpm monorepo (`apps/api` NestJS on 4318, `apps/web` Next.js on 4317, `apps/worker` BullMQ jobs; `packages/*` shared libraries). PostgreSQL 16 + Redis 7 via `docker compose`. Prisma lives in `packages/shared`. Read `docs/ARCHITECTURE.md` before cross-package changes; current status (audit findings and evidence) is in `docs/STATUS.md`; operations in `docs/RUNBOOKS.md`; superseded plans and decision logs are in `docs/archive/`.
 
 This is safety-critical financial software. These rules override convenience.
 

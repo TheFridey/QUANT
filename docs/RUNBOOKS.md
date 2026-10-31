@@ -1,6 +1,6 @@
 # QUANT Launch — Owner Runbooks (stub)
 
-Stub command sheet for Gate A/D handoff. Expand with measured results in `EVIDENCE.md`.
+Stub command sheet for Gate A/D handoff. Current status and evidence are in `STATUS.md`.
 
 ## Scope (D25)
 

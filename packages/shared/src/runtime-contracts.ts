@@ -1,7 +1,7 @@
 /**
  * Frozen release contracts for attributed intents, allocations, order state,
  * and operator inactivity reasons. Parallel workstreams must extend additively.
- * See docs/launch/RUNTIME_CONTRACTS.md.
+ * See docs/archive/launch/RUNTIME_CONTRACTS.md.
  */
 import { z } from "zod";
 

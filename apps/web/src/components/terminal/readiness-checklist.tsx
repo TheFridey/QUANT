@@ -188,7 +188,7 @@ export function ReadinessChecklist({ compact = false }: { compact?: boolean }) {
         >
           Settings
         </Link>{" "}
-        and the runbook (docs/launch/RUNBOOKS.md).
+        and the runbook (docs/RUNBOOKS.md).
       </p>
     </Panel>
   );

@@ -50,7 +50,7 @@ Freshness is a function of provider mode and receipt time. It is never inferred 
 | `REPLAY` | Rows copied from stored observations. Not a live quote. |
 | `DEMO` | Provider calls are disabled. No prices are synthesized. |
 
-Entries require a `LIVE` quote and a `LIVE` book valuation. Exits may use `DELAYED` quotes only when `allowDelayedExits` is on. `STALE`, `REPLAY`, and `DEMO` cannot open or close risk. A missing mark makes equity `null` and blocks new entries. It is not treated as zero P&L.
+Entries require a `LIVE` quote and a `LIVE` book valuation. A `DELAYED` quote never opens risk; exits may use one only when `allowDelayedExits` is on. `STALE` and `REPLAY` cannot open or close risk. `DEMO` quotes open paper risk only when `allowDemoPaperEntries` is on **and** `DATA_MODE=demo` (the flag defaults to off); in demo mode, exits may use `DEMO` quotes. A missing mark makes equity `null` and blocks new entries. It is not treated as zero P&L.
 
 ## Agents
 
@@ -71,19 +71,36 @@ Operator tickets skip the momentum rule and are labeled `OPERATOR_OVERRIDE`. The
 
 ### Institutional risk defaults
 
-Older configs merge missing keys from `DEFAULT_STRATEGY`:
+`DEFAULT_STRATEGY` in `packages/shared/src/strategy.ts` is authoritative. Older configs take missing keys from it; stored values are never rewritten. This table is generated from it, and CI fails if it drifts:
 
-| Limit | Default |
-| --- | --- |
-| `maxRiskPerTradePct` | `0.5` |
-| `maxPositionPctEquity` | `5` |
-| `maxAggregateExposurePct` | `20` |
-| `maxDailyLossPct` | `3` |
-| `maxTotalDrawdownPct` | `10` |
-| `maxPositions` | `4` |
-| `maxPriceImpactBps` | `150` |
-| `maxExitImpactBps` | `1000` (must be ≥ the entry caps) |
-| `paperLatencyMs` | `1000` (CI soak median ingest→executor 706 ms, rounded up) |
+<!-- limits:start (generated from DEFAULT_STRATEGY by scripts/render-limits.mjs; do not edit) -->
+
+| Limit | Default | Meaning |
+| --- | --- | --- |
+| `startingBalanceUsd` | `10000.00000000` | Paper account starting balance (USD) |
+| `maxPositions` | `8` | Open positions at once |
+| `maxRiskPerTradePct` | `0.5` | Stop-distance risk per trade, % of equity |
+| `maxPositionPctEquity` | `5` | Single position size, % of equity |
+| `maxAggregateExposurePct` | `20` | All open positions, % of equity |
+| `maxDailyLossPct` | `3` | Daily loss, % of start-of-day equity (Europe/London day) |
+| `maxTotalDrawdownPct` | `10` | Drawdown from high-water mark, % |
+| `maxParticipationPctLiquidity` | `1` | Entry notional, % of pool liquidity |
+| `maxSlippageBps` | `150` | Entry slippage cap (bps) |
+| `maxPriceImpactBps` | `150` | Entry price-impact cap (bps) |
+| `maxExitImpactBps` | `1000` | Exit impact per fill (bps); must be ≥ both entry caps; the rest becomes a pending reduce order |
+| `minOrderNotionalUsd` | `25` | Smallest order (USD) |
+| `minLiquidityUsd` | `25000` | Minimum pool liquidity for entry (USD) |
+| `minVolume24hUsd` | `50000` | Minimum 24h volume for entry (USD) |
+| `stopLossPct` | `3` | Stop loss, % |
+| `takeProfitPct` | `5` | Take profit, % |
+| `liveMaxAgeMs` | `45000` | Quote age still LIVE (ms) |
+| `delayedMaxAgeMs` | `180000` | Quote age still DELAYED (ms); older is STALE |
+| `allowDelayedExits` | `true` | Exits may use DELAYED quotes |
+| `allowDemoPaperEntries` | `false` | DEMO entries (only ever with DATA_MODE=demo); DELAYED never opens risk |
+| `paperLatencyMs` | `1000` | Earliest paper fill after the decision (ms); measured CI soak median 706 ms, rounded up |
+| `orderExpiryMs` | `60000` | Pending order expiry (ms) |
+
+<!-- limits:end -->
 
 The daily loss limit is `maxDailyLossPct` of **start-of-day equity**. The trading day rolls at **Europe/London midnight** (BST/GMT aware). A day never rolls while equity is unknown; daily P&L then reads unavailable and entries are blocked until marks return.
 
