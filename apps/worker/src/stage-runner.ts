@@ -61,6 +61,7 @@ import {
   parseStrategyConfig,
   pinExecutionContext,
   resolveExecutionContext,
+  recordMetric,
   rollSessionEquity,
   SAFETY_CODES,
   usd,
@@ -783,6 +784,10 @@ export class StageRunner {
     });
     endPhase("protect");
     await this.prisma.cycleRun.update({ where: { id: cycleId }, data: { executorTimings: timings } });
+    // Audit F5: executor phase and transaction durations as structured metrics.
+    for (const [phase, ms] of Object.entries(timings)) {
+      recordMetric(phase === "transaction" ? "odin_executor_transaction_ms" : "odin_executor_phase_ms", ms, { phase });
+    }
     await this.advance(cycleId, "executor");
   }
 
