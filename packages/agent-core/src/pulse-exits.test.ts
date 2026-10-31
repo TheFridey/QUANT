@@ -101,6 +101,28 @@ describe("pulse invariant exits (D12) + instance exits (D11)", () => {
     expect(draft.output).toMatchObject({ side: "SELL", intent: "EXIT" });
   });
 
+  it("a stop-loss SELL is planned even when the token's security is UNKNOWN", () => {
+    const pair = solPair({ priceUsd: "90" });
+    const plan = planCycle(
+      planInput({
+        pairs: [pair],
+        securityByMint: {},
+        positions: [
+          {
+            pairAddress,
+            baseSymbol: "SOL",
+            baseQty: "0.25000000",
+            avgCostUsd: "100.00000000",
+            realizedPnlUsd: "0.00000000",
+          },
+        ],
+        marks: { [pairAddress]: { priceUsd: "90", freshness: "LIVE" } },
+      }),
+    );
+    expect(plan.orders.some((order) => order.side === "SELL")).toBe(true);
+    expect(plan.orders.some((order) => order.side === "BUY")).toBe(false);
+  });
+
   it("promoted HOLD still fires time exit when maxHoldingMs elapses", () => {
     const pair = solPair({ priceUsd: "101", receivedAt: "2026-10-28T18:00:00.000Z" });
     const draft = runPulse(

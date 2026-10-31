@@ -95,6 +95,7 @@ import {
   updateTrailing,
 } from "@odin/trading-engine";
 import { upsertDecision } from "./decisions.js";
+import { workerLog } from "./logger.js";
 import { admitPlannedOrders } from "./executor/admit.js";
 import type { ExecutorHost } from "./executor/host.js";
 import { consumeCyclePlan } from "./executor/plan-consume.js";
@@ -120,17 +121,23 @@ export type AgentBus = {
 
 export const silentBus: AgentBus = { async publish() {} };
 
-/**
- * Executor interactive transaction limits (audit H3). Prisma's default is a 5 s timeout and
- * 2 s maxWait; the executor settles, plans, reconciles and admits under one account lock, so it
- * gets explicit, overridable bounds. Tune with ODIN_EXECUTOR_TX_TIMEOUT_MS / _MAX_WAIT_MS.
- */
 /** Provider-backed security assessments are reused for an hour (Birdeye or on-chain RPC). */
 const SECURITY_CACHE_MS = 3_600_000;
 /** New security lookups per cycle; bounds RPC/Birdeye load (the public RPC rate-limits per IP). */
 const SECURITY_FETCHES_PER_CYCLE = 4;
 /** A failed lookup (provider unreachable) is retried after this long, not every plan load. */
 const SECURITY_RETRY_MS = 120_000;
+
+/**
+ * How long a provider result may be reused, or null when it must never be reused. PASS/REVIEW/BLOCK
+ * hold for an hour; an incomplete UNKNOWN (e.g. holder data refused) is retried sooner so a newly
+ * configured provider takes effect; mock and failed lookups are never reused from cache.
+ */
+function cacheTtl(assessment: SecurityAssessment): number | null {
+  if (assessment.source === "mock") return null;
+  if (assessment.source === "unavailable") return SECURITY_RETRY_MS;
+  return assessment.category === "UNKNOWN" ? SECURITY_RETRY_MS : SECURITY_CACHE_MS;
+}
 
 /** FIXTURE environment only: labelled mock PASS so the isolated lifecycle can exercise entries. */
 function fixtureAssessment(tokenAddress: string, now: Date): SecurityAssessment {
@@ -155,6 +162,11 @@ function fixtureAssessment(tokenAddress: string, now: Date): SecurityAssessment 
   };
 }
 
+/**
+ * Executor interactive transaction limits (audit H3). Prisma's default is a 5 s timeout and
+ * 2 s maxWait; the executor settles, plans, reconciles and admits under one account lock, so it
+ * gets explicit, overridable bounds. Tune with ODIN_EXECUTOR_TX_TIMEOUT_MS / _MAX_WAIT_MS.
+ */
 const EXECUTOR_TRANSACTION_LIMITS = {
   timeout: boundedIntFromEnv("ODIN_EXECUTOR_TX_TIMEOUT_MS", 20_000, 60_000),
   maxWait: boundedIntFromEnv("ODIN_EXECUTOR_TX_MAX_WAIT_MS", 10_000, 30_000),
@@ -788,7 +800,8 @@ export class StageRunner {
       historyAddresses,
       ctx.tradingEnvironment,
     );
-    const securityByMint = await this.loadSecurity(pairs, config, ctx.tradingEnvironment);
+    // The executor re-loads the plan inside its transaction: there, only memo/cache — no network.
+    const securityByMint = await this.loadSecurity(pairs, config, ctx.tradingEnvironment, db === this.prisma);
     const aggregateExposureUsd =
       valuation.equityUsd === null
         ? "0"
@@ -1407,11 +1420,19 @@ export class StageRunner {
     pairs: CyclePair[],
     config: StrategyConfig,
     tradingEnvironment: TradingEnvironment,
+    allowFetch: boolean,
   ): Promise<Record<string, SecurityAssessment>> {
     const out: Record<string, SecurityAssessment> = {};
     const solana = pairs.filter((pair) => pair.chainId === "solana");
     if (tradingEnvironment === "FIXTURE") {
       for (const pair of solana) out[pair.baseAddress] = fixtureAssessment(pair.baseAddress, this.now());
+      return out;
+    }
+    // REPLAY must not be gated by an assessment fetched today (look-ahead): UNKNOWN throughout.
+    if (tradingEnvironment === "REPLAY") {
+      for (const pair of solana) {
+        out[pair.baseAddress] = unknownAssessment(pair.baseAddress, "unavailable", this.now(), ["SECURITY_UNKNOWN"]);
+      }
       return out;
     }
     const birdeyeKey = process.env.BIRDEYE_API_KEY || undefined;
@@ -1433,21 +1454,22 @@ export class StageRunner {
     let fetched = 0;
     for (const pair of unique) {
       const memo = this.securityMemo.get(pair.baseAddress);
-      const memoTtl = memo?.assessment.source === "unavailable" ? SECURITY_RETRY_MS : SECURITY_CACHE_MS;
-      if (memo && this.now().getTime() - memo.at < memoTtl) {
+      const memoTtl = memo ? cacheTtl(memo.assessment) : null;
+      if (memo && memoTtl !== null && this.now().getTime() - memo.at < memoTtl) {
         out[pair.baseAddress] = memo.assessment;
         continue;
       }
       const cached = await this.prisma.securityAssessment.findUnique({ where: { tokenAddress: pair.baseAddress } });
       const cachedAssessment = cached ? toSecurityAssessment(cached) : null;
-      if (cachedAssessment && cachedAssessment.fetchedAt && cachedAssessment.source !== "unavailable") {
+      const cachedTtl = cachedAssessment ? cacheTtl(cachedAssessment) : null;
+      if (cachedAssessment && cachedAssessment.fetchedAt && cachedTtl !== null) {
         const age = this.now().getTime() - Date.parse(cachedAssessment.fetchedAt);
-        if (Number.isFinite(age) && age >= 0 && age < SECURITY_CACHE_MS) {
+        if (Number.isFinite(age) && age >= 0 && age < cachedTtl) {
           out[pair.baseAddress] = { ...cachedAssessment, stale: false };
           continue;
         }
       }
-      if (fetched >= SECURITY_FETCHES_PER_CYCLE) {
+      if (!allowFetch || fetched >= SECURITY_FETCHES_PER_CYCLE) {
         out[pair.baseAddress] = unknownAssessment(pair.baseAddress, "unavailable", this.now(), ["SECURITY_UNKNOWN"]);
         continue;
       }
@@ -2326,8 +2348,11 @@ function toSecurityAssessment(row: {
 let liveSecuritySource: OnChainSecuritySource | null = null;
 
 export const liveFeed: MarketFeed = {
-  fetchUniverse(limit) {
-    return fetchSolanaUniverse({ limit });
+  async fetchUniverse(limit) {
+    const result = await fetchSolanaUniverse({ limit });
+    // Discovery provenance: sources used, rejections by reason, duplicates collapsed.
+    if (result.discovery) workerLog.info({ discovery: result.discovery }, "solana discovery");
+    return result;
   },
   // Created on first use so SOLANA_RPC_URL is read after the worker has loaded its env file.
   get security() {
