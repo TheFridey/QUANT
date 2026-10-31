@@ -75,11 +75,61 @@ export function ResearchOperationsSection() {
   );
 }
 
+function RunnerSettings({
+  runner,
+}: {
+  runner: {
+    runtime: string;
+    available: boolean;
+    reason: string;
+    seccomp: string;
+    seccompDetail: string;
+    memoryEnforcement: string;
+    memoryMb: number;
+    timeoutMs: number;
+    perBarTimeoutMs: number;
+  };
+}) {
+  const seccompOn = runner.seccomp === "default-deny-errno";
+  return (
+    <div className="space-y-1 border-b border-border p-3 text-xs" data-testid="forge-runner-settings">
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        <span>
+          Sandbox: <span className={runner.available ? "text-profit" : "text-loss"}>{runner.available ? runner.runtime : "unavailable"}</span>
+        </span>
+        <span title={runner.seccompDetail}>
+          Seccomp: <span className={seccompOn ? "text-profit" : "text-loss"}>{seccompOn ? "on" : "unavailable"}</span>
+        </span>
+        <span>
+          Memory limit:{" "}
+          {runner.memoryEnforcement === "rlimit-as" ? `${runner.memoryMb.toLocaleString("en-GB")} MB` : "not enforced"}
+        </span>
+        <span>
+          Timeout: {runner.timeoutMs / 1000}s total, {runner.perBarTimeoutMs / 1000}s per bar
+        </span>
+      </div>
+      {!runner.available || !seccompOn ? <p className="text-loss">{runner.reason}</p> : null}
+    </div>
+  );
+}
+
 export function ForgeMonitorSection() {
   const [data, setData] = useState<{
+    runner?: {
+      runtime: string;
+      available: boolean;
+      reason: string;
+      seccomp: string;
+      seccompDetail: string;
+      memoryEnforcement: string;
+      memoryMb: number;
+      timeoutMs: number;
+      perBarTimeoutMs: number;
+    };
     runs: Array<{
       id: string;
       strategyVersion: string;
+      sandboxEra?: string;
       approvalStatus: string;
       codeHash: string | null;
       returnPct: string | null;
@@ -98,12 +148,24 @@ export function ForgeMonitorSection() {
       {!data ? (
         <EmptyState title="Forge reports unavailable" />
       ) : (
+        <>
+        {data.runner ? <RunnerSettings runner={data.runner} /> : null}
         <ul className="divide-y divide-border text-xs">
           {data.runs.map((run) => (
             <li key={run.id} className="px-3 py-2">
               <div className="flex justify-between gap-2">
                 <span className="mono">{run.strategyVersion}</span>
-                <span className="text-muted">{run.approvalStatus}</span>
+                <span className="flex items-center gap-2">
+                  {run.sandboxEra === "PRE_SANDBOX_FIX" ? (
+                    <span
+                      className="rounded border border-loss/50 px-1 text-loss"
+                      title="Produced before the 30 Oct 2026 sandbox integrity fix. Not valid promotion evidence."
+                    >
+                      Pre-fix result
+                    </span>
+                  ) : null}
+                  <span className="text-muted">{run.approvalStatus}</span>
+                </span>
               </div>
               <div className="mt-1 text-muted">
                 hash {run.codeHash?.slice(0, 12) ?? "none"} · return {run.returnPct ?? "unavailable"} · pipeline{" "}
@@ -114,6 +176,7 @@ export function ForgeMonitorSection() {
           ))}
           {data.runs.length === 0 ? <li className="p-3 text-muted">No forged reports stored.</li> : null}
         </ul>
+        </>
       )}
     </Panel>
   );

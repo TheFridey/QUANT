@@ -11,8 +11,10 @@
     }
   },
   "scripts": {
-    "build": "tsc -b --pretty false",
-    "typecheck": "tsc -b --pretty false"
+    "build": "node scripts/build-sandbox.mjs && tsc -b --pretty false",
+    "typecheck": "tsc -b --pretty false",
+    "sandbox:build": "node scripts/build-sandbox.mjs",
+    "seccomp:generate": "tsc -b --pretty false && node scripts/generate-seccomp.mjs"
   },
   "dependencies": {
     "@odin/agent-core": "workspace:*",

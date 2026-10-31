@@ -33,6 +33,8 @@ describe("promoted paper strategy immutability", () => {
         },
       },
     } as unknown as PrismaClient;
+    // updateConfig runs under an engine-row lock (audit C4); the mock passes the transaction through.
+    Object.assign(prisma, { $transaction: async (fn: (tx: PrismaClient) => Promise<unknown>) => fn(prisma), $queryRaw: async () => [] });
     const service = new TerminalService(prisma, {} as Queue);
 
     const paused = await service.act("pause", "operator@odin.local");

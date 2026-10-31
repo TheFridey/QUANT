@@ -132,6 +132,7 @@ export class LabService {
       startedAt: row.startedAt.toISOString(),
       finishedAt: row.finishedAt?.toISOString() ?? null,
       error: row.error,
+      sandboxEra: row.sandboxEra,
     }));
   }
 
@@ -158,6 +159,7 @@ export class LabService {
       releaseGate: row.releaseGate,
       equityCurve: row.equityCurve,
       error: row.error,
+      sandboxEra: row.sandboxEra,
       startedAt: row.startedAt.toISOString(),
       finishedAt: row.finishedAt?.toISOString() ?? null,
       strategyVersion: row.strategyVersion
@@ -438,7 +440,7 @@ export class LabService {
     const row = await this.prisma.backtestRun.findUnique({ where: { id } });
     if (!row) throw new NotFoundException("Backtest run not found");
     if (!row.reportHtml) throw new NotFoundException("Report not generated for this run");
-    return { html: row.reportHtml, filename: `odin-research-${id}.html` };
+    return { html: withSandboxEraBanner(row.reportHtml, row.sandboxEra), filename: `odin-research-${id}.html` };
   }
 
   async requestOracleReview(runId: string) {
@@ -662,3 +664,12 @@ export class LabService {
 }
 
 export type { StrategyConfig };
+
+/** Reports created before the audit C1/C2 sandbox fix carry a visible banner; they are not promotion evidence. */
+export function withSandboxEraBanner(html: string, sandboxEra: string): string {
+  if (sandboxEra !== "PRE_SANDBOX_FIX") return html;
+  const banner =
+    '<div role="alert" style="background:#7f1d1d;color:#fff;padding:12px;font:14px sans-serif">' +
+    "PRE_SANDBOX_FIX: produced before the 30 Oct 2026 sandbox integrity fix. Not valid evidence for promotion.</div>";
+  return /<body[^>]*>/i.test(html) ? html.replace(/<body[^>]*>/i, (tag) => `${tag}${banner}`) : `${banner}${html}`;
+}

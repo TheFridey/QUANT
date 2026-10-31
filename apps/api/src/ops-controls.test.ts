@@ -59,6 +59,8 @@ function mockService(initial: {
       findMany: async () => [],
     },
   } as unknown as PrismaClient;
+  // updateConfig runs under an engine-row lock (audit C4); the mock passes the transaction through.
+  Object.assign(prisma, { $transaction: async (fn: (tx: PrismaClient) => Promise<unknown>) => fn(prisma), $queryRaw: async () => [] });
   const ingest = { add: async () => ({ id: "job" }) } as unknown as Queue;
   return { service: new TerminalService(prisma, ingest), getRow: () => row, cycles };
 }

@@ -7,7 +7,7 @@ import {
 } from "@odin/evolution";
 import { DEFAULT_STRATEGY, configHashOf, parseStrategyConfig } from "@odin/shared";
 import type { PrismaClient } from "@odin/shared/db";
-import { BadRequestException } from "@nestjs/common";
+import { BadRequestException, ConflictException } from "@nestjs/common";
 import { describe, expect, it } from "vitest";
 import { EvolutionService } from "./evolution.service.js";
 
@@ -122,6 +122,7 @@ function buildValidatedFixtures(entryM5ChangePct = "3") {
 
   const artifact = {
     id: artifactId,
+    sandboxEra: "STREAMING_FD3",
     kind: "BUILTIN_MODULE",
     moduleRef: identity.moduleRef,
     moduleVersion: identity.moduleVersion,
@@ -154,19 +155,27 @@ function buildValidatedFixtures(entryM5ChangePct = "3") {
     contentHash: report.contentHash,
     signature: report.signature,
     createdAt,
+    sandboxEra: "STREAMING_FD3",
   };
   return { config, configHash, report, reportRow, artifact, approval, hypothesis, reportId, artifactId, approvalId };
 }
 
-function mockPrisma(seed: ReturnType<typeof buildValidatedFixtures>, options?: { missingReport?: boolean }) {
-  let row: { id: string; config: unknown; activeStrategy: unknown; runtimeState?: unknown } = {
+function mockPrisma(
+  seed: ReturnType<typeof buildValidatedFixtures>,
+  options?: { missingReport?: boolean; status?: string; artifactEra?: string; engineStartingBalanceUsd?: string; orderCount?: number },
+) {
+  let row: { id: string; status: string; config: unknown; activeStrategy: unknown; runtimeState?: unknown } = {
     id: "primary",
-    config: { ...DEFAULT_STRATEGY },
+    // Promotion requires a PAUSED or STOPPED engine (audit C4).
+    status: options?.status ?? "PAUSED",
+    config: { ...DEFAULT_STRATEGY, ...(options?.engineStartingBalanceUsd ? { startingBalanceUsd: options.engineStartingBalanceUsd } : {}) },
     activeStrategy: null,
     runtimeState: {},
   };
   const promotions: unknown[] = [];
   const updates: unknown[] = [];
+  const accountUpdates: Array<{ cashUsd: string; startingBalanceUsd: string }> = [];
+  const ledgerCreates: Array<{ type: string; amountUsd: string }> = [];
   const prisma = {
     engineControl: {
       findUnique: async () => row,
@@ -174,6 +183,7 @@ function mockPrisma(seed: ReturnType<typeof buildValidatedFixtures>, options?: {
         updates.push(input.data);
         row = {
           id: "primary",
+          status: row.status,
           config: input.data.config,
           activeStrategy: input.data.activeStrategy,
           runtimeState: input.data.runtimeState ?? row.runtimeState,
@@ -187,7 +197,9 @@ function mockPrisma(seed: ReturnType<typeof buildValidatedFixtures>, options?: {
     },
     strategyArtifact: {
       findUnique: async ({ where }: { where: { id: string } }) =>
-        where.id === seed.artifactId ? seed.artifact : null,
+        where.id === seed.artifactId
+          ? { ...seed.artifact, sandboxEra: options?.artifactEra ?? "STREAMING_FD3" }
+          : null,
     },
     promotionApproval: {
       findMany: async ({ where }: { where: { reportId: string } }) =>
@@ -204,9 +216,106 @@ function mockPrisma(seed: ReturnType<typeof buildValidatedFixtures>, options?: {
         return input.data;
       },
     },
+    $queryRaw: async () => [],
+    $executeRaw: async () => 0,
+    order: { count: async () => options?.orderCount ?? 0 },
+    paperAccount: {
+      update: async (input: { data: { cashUsd: string; startingBalanceUsd: string } }) => {
+        accountUpdates.push(input.data);
+        return input.data;
+      },
+    },
+    ledgerEntry: {
+      deleteMany: async () => ({ count: 1 }),
+      create: async (input: { data: { type: string; amountUsd: string } }) => {
+        ledgerCreates.push(input.data);
+        return input.data;
+      },
+    },
   } as unknown as PrismaClient;
-  return { prisma, getRow: () => row, updates, promotions };
+  (prisma as unknown as { $transaction: (fn: (tx: PrismaClient) => Promise<unknown>) => Promise<unknown> }).$transaction =
+    async (fn) => fn(prisma);
+  return { prisma, getRow: () => row, updates, promotions, accountUpdates, ledgerCreates };
 }
+
+describe("promotion lock (audit C4)", () => {
+  it("refuses promotion while the engine is RUNNING and leaves the config unchanged", async () => {
+    const seed = buildValidatedFixtures("3");
+    const { prisma, getRow, updates, promotions } = mockPrisma(seed, { status: "RUNNING" });
+    const before = JSON.stringify(getRow().config);
+    const service = new EvolutionService(prisma);
+    const body = { authorised: true, reportId: seed.reportId, artifactId: seed.artifactId, approvalId: seed.approvalId, config: seed.config };
+    await expect(service.promotePaperStrategy(body, "operator@odin.local")).rejects.toBeInstanceOf(ConflictException);
+    await expect(
+      service.applyUnvalidatedPaperExperiment(
+        {
+          authorised: true,
+          mode: "UNVALIDATED_PAPER_EXPERIMENT",
+          artifactId: seed.artifactId,
+          config: seed.config,
+          label: "labelled experiment",
+          rationale: "explicit paper-only trial",
+        },
+        "operator@odin.local",
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(updates).toHaveLength(0);
+    expect(promotions).toHaveLength(0);
+    expect(JSON.stringify(getRow().config)).toBe(before);
+  });
+
+  it("refuses evidence produced before the sandbox fix", async () => {
+    const seed = buildValidatedFixtures("3");
+    const { prisma, updates } = mockPrisma(seed, { artifactEra: "PRE_SANDBOX_FIX" });
+    const service = new EvolutionService(prisma);
+    await expect(
+      service.promotePaperStrategy(
+        { authorised: true, reportId: seed.reportId, artifactId: seed.artifactId, approvalId: seed.approvalId, config: seed.config },
+        "operator@odin.local",
+      ),
+    ).rejects.toThrow(/PRE_SANDBOX_FIX/);
+    expect(updates).toHaveLength(0);
+  });
+
+  // The approved config keeps DEFAULT_STRATEGY's balance; the engine row starts at $5,000, so the
+  // promotion genuinely changes startingBalanceUsd while the approved configHash still matches.
+  const balanceChange = (seed: ReturnType<typeof buildValidatedFixtures>) => ({
+    authorised: true,
+    reportId: seed.reportId,
+    artifactId: seed.artifactId,
+    approvalId: seed.approvalId,
+    config: seed.config,
+  });
+
+  it("refuses a starting-balance change while PAUSED", async () => {
+    const seed = buildValidatedFixtures("3");
+    const { prisma, updates, accountUpdates } = mockPrisma(seed, { status: "PAUSED", engineStartingBalanceUsd: "5000.00000000" });
+    const service = new EvolutionService(prisma);
+    await expect(service.promotePaperStrategy(balanceChange(seed), "operator@odin.local")).rejects.toThrow(/only while the engine is STOPPED/);
+    expect(updates).toHaveLength(0);
+    expect(accountUpdates).toHaveLength(0);
+  });
+
+  it("refuses a starting-balance change once any paper order exists, even when STOPPED", async () => {
+    const seed = buildValidatedFixtures("3");
+    const { prisma, updates, accountUpdates } = mockPrisma(seed, { status: "STOPPED", engineStartingBalanceUsd: "5000.00000000", orderCount: 1 });
+    const service = new EvolutionService(prisma);
+    await expect(service.promotePaperStrategy(balanceChange(seed), "operator@odin.local")).rejects.toThrow(/before any paper order exists/);
+    expect(updates).toHaveLength(0);
+    expect(accountUpdates).toHaveLength(0);
+  });
+
+  it("resets the account and opening balance when STOPPED with no orders", async () => {
+    const seed = buildValidatedFixtures("3");
+    const { prisma, updates, accountUpdates, ledgerCreates } = mockPrisma(seed, { status: "STOPPED", engineStartingBalanceUsd: "5000.00000000" });
+    const service = new EvolutionService(prisma);
+    const applied = await service.promotePaperStrategy(balanceChange(seed), "operator@odin.local");
+    expect(applied.appliedToPaperEngine).toBe(true);
+    expect(accountUpdates).toEqual([{ cashUsd: seed.config.startingBalanceUsd, startingBalanceUsd: seed.config.startingBalanceUsd }]);
+    expect(ledgerCreates.filter((row) => row.type === "OPENING_BALANCE")).toHaveLength(1);
+    expect(updates).toHaveLength(1);
+  });
+});
 
 describe("paper engine promotion write", () => {
   it("updates EngineControl primary after VALIDATED promotion and refuses rejected validation", async () => {
@@ -348,16 +457,18 @@ describe("paper engine promotion write", () => {
 
   it("applies an unvalidated paper experiment without deployment eligibility", async () => {
     const seed = buildValidatedFixtures();
-    let row: { id: string; config: unknown; activeStrategy: unknown } = {
+    let row: { id: string; status: string; config: unknown; activeStrategy: unknown } = {
       id: "primary",
+      status: "PAUSED",
       config: { ...DEFAULT_STRATEGY },
       activeStrategy: null,
     };
     const prisma = {
+      $queryRaw: async () => [],
       engineControl: {
         findUnique: async () => row,
         update: async (input: { data: { config: unknown; activeStrategy: unknown } }) => {
-          row = { id: "primary", config: input.data.config, activeStrategy: input.data.activeStrategy };
+          row = { id: "primary", status: row.status, config: input.data.config, activeStrategy: input.data.activeStrategy };
           return row;
         },
       },
@@ -370,6 +481,8 @@ describe("paper engine promotion write", () => {
         create: async (input: { data: Record<string, unknown> }) => input.data,
       },
     } as unknown as PrismaClient;
+    (prisma as unknown as { $transaction: (fn: (tx: PrismaClient) => Promise<unknown>) => Promise<unknown> }).$transaction =
+      async (fn) => fn(prisma);
     const service = new EvolutionService(prisma);
     const applied = await service.applyUnvalidatedPaperExperiment(
       {

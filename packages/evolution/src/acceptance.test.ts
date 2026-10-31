@@ -164,6 +164,12 @@ describe("project genesis acceptance", () => {
     expect(pipeline.outcomes.PIPELINE_COMPLETED.met).toBe(true);
     expect(pipeline.outcomes.RESULTS_MEASURABLE.met).toBe(false);
     expect(pipeline.returnPct).toBeNull();
+    if (!isolationAvailable()) {
+      // Without isolation nothing executes, so no evidence report may be produced. CI runs the rest.
+      expect(pipeline.acceptance.sandbox_run).toBe("SKIP");
+      expect(pipeline.report).toBeNull();
+      return;
+    }
     expect(pipeline.report).not.toBeNull();
     if (pipeline.report) expect(verifyExperimentReport(pipeline.report)).toBe(true);
     expect(pipeline.acceptance.subsequent_experiment_proposed).toBe("PASS");
