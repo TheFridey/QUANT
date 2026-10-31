@@ -1,5 +1,6 @@
 import {
   ALERT_CODES,
+  admitAgainstPlan,
   allocateOpportunities,
   assessSecurity,
   ensureDefaultStrategyInstances,
@@ -18,7 +19,9 @@ import {
   strategyVersionStamp,
   toPlanIntents,
   unknownAssessment,
+  type CyclePlanSnapshot,
   type DecisionDraft,
+  type ProposedOrder,
 } from "@odin/agent-core";
 import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
 import {
@@ -205,12 +208,31 @@ export class StageRunner {
 
   async sentinel(cycleId: string): Promise<void> {
     if (!(await this.ready(cycleId, "created"))) return;
-    const loaded = await this.loadPlan(cycleId, this.now(), this.prisma);
-    if (!loaded) return;
-    for (const decision of loaded.plan.decisions.filter((item) => item.agent === "SENTINEL")) {
+    // Audit F1: the cycle's plan is computed once, here, and stored immutably. A retried SENTINEL
+    // reuses the stored plan rather than recomputing with a different now().
+    let snapshot = await this.readCyclePlan(this.prisma, cycleId);
+    if (!snapshot) {
+      const now = this.now();
+      const loaded = await this.loadPlan(cycleId, now, this.prisma);
+      if (!loaded) return;
+      snapshot = await this.writeCyclePlan(cycleId, now, loaded.plan);
+    }
+    for (const decision of snapshot.decisions.filter((item) => item.agent === "SENTINEL")) {
       await upsertDecision(this.prisma, cycleId, decision);
     }
-    for (const entry of loaded.plan.watchlist) {
+    for (const entry of snapshot.watchlist as Array<{
+      pairAddress: string;
+      baseAddress: string;
+      baseSymbol: string;
+      quoteAddress: string;
+      quoteSymbol: string;
+      dexId: string;
+      source: string;
+      discoveryScore: string;
+      rank: number;
+      reasonCodes: string[];
+      receivedAt: string;
+    }>) {
       await this.prisma.watchlistEntry.upsert({
         where: { pairAddress: entry.pairAddress },
         create: {
@@ -356,12 +378,32 @@ export class StageRunner {
       }
 
       endPhase("settle");
-      // Refresh authoritative book after settlement (R05).
-      const loaded = await this.loadPlan(cycleId, now, tx, ctx);
-      if (!loaded) return;
-      for (const decision of loaded.plan.decisions.filter((item) => item.agent === "AEGIS" || item.agent === "ATLAS" || item.agent === "EXECUTOR")) {
+      // Refresh authoritative book after settlement (R05). This is the admission re-check, not a new plan.
+      const recheck = await this.loadPlan(cycleId, now, tx, ctx);
+      if (!recheck) return;
+      // Audit F1: admit only what the stored cycle plan decided (entries never larger than planned);
+      // risk-reducing exits are always admitted. Both plan-time and admission-time are recorded.
+      const snapshot = await this.readCyclePlan(tx, cycleId);
+      const admission = admitAgainstPlan(snapshot, { orders: recheck.plan.orders, decisions: recheck.plan.decisions });
+      const loaded = { ...recheck, plan: { ...recheck.plan, orders: admission.orders } };
+      const persisted = snapshot
+        ? recheck.plan.decisions.filter((item) => item.agent === "EXECUTOR")
+        : recheck.plan.decisions.filter((item) => item.agent === "AEGIS" || item.agent === "ATLAS" || item.agent === "EXECUTOR");
+      for (const decision of persisted) {
         await upsertDecision(tx, cycleId, decision);
       }
+      await upsertDecision(tx, cycleId, {
+        agent: "EXECUTOR",
+        modelVersion: "executor-admission-1.0.0",
+        pairAddress: "(admission)",
+        decision: admission.records.some((row) => row.result === "NOT_IN_PLAN" || row.result === "REJECTED_AT_ADMISSION") ? "HOLD" : "PASS",
+        confidence: "1.000000",
+        reasonCodes: [snapshot ? "CYCLE_PLAN_ADMISSION" : "CYCLE_PLAN_MISSING"],
+        input: { planTime: snapshot?.plannedAt ?? null, admissionTime: now.toISOString() },
+        output: { records: admission.records },
+        inputSource: "cycle-plan",
+        durationMs: 0,
+      });
       endPhase("plan");
 
       await this.reconcileAndAlert(tx, ctx);
@@ -982,10 +1024,43 @@ export class StageRunner {
   }
 
   private async persistAgent(cycleId: string, agent: DecisionDraft["agent"]): Promise<void> {
-    const loaded = await this.loadPlan(cycleId, this.now(), this.prisma);
-    if (!loaded) return;
-    for (const decision of loaded.plan.decisions.filter((item) => item.agent === agent)) {
+    // Audit F1: agent decision rows are projections of the stored cycle plan, never a fresh plan.
+    const snapshot = await this.readCyclePlan(this.prisma, cycleId);
+    const decisions = snapshot
+      ? snapshot.decisions
+      : (await this.loadPlan(cycleId, this.now(), this.prisma))?.plan.decisions ?? null; // legacy cycle
+    if (!decisions) return;
+    for (const decision of decisions.filter((item) => item.agent === agent)) {
       await upsertDecision(this.prisma, cycleId, decision);
+    }
+  }
+
+  private async readCyclePlan(db: PrismaClient | Prisma.TransactionClient, cycleId: string): Promise<CyclePlanSnapshot | null> {
+    const row = await db.cyclePlan.findUnique({ where: { cycleId } });
+    return row ? (row.plan as unknown as CyclePlanSnapshot) : null;
+  }
+
+  /** Write the cycle plan once. If another worker won the race, use the stored one. */
+  private async writeCyclePlan(
+    cycleId: string,
+    plannedAt: Date,
+    plan: { decisions: DecisionDraft[]; orders: ProposedOrder[]; watchlist: unknown[]; intentOutcomes: unknown[] },
+  ): Promise<CyclePlanSnapshot> {
+    const snapshot: CyclePlanSnapshot = {
+      cycleId,
+      plannedAt: plannedAt.toISOString(),
+      decisions: plan.decisions,
+      orders: plan.orders,
+      watchlist: plan.watchlist,
+      intentOutcomes: plan.intentOutcomes,
+    };
+    try {
+      await this.prisma.cyclePlan.create({ data: { cycleId, plannedAt, plan: toJson(snapshot) } });
+      return snapshot;
+    } catch (error) {
+      const existing = await this.readCyclePlan(this.prisma, cycleId);
+      if (existing) return existing;
+      throw error;
     }
   }
 

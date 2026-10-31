@@ -127,6 +127,10 @@ export const REASON_CODES = [
   "PARTIAL_FILL",
   /** Risk-reducing exit capped by maxExitImpactBps; the rest is a pending reduce order. */
   "EXIT_PARTIAL_REMAINDER",
+  /** Executor admitted orders against the cycle's stored plan (audit F1). */
+  "CYCLE_PLAN_ADMISSION",
+  /** Legacy cycle with no stored plan; the admission re-check was used as before. */
+  "CYCLE_PLAN_MISSING",
   "SPREAD_APPLIED",
   "COST_ESTIMATED",
   "ADVISORY_ONLY",
@@ -265,6 +269,8 @@ export const REASON_TEXT: Record<ReasonCode, string> = {
   ORDER_EXPIRED: "Pending paper order expired before fill.",
   ORDER_PENDING: "Paper order is pending latency or eligibility.",
   PARTIAL_FILL: "Paper fill was partial under the execution model.",
+  CYCLE_PLAN_ADMISSION: "Executor admitted orders against the cycle's stored plan; entries never exceed what was planned.",
+  CYCLE_PLAN_MISSING: "No stored plan for this cycle (created before cycle plans existed); the admission re-check was used.",
   EXIT_PARTIAL_REMAINDER: "Exit filled up to maxExitImpactBps; the remainder is a pending reduce order for the next cycle.",
   SPREAD_APPLIED: "Estimated half-spread applied to the observed mid.",
   COST_ESTIMATED: "Fee, spread, and impact costs estimated explicitly.",
