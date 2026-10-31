@@ -106,6 +106,14 @@ export async function tunePaperRiskForManualBuys(page: Page): Promise<void> {
       minOrderNotionalUsd: "5",
       maxRiskPerTradePct: "2",
       maxPositionPctEquity: "10",
+      // The deterministic feed oscillates by several percent, so with the default 3% stop, 2% breakeven
+      // and -1.5% momentum exit the running engine can close the test's manual position before the test
+      // observes it (seen on main after B made fills one cycle later). Widen the engine's own exits for
+      // the duration of this throwaway e2e account so the manual open/close flow is what is tested.
+      stopLossPct: "50",
+      takeProfitPct: "200",
+      exitM5ChangePct: "-50",
+      breakevenActivatePct: null,
     },
   });
 }
