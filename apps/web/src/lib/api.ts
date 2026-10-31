@@ -1,5 +1,16 @@
 const TOKEN_KEY = "odin_token";
 
+/** Keep HTTP Basic Auth for the outer reverse proxy while carrying the
+ * application's JWT in its own header. The proxy restores Authorization:
+ * Bearer only after its Basic Auth check has succeeded.
+ * This mode must only be enabled on a reverse proxy configured for it.
+ */
+export function authHeaders(session: string): Record<string, string> {
+  return process.env.NEXT_PUBLIC_BASIC_AUTH_BRIDGE === "true"
+    ? { "x-quant-jwt": session }
+    : { authorization: `Bearer ${session}` };
+}
+
 export function apiBase(): string {
   return process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:4318";
 }
@@ -27,7 +38,7 @@ export async function signOut(): Promise<boolean> {
     try {
       const response = await fetch(`${apiBase()}/api/auth/logout`, {
         method: "POST",
-        headers: { authorization: `Bearer ${session}` },
+        headers: authHeaders(session),
       });
       revoked = response.ok;
     } catch {
@@ -56,7 +67,9 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (!headers.has("content-type") && init.body) headers.set("content-type", "application/json");
   const session = token();
-  if (session) headers.set("authorization", `Bearer ${session}`);
+  if (session) {
+    for (const [name, value] of Object.entries(authHeaders(session))) headers.set(name, value);
+  }
   const response = await fetch(`${apiBase()}/api${path}`, { ...init, headers });
   const body = (await response.json().catch(() => null)) as { error?: string } | null;
   if (response.status === 401 && path !== "/auth/login") {

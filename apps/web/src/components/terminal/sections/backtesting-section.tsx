@@ -6,7 +6,7 @@ import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, apiBase, token } from "@/lib/api";
+import { api, apiBase, authHeaders, token } from "@/lib/api";
 import { formatDrawdown } from "@/lib/format";
 
 type StrategyVersion = {
@@ -192,7 +192,7 @@ export function BacktestingSection() {
     if (!reportUrl) return;
     const session = token();
     const response = await fetch(reportUrl, {
-      headers: session ? { authorization: `Bearer ${session}` } : {},
+      headers: session ? authHeaders(session) : {},
     });
     if (!response.ok) {
       setMessage(`Report export failed (${response.status})`);
