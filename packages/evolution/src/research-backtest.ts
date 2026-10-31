@@ -104,6 +104,8 @@ export function simulateResearchPath(input: {
         maxSlippageBps: input.config.maxSlippageBps,
         spreadBpsEstimate: input.config.spreadBpsEstimate,
         maxPriceImpactBps: input.config.maxPriceImpactBps,
+        // Exits follow the engine's exit execution policy (audit C3).
+        exitPolicy: order.side === "SELL" ? { maxExitImpactBps: input.config.maxExitImpactBps } : null,
       });
       if (!quoted.ok) {
         rejected.push({ at: obs.receivedAt, pairAddress: obs.pairAddress, reason: quoted.reason });
@@ -130,14 +132,18 @@ export function simulateResearchPath(input: {
           rejected.push({ at: obs.receivedAt, pairAddress: obs.pairAddress, reason: "NO_POSITION" });
           continue;
         }
+        const soldQty = d(quoted.fill.qty);
         const proceeds = d(quoted.fill.notionalUsd).minus(fee);
-        const pnl = proceeds.minus(d(position.qty).mul(d(position.avgCostUsd)));
+        const pnl = proceeds.minus(soldQty.mul(d(position.avgCostUsd)));
         cash = cash.plus(proceeds);
         fees = fees.plus(fee);
         realized = realized.plus(pnl);
         const pnlUsd = usd(pnl);
         closedPnls.push(pnlUsd);
-        positions.delete(obs.pairAddress);
+        const remainingQty = d(position.qty).minus(soldQty);
+        if (remainingQty.gt(0)) positions.set(obs.pairAddress, { ...position, qty: remainingQty.toFixed(8) });
+        else positions.delete(obs.pairAddress);
+        if (d(quoted.fill.remainderQty).gt(0)) still.push({ ...order, qty: quoted.fill.remainderQty, eligibleAtMs: now });
         fills.push(toFill(order, quoted.fill, obs, pnlUsd));
       }
     }

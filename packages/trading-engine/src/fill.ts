@@ -1,5 +1,5 @@
 import { bps, d, price, qty, usd, type OrderSide, type ReasonCode, Decimal } from "@odin/shared";
-import { costModelForInstrument } from "./cost-model.js";
+import { costModelForInstrument, dexImpactBps, maxSellNotionalWithinImpact } from "./cost-model.js";
 
 export type FillQuote = {
   qty: string;
@@ -11,7 +11,17 @@ export type FillQuote = {
   spreadBps: string;
   impactBps: string;
   estimatedCostUsd: string;
+  /** Quantity left unfilled by the exit policy (risk-reducing SELL above maxExitImpactBps); "0" when fully filled. */
+  remainderQty: string;
 };
+
+/**
+ * Exit execution policy (audit C3). Risk-reducing SELLs (EXIT, FLATTEN, protection closes,
+ * reduce-only OPERATOR) are never rejected for impact: they ignore the entry caps
+ * (maxSlippageBps / maxPriceImpactBps), fill as much as stays within maxExitImpactBps at the
+ * modelled worse price, and report the rest as `remainderQty` for a pending reduce order.
+ */
+export type ExitPolicy = { maxExitImpactBps: string };
 
 export function quoteFill(input: {
   side: OrderSide;
@@ -26,11 +36,13 @@ export function quoteFill(input: {
   instrumentId?: string | null;
   /** Adverse gap fill: use this absolute price instead of mid±slip (stops through gaps). */
   adverseFillPriceUsd?: string | null;
+  /** Set only for risk-reducing SELLs. BUYs always use the entry caps. */
+  exitPolicy?: ExitPolicy | null;
 }): { ok: true; fill: FillQuote } | { ok: false; reason: ReasonCode } {
   const mid = d(input.midPriceUsd);
-  const quantity = d(input.quantity);
+  const requested = d(input.quantity);
   if (mid.lte(0)) return { ok: false, reason: "NON_POSITIVE_PRICE" };
-  if (quantity.lte(0)) return { ok: false, reason: "NON_POSITIVE_QTY" };
+  if (requested.lte(0)) return { ok: false, reason: "NON_POSITIVE_QTY" };
 
   const model = costModelForInstrument(input.instrumentId ?? "", {
     feeBps: input.feeBps,
@@ -47,12 +59,21 @@ export function quoteFill(input: {
   if (model.applyDexImpact && liquidity.lte(0)) return { ok: false, reason: "MISSING_LIQUIDITY" };
 
   const spreadBps = d(model.spreadBpsEstimate);
-  const impact = model.applyDexImpact
-    ? quantity.mul(mid).div(liquidity).mul(10000)
-    : d("0");
-  if (impact.gt(d(input.maxSlippageBps))) return { ok: false, reason: "SLIPPAGE_LIMIT" };
-  if (input.maxPriceImpactBps && impact.gt(d(input.maxPriceImpactBps))) {
-    return { ok: false, reason: "PRICE_IMPACT_LIMIT" };
+  const exitPolicy = input.side === "SELL" ? (input.exitPolicy ?? null) : null;
+  let quantity = requested;
+  if (exitPolicy && model.applyDexImpact) {
+    const cap = d(exitPolicy.maxExitImpactBps);
+    if (dexImpactBps("SELL", requested.mul(mid), liquidity).gt(cap)) {
+      quantity = Decimal.min(requested, maxSellNotionalWithinImpact(cap, liquidity).div(mid));
+      if (d(qty(quantity)).lte(0)) return { ok: false, reason: "PRICE_IMPACT_LIMIT" };
+    }
+  }
+  const impact = model.applyDexImpact ? dexImpactBps(input.side, quantity.mul(mid), liquidity) : d("0");
+  if (!exitPolicy) {
+    if (impact.gt(d(input.maxSlippageBps))) return { ok: false, reason: "SLIPPAGE_LIMIT" };
+    if (input.maxPriceImpactBps && impact.gt(d(input.maxPriceImpactBps))) {
+      return { ok: false, reason: "PRICE_IMPACT_LIMIT" };
+    }
   }
 
   const halfSpread = spreadBps.div(10000).div(2);
@@ -78,6 +99,9 @@ export function quoteFill(input: {
   const feeUsd = usd(d(notionalUsd).mul(d(model.feeBps).div(10000)));
   const spreadCost = usd(d(notionalUsd).mul(halfSpread));
   const estimatedCostUsd = usd(d(feeUsd).plus(d(spreadCost)));
+  // Realised slippage from mid, including any adverse gap fill — never below the modelled value.
+  const modelled = impact.plus(spreadBps.div(2));
+  const realised = d(priceUsd).minus(mid).abs().div(mid).mul(10000);
   return {
     ok: true,
     fill: {
@@ -85,11 +109,12 @@ export function quoteFill(input: {
       priceUsd,
       notionalUsd,
       feeUsd,
-      slippageBps: bps(impact.plus(spreadBps.div(2))),
+      slippageBps: bps(Decimal.max(modelled, realised)),
       liquidityUsd: usd(liquidity.gt(0) ? liquidity : d(model.minLiquidityUsd)),
       spreadBps: bps(spreadBps),
       impactBps: bps(impact),
       estimatedCostUsd,
+      remainderQty: qty(requested.minus(d(qtyUsd))),
     },
   };
 }

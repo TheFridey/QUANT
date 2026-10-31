@@ -114,6 +114,8 @@ export type PlanInput = {
   config: StrategyConfig;
   cashUsd: string;
   startingBalanceUsd: string;
+  /** Equity at the Europe/London day start; the daily loss limit is measured against it (audit L3). */
+  dayStartEquityUsd?: string | null;
   positions: PositionView[];
   pairs: CyclePair[];
   marks: Record<string, Mark | undefined>;

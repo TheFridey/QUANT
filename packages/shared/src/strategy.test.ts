@@ -30,18 +30,34 @@ describe("strategy config", () => {
     ).toThrow(/minOrderNotionalUsd/);
   });
 
-  it("heals legacy $100/$5 deadlock rows on parse without loosening % risk", () => {
-    const healed = parseStrategyConfig({
+  it("rejects a legacy $100 / 5% deadlock config instead of silently healing it (audit H1)", () => {
+    const stored = {
       ...DEFAULT_STRATEGY,
       startingBalanceUsd: "100.00000000",
       minOrderNotionalUsd: "5",
       maxPositions: 4,
       universeLimit: 12,
-    });
-    expect(healed.startingBalanceUsd).toBe("10000.00000000");
-    expect(healed.minOrderNotionalUsd).toBe("25");
-    expect(healed.maxPositionPctEquity).toBe("5");
-    expect(healed.maxRiskPerTradePct).toBe("0.5");
+    };
+    const snapshot = structuredClone(stored);
+    expect(() => parseStrategyConfig(stored)).toThrow(/minOrderNotionalUsd/);
+    // The stored object is untouched: no balance raised to $10,000, no positions raised to 8.
+    expect(stored).toEqual(snapshot);
+    expect(stored.startingBalanceUsd).toBe("100.00000000");
+    expect(stored.maxPositions).toBe(4);
+  });
+
+  it("never rewrites a valid stored value on load", () => {
+    const stored = { ...DEFAULT_STRATEGY, maxPositions: 3, startingBalanceUsd: "5000.00000000" };
+    const parsed = parseStrategyConfig(stored);
+    expect(parsed.maxPositions).toBe(3);
+    expect(parsed.startingBalanceUsd).toBe("5000.00000000");
+  });
+
+  it("defaults DEMO entries off and keeps a bounded exit impact cap (audit H2, C3)", () => {
+    expect(DEFAULT_STRATEGY.allowDemoPaperEntries).toBe(false);
+    expect(DEFAULT_STRATEGY.maxExitImpactBps).toBe("1000");
+    expect(() => mergeStrategy(DEFAULT_STRATEGY, { maxExitImpactBps: "0" })).toThrow();
+    expect(() => mergeStrategy(DEFAULT_STRATEGY, { maxExitImpactBps: "5001" })).toThrow();
   });
 
   it("rejects private-key shaped extras and an unsafe starting balance", () => {
@@ -77,5 +93,10 @@ describe("strategy config", () => {
     expect(parsed.maxAggregateExposurePct).toBe("20");
     expect(parsed.maxTotalDrawdownPct).toBe("10");
     expect(parsed.spreadBpsEstimate).toBe("5");
+  });
+
+  it("rejects an exit impact cap below the entry caps (review F4)", () => {
+    expect(() => mergeStrategy(DEFAULT_STRATEGY, { maxExitImpactBps: "100" })).toThrow(/maxSlippageBps/);
+    expect(mergeStrategy(DEFAULT_STRATEGY, { maxExitImpactBps: "150" }).maxExitImpactBps).toBe("150");
   });
 });

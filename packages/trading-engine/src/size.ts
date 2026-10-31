@@ -1,4 +1,5 @@
 import { d, qty, usd, Decimal } from "@odin/shared";
+import { maxBuyNotionalWithinImpact } from "./cost-model.js";
 
 export function maxEntryNotional(input: {
   cashUsd: string;
@@ -37,13 +38,17 @@ export function maxEntryNotional(input: {
     cap = Decimal.min(cap, exposureCap);
   }
 
-  if (input.maxPriceImpactBps && d(input.liquidityUsd).gt(0)) {
-    const impactCap = d(input.liquidityUsd).mul(d(input.maxPriceImpactBps)).div(10000);
-    cap = Decimal.min(cap, impactCap);
+  if (d(input.liquidityUsd).gt(0)) {
+    // quoteFill rejects a BUY whose impact exceeds either cap, so size to the tighter one.
+    const capBps = input.maxPriceImpactBps
+      ? Decimal.min(d(input.maxPriceImpactBps), d(input.maxSlippageBps))
+      : d(input.maxSlippageBps);
+    cap = Decimal.min(cap, maxBuyNotionalWithinImpact(capBps, d(input.liquidityUsd)));
   }
 
   if (cap.lte(0)) return usd(new Decimal(0));
-  return usd(cap);
+  // A cap must never round up through its own limit (usd() rounds half-up).
+  return cap.toDecimalPlaces(8, Decimal.ROUND_DOWN).toFixed(8);
 }
 
 /**

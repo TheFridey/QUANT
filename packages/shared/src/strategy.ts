@@ -52,6 +52,11 @@ export const strategyConfigSchema = z
     maxTotalDrawdownPct: decimalString,
     /** Max estimated price impact in bps (defaults aligned with maxSlippageBps). */
     maxPriceImpactBps: decimalString,
+    /**
+     * Exit execution policy: risk-reducing SELLs are never rejected for impact. They fill up to
+     * this impact at the modelled worse price; any remainder stays a pending reduce order.
+     */
+    maxExitImpactBps: decimalString,
     /** Simulated paper order latency before fill eligibility. */
     paperLatencyMs: z.number().int(),
     /** Half-spread estimate applied to mid for paper fills (bps). */
@@ -100,6 +105,7 @@ export const strategyConfigSchema = z
       ["maxAggregateExposurePct", "0.1", "100"],
       ["maxTotalDrawdownPct", "0.1", "100"],
       ["maxPriceImpactBps", "1", "1000"],
+      ["maxExitImpactBps", "1", "5000"],
       ["spreadBpsEstimate", "0", "500"],
       ["discoveryMinPairAgeMinutes", "0", "10080"],
     ];
@@ -108,6 +114,17 @@ export const strategyConfigSchema = z
       if (typeof raw !== "string" || !inRange(raw, min, max)) {
         ctx.addIssue({ code: "custom", path: [key], message: `Must be between ${min} and ${max}` });
       }
+    }
+    // An exit cap below the entry caps would make capped exits worse than plain fills (review F4).
+    if (
+      inRange(value.maxExitImpactBps, "1", "5000") &&
+      (d(value.maxExitImpactBps).lt(value.maxSlippageBps) || d(value.maxExitImpactBps).lt(value.maxPriceImpactBps))
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["maxExitImpactBps"],
+        message: "Must be at least maxSlippageBps and maxPriceImpactBps",
+      });
     }
     if (value.discoveryMaxPairAgeHours !== null) {
       if (!inRange(value.discoveryMaxPairAgeHours, "0.1", "8760")) {
@@ -229,6 +246,7 @@ export const strategyPatchSchema = z
     maxAggregateExposurePct: decimalString.optional(),
     maxTotalDrawdownPct: decimalString.optional(),
     maxPriceImpactBps: decimalString.optional(),
+    maxExitImpactBps: decimalString.optional(),
     paperLatencyMs: z.number().int().optional(),
     spreadBpsEstimate: decimalString.optional(),
     orderExpiryMs: z.number().int().optional(),
@@ -294,7 +312,8 @@ export const DEFAULT_STRATEGY: StrategyConfig = {
   maxParticipationPctLiquidity: "1",
   minOrderNotionalUsd: "25",
   allowDelayedExits: true,
-  allowDemoPaperEntries: true,
+  // Entries need LIVE data. DEMO entries additionally require DATA_MODE=demo; DELAYED never opens risk.
+  allowDemoPaperEntries: false,
   pauseNewEntries: false,
   breakevenActivatePct: "2",
   flattenOnEmergency: false,
@@ -308,7 +327,10 @@ export const DEFAULT_STRATEGY: StrategyConfig = {
   maxAggregateExposurePct: "20",
   maxTotalDrawdownPct: "10",
   maxPriceImpactBps: "150",
-  paperLatencyMs: 0,
+  maxExitImpactBps: "1000",
+  // Measured: CI engine soak (24 pairs) median ingest-to-executor latency 706 ms, p95 905 ms,
+  // rounded up to 1 s (audit L4). Paper fills are never earlier than a real pipeline could act.
+  paperLatencyMs: 1000,
   spreadBpsEstimate: "5",
   orderExpiryMs: 60_000,
   pulseMinObservations: 5,
@@ -328,33 +350,14 @@ export function parseStrategyConfig(value: unknown): StrategyConfig {
     return strategyConfigSchema.parse(DEFAULT_STRATEGY);
   }
   const stored = Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
-  return strategyConfigSchema.parse(healDeadlockDefaults({ ...DEFAULT_STRATEGY, ...stored }));
+  // Keys missing from older configs come from DEFAULT_STRATEGY; stored values are never rewritten.
+  // An invalid stored config throws, and callers surface CONFIG_INVALID (audit H1).
+  return strategyConfigSchema.parse({ ...DEFAULT_STRATEGY, ...stored });
 }
 
 export function mergeStrategy(current: StrategyConfig, patch: unknown): StrategyConfig {
   const parsedPatch = strategyPatchSchema.parse(patch);
   return strategyConfigSchema.parse({ ...current, ...parsedPatch });
-}
-
-/**
- * Legacy paper configs used $100 equity × 5% max = $5 min order (zero headroom after fees).
- * Heal those rows on load without silently loosening % risk caps.
- */
-function healDeadlockDefaults(config: StrategyConfig): StrategyConfig {
-  const headroom = maxPositionNotionalAtStart({
-    startingBalanceUsd: config.startingBalanceUsd,
-    maxPositionPctEquity: config.maxPositionPctEquity,
-    feeBps: config.feeBps,
-    maxSlippageBps: config.maxSlippageBps,
-  });
-  if (d(headroom).gte(config.minOrderNotionalUsd)) return config;
-  return {
-    ...config,
-    startingBalanceUsd: DEFAULT_STRATEGY.startingBalanceUsd,
-    minOrderNotionalUsd: DEFAULT_STRATEGY.minOrderNotionalUsd,
-    maxPositions: Math.max(config.maxPositions, DEFAULT_STRATEGY.maxPositions),
-    universeLimit: Math.max(config.universeLimit, DEFAULT_STRATEGY.universeLimit),
-  };
 }
 
 function inRange(value: string, min: string, max: string): boolean {
