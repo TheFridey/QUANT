@@ -92,7 +92,7 @@ Before/after screenshots at 1440×900 and 390×844 are in [`ux/before`](ux/befor
 | ID | Item | Evidence | Status |
 | --- | --- | --- | --- |
 | F1 | One immutable `CyclePlan` per cycle. Stages project it; the executor admits against it with conservative reservation pricing; a malformed plan refuses entries but still runs exits | `packages/agent-core/src/cycle-plan.test.ts`, `apps/worker/src/cycle-plan.integration.test.ts`; quant-safety-reviewer: PASS | `VERIFIED_INTEGRATION` |
-| F2 | Split the executor into modules; one `gateAndQuote()` in `store.ts` | `gateAndQuote()` landed in B (#11) | `PARTIAL`: the executor module split is in progress |
+| F2 | Split the executor into modules; one `gateAndQuote()` in `store.ts` | `gateAndQuote()` landed in B (#11). The executor phases are in `apps/worker/src/executor/` (`settle`, `plan-consume`, `admit`, `protect`); reconcile stays `StageRunner.reconcileAndAlert`. The code was moved verbatim (checked line by line) and no test changed | `VERIFIED_INTEGRATION` |
 | F3 | Order history and the activity feed are scoped to the active account | `apps/api/src/account-scoping.integration.test.ts` | `VERIFIED_INTEGRATION` |
 | F4 | Limits tables are generated from `DEFAULT_STRATEGY` and checked for drift; this page; superseded docs archived | `packages/shared/src/limits-table.test.ts` | `VERIFIED_UNIT` |
 | F5 | Structured log metrics: `odin_stage_duration_ms`, `odin_queue_lag_ms`, `odin_executor_phase_ms`, `odin_executor_transaction_ms`, `odin_sandbox_run_ms` | `packages/shared/src/metrics.test.ts`, `apps/worker/src/stage-lease-busy.test.ts` | `VERIFIED_UNIT` |
