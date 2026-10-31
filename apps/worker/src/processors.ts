@@ -21,14 +21,25 @@ async function enqueue(queue: Queue, name: string, cycleId: string): Promise<voi
   );
 }
 
-async function withStageLease(
-  leases: StageLeaseService,
+/**
+ * Audit M8: a held stage lease is not success. Throw so BullMQ retries the job with backoff instead
+ * of completing it silently (which could drop the next stage if the holder then fails).
+ */
+export class StageLeaseBusyError extends Error {
+  constructor(stage: string, cycleId: string) {
+    super(`STAGE_LEASE_BUSY: ${stage} for ${cycleId} is held by another worker; retrying`);
+    this.name = "StageLeaseBusyError";
+  }
+}
+
+export async function withStageLease(
+  leases: Pick<StageLeaseService, "tryAcquireStage" | "release">,
   stage: string,
   cycleId: string,
   run: () => Promise<void>,
 ): Promise<void> {
   const lease = await leases.tryAcquireStage(stage, cycleId);
-  if (!lease) return;
+  if (!lease) throw new StageLeaseBusyError(stage, cycleId);
   try {
     await run();
   } finally {
@@ -206,8 +217,14 @@ export class ArchivistProcessor extends WorkerHost {
   }
 }
 
-async function failIfExhausted(stages: StageRunner, job: Job<CycleJob> | undefined, error: Error): Promise<void> {
+export async function failIfExhausted(
+  stages: Pick<StageRunner, "fail">,
+  job: Job<CycleJob> | undefined,
+  error: Error,
+): Promise<void> {
   if (!job?.data.cycleId) return;
+  // The lease holder owns this stage and enqueues the next one; never fail the cycle under it.
+  if (error.name === "StageLeaseBusyError") return;
   const attempts = job.opts.attempts ?? 1;
   if (job.attemptsMade < attempts) return;
   await stages.fail(job.data.cycleId, error.message);

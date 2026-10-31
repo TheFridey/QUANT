@@ -1,7 +1,7 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { Injectable, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { randomUUID } from "node:crypto";
-import { verifyPassword } from "@odin/shared/password";
+import { hashPassword, verifyPassword } from "@odin/shared/password";
 import { PrismaClient } from "@odin/shared/db";
 import { isTokenRevoked, revokeToken, tokenFingerprint } from "./token-revocation.js";
 
@@ -9,11 +9,35 @@ export type AuthUser = { id: string; email: string; role: string };
 
 /**
  * Login rate limit is per-process in-memory keyed by `request.ip`.
- * Behind a reverse proxy this is only proxy-aware if the process trusts
- * `X-Forwarded-For` (not enabled by default). Shared multi-replica limiting
- * is out of single-operator scope — document, do not pretend otherwise (D25).
+ * Express `trust proxy` is NOT enabled, so behind a reverse proxy every client shares the proxy's
+ * IP and one bad actor can lock out the operator; enable `trust proxy` only for a known proxy hop
+ * (RUNBOOKS). Shared multi-replica limiting is out of single-operator scope (D25).
  */
 const attempts = new Map<string, { count: number; resetAt: number }>();
+/** Audit L1: bound the map so a flood of distinct IPs cannot grow it without limit. */
+const MAX_TRACKED_IPS = 10_000;
+
+/** Prune expired entries on every write; if still full, drop the oldest-expiring entries. */
+export function pruneLoginAttempts(now = Date.now()): void {
+  for (const [ip, entry] of attempts) {
+    if (entry.resetAt <= now) attempts.delete(ip);
+  }
+  if (attempts.size < MAX_TRACKED_IPS) return;
+  const oldest = [...attempts.entries()].sort(([, a], [, b]) => a.resetAt - b.resetAt);
+  for (const [ip] of oldest.slice(0, attempts.size - MAX_TRACKED_IPS + 1)) attempts.delete(ip);
+}
+
+/** Test helper. */
+export function loginAttemptsForTests(): Map<string, { count: number; resetAt: number }> {
+  return attempts;
+}
+
+/** A real scrypt hash, verified for unknown emails so the response time does not reveal which emails exist. */
+let dummyHash: Promise<string> | null = null;
+function dummyPasswordHash(): Promise<string> {
+  dummyHash ??= hashPassword("odin-dummy-password-for-timing");
+  return dummyHash;
+}
 
 type JwtPayload = {
   sub?: string;
@@ -34,7 +58,9 @@ export class AuthService {
   async login(email: string, password: string, ip: string): Promise<{ token: string; user: { email: string; role: string } }> {
     this.assertNotLimited(ip);
     const user = await this.prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
-    if (!user || !(await verifyPassword(password, user.passwordHash))) {
+    // Audit L1: always run one scrypt verify, so unknown emails cost the same as wrong passwords.
+    const valid = user ? await verifyPassword(password, user.passwordHash) : (await verifyPassword(password, await dummyPasswordHash()), false);
+    if (!user || !valid) {
       this.recordFailure(ip);
       throw new UnauthorizedException("Invalid credentials");
     }
@@ -53,7 +79,10 @@ export class AuthService {
     const payload = await this.verifyPayload(token);
     const id = payload.jti ?? tokenFingerprint(token);
     const expMs = payload.exp ? payload.exp * 1000 : Date.now() + 12 * 60 * 60 * 1000;
-    await revokeToken(id, expMs);
+    const durable = await revokeToken(id, expMs);
+    // Revoked in this process either way; tell the caller when other replicas or a restart would not see it,
+    // so the web sign-out shows its "not confirmed" notice (audit M5/L2).
+    if (!durable) throw new ServiceUnavailableException("Signed out here, but the revocation could not be stored in Redis");
     return { ok: true };
   }
 
@@ -82,8 +111,9 @@ export class AuthService {
   }
 
   private recordFailure(ip: string): void {
-    const current = attempts.get(ip);
     const now = Date.now();
+    pruneLoginAttempts(now);
+    const current = attempts.get(ip);
     if (!current || current.resetAt < now) {
       attempts.set(ip, { count: 1, resetAt: now + 10 * 60 * 1000 });
       return;
