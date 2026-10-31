@@ -318,6 +318,15 @@ model CycleRun {
   @@index([tradingEnvironment, startedAt])
 }
 
+/// Audit F1: the single immutable plan computed for a cycle (UPDATE refused by trigger).
+model CyclePlan {
+  cycleId   String   @id
+  plannedAt DateTime
+  /// { decisions, orders, watchlist, intentOutcomes } as computed by planCycle at plannedAt.
+  plan      Json
+  createdAt DateTime @default(now())
+}
+
 model AgentDecision {
   id           String   @id @default(cuid())
   cycleId      String

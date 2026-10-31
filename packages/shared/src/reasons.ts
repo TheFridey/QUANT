@@ -127,6 +127,16 @@ export const REASON_CODES = [
   "PARTIAL_FILL",
   /** Risk-reducing exit capped by maxExitImpactBps; the rest is a pending reduce order. */
   "EXIT_PARTIAL_REMAINDER",
+  /** Executor admitted orders against the cycle's stored plan (audit F1). */
+  "CYCLE_PLAN_ADMISSION",
+  /** Legacy cycle with no stored plan; the admission re-check was used as before. */
+  "CYCLE_PLAN_MISSING",
+  /** Stored cycle plan failed to parse; entries refused, exits admitted (audit F1). */
+  "CYCLE_PLAN_INVALID",
+  "NOT_IN_CYCLE_PLAN",
+  "SIZE_REDUCED_AT_ADMISSION",
+  "ADMISSION_RECHECK_FAILED",
+  "EXIT_NO_LONGER_NEEDED",
   "SPREAD_APPLIED",
   "COST_ESTIMATED",
   "ADVISORY_ONLY",
@@ -265,6 +275,13 @@ export const REASON_TEXT: Record<ReasonCode, string> = {
   ORDER_EXPIRED: "Pending paper order expired before fill.",
   ORDER_PENDING: "Paper order is pending latency or eligibility.",
   PARTIAL_FILL: "Paper fill was partial under the execution model.",
+  CYCLE_PLAN_ADMISSION: "Executor admitted orders against the cycle's stored plan; entries never exceed what was planned.",
+  CYCLE_PLAN_MISSING: "No stored plan for this cycle (created before cycle plans existed); the admission re-check was used.",
+  CYCLE_PLAN_INVALID: "The cycle's stored plan failed validation; no entries were admitted, exits and protection still ran.",
+  NOT_IN_CYCLE_PLAN: "The admission re-check produced an entry the cycle plan never decided; it was not executed.",
+  SIZE_REDUCED_AT_ADMISSION: "The admission re-check sized this planned entry smaller; the smaller quantity was used.",
+  ADMISSION_RECHECK_FAILED: "The admission re-check no longer allows this planned entry; it was not executed.",
+  EXIT_NO_LONGER_NEEDED: "A planned exit was no longer needed at admission (the position was already closed).",
   EXIT_PARTIAL_REMAINDER: "Exit filled up to maxExitImpactBps; the remainder is a pending reduce order for the next cycle.",
   SPREAD_APPLIED: "Estimated half-spread applied to the observed mid.",
   COST_ESTIMATED: "Fee, spread, and impact costs estimated explicitly.",

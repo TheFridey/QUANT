@@ -42,3 +42,18 @@ describe("stage lease busy", () => {
     expect(stages.fail).toHaveBeenCalledWith("cyc_1", "real failure");
   });
 });
+
+describe("stage metrics (audit F5)", () => {
+  it("records queue lag and stage duration around the leased run", async () => {
+    const { setMetricSink } = await import("@odin/shared");
+    const lines: Array<{ metric: string; labels: Record<string, string> }> = [];
+    setMetricSink((line) => lines.push(line));
+    try {
+      await withStageLease(leases([false]) as never, "pulse", "cyc_1", async () => {}, Date.now() - 50);
+    } finally {
+      setMetricSink(null);
+    }
+    expect(lines.map((line) => line.metric)).toEqual(["odin_queue_lag_ms", "odin_stage_duration_ms"]);
+    expect(lines[1]?.labels).toEqual({ stage: "pulse", outcome: "ok" });
+  });
+});

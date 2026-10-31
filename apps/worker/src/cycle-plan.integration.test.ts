@@ -1,0 +1,218 @@
+import { DEFAULT_STRATEGY, ENTRY_BLOCKING_SAFETY_CODES } from "@odin/shared";
+import { ensureFoundation } from "@odin/shared/bootstrap";
+import { PrismaClient, toJson } from "@odin/shared/db";
+import type { CyclePlanSnapshot } from "@odin/agent-core";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { silentBus, StageRunner, type MarketFeed } from "./stage-runner.js";
+
+/**
+ * Audit F1: one plan per cycle. AEGIS/ATLAS rows are projections of the stored plan, and the
+ * executor only acts on what that plan decided, even when the world moves between stages.
+ */
+const databaseUrl = process.env.DATABASE_URL_TEST;
+const enabled = Boolean(databaseUrl && databaseUrl.includes("odin_test"));
+const pairAddress = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
+
+const feed: MarketFeed = {
+  async fetchUniverse() {
+    return {
+      ok: true,
+      fetchedAt: clock.toISOString(),
+      data: [
+        {
+          source: "dexscreener",
+          chainId: "solana",
+          pairAddress,
+          dexId: "orca",
+          url: `https://dexscreener.com/solana/${pairAddress}`,
+          baseAddress: "So11111111111111111111111111111111111111112",
+          baseSymbol: "SOL",
+          baseName: "Wrapped SOL",
+          quoteAddress: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          quoteSymbol: "USDC",
+          priceUsd: "100",
+          liquidityUsd: "1000000",
+          volume24hUsd: "5000000",
+          volume5mUsd: "10000",
+          priceChangeM5Pct: "3.5",
+          priceChangeH1Pct: "1.2",
+          priceChangeH24Pct: "4",
+          txnsM5Buys: 80,
+          txnsM5Sells: 20,
+          raw: { fixture: "cycle-plan" },
+        },
+      ],
+    };
+  },
+};
+
+let clock = new Date();
+
+describe.skipIf(!enabled)("single plan per cycle (audit F1)", () => {
+  let prisma: PrismaClient;
+
+  beforeAll(async () => {
+    prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+    await prisma.$executeRaw`SELECT pg_advisory_lock(641099)`;
+    await prisma.$executeRawUnsafe(
+      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "AgentDecision", "MarketObservation", "WatchlistEntry", "SecurityAssessment", "EquitySnapshot", "CycleRun", "CyclePlan", "PaperAccount", "EngineControl", "User", "RiskReservationEvent", "RiskReservation", "ProtectionIntent", "ProtectionOrder", "StrategyInstance", "StrategyAllocation", "TradeIntent", "RecoveryCase", "ReconciliationRun", "OpportunityFunnelEvent", "DurableAlert", "AccountSafetyState" RESTART IDENTITY CASCADE`,
+    );
+    const config = { ...DEFAULT_STRATEGY, multiMarketPaperIngest: false, paperLatencyMs: 0 };
+    await ensureFoundation(prisma, { email: "admin@odin.local", password: "odin-paper-dev", config });
+    await prisma.engineControl.update({ where: { id: "primary" }, data: { status: "RUNNING", config: toJson(config) } });
+  });
+
+  afterAll(async () => {
+    await prisma.$executeRaw`SELECT pg_advisory_unlock(641099)`;
+    await prisma.$disconnect();
+  });
+
+  async function runCycle(advanceBeforeExecutorMs: number, hooks: { beforePlan?: () => Promise<void>; beforeExecutor?: (cycleId: string) => Promise<void> } = {}) {
+    await prisma.cycleRun.updateMany({ where: { status: "RUNNING" }, data: { status: "FAILED", error: "TEST_RESET" } });
+    clock = new Date();
+    const runner = new StageRunner(prisma, feed, silentBus, "live", () => clock);
+    const ingested = await runner.ingest({ trigger: `cycle-plan-${advanceBeforeExecutorMs}` });
+    expect(ingested.skipped).toBe(false);
+    const cycleId = ingested.cycleId;
+    await hooks.beforePlan?.();
+    await runner.sentinel(cycleId);
+    await runner.pulse(cycleId);
+    await runner.aegis(cycleId);
+    await runner.atlas(cycleId);
+    clock = new Date(clock.getTime() + advanceBeforeExecutorMs);
+    await hooks.beforeExecutor?.(cycleId);
+    await runner.executor(cycleId);
+    const row = await prisma.cyclePlan.findUnique({ where: { cycleId } });
+    return { cycleId, snapshot: (row?.plan ?? null) as unknown as CyclePlanSnapshot };
+  }
+
+  async function assertProjectionsMatch(cycleId: string, snapshot: CyclePlanSnapshot) {
+    for (const agent of ["AEGIS", "ATLAS"] as const) {
+      const stored = await prisma.agentDecision.findMany({ where: { cycleId, agent }, orderBy: { pairAddress: "asc" } });
+      const planned = snapshot.decisions.filter((decision) => decision.agent === agent);
+      expect(stored.map((row) => [row.pairAddress, row.decision, row.reasonCodes])).toEqual(
+        planned
+          .sort((a, b) => a.pairAddress.localeCompare(b.pairAddress))
+          .map((row) => [row.pairAddress, row.decision, row.reasonCodes]),
+      );
+    }
+    const plannedIds = new Set(snapshot.orders.map((order) => order.clientOrderId));
+    const entries = await prisma.order.findMany({ where: { cycleId, side: "BUY" } });
+    for (const order of entries) expect(plannedIds.has(order.clientOrderId), order.clientOrderId).toBe(true);
+  }
+
+  // Runs first: it needs a flat book, and leaves it flat.
+  it("does not execute an entry that appeared only at admission, and records it as not planned", async () => {
+    const code = ENTRY_BLOCKING_SAFETY_CODES[0]!;
+    const { cycleId, snapshot } = await runCycle(0, {
+      // Entries are suspended while the plan is made, and the suspension clears before the executor.
+      beforePlan: async () => {
+        await prisma.accountSafetyState.create({ data: { accountId: "primary", code, status: "ACTIVE" } });
+      },
+      beforeExecutor: async () => {
+        await prisma.accountSafetyState.update({
+          where: { accountId_code: { accountId: "primary", code } },
+          data: { status: "RESOLVED", resolvedAt: new Date() },
+        });
+      },
+    });
+    expect(snapshot.orders.filter((order) => order.side === "BUY")).toEqual([]);
+    expect(await prisma.order.count({ where: { cycleId, side: "BUY" } })).toBe(0);
+    const admission = await prisma.agentDecision.findFirstOrThrow({ where: { cycleId, agent: "EXECUTOR", pairAddress: "(admission)" } });
+    const records = (admission.output as { records: Array<{ result: string; side: string; clientOrderId: string }> }).records;
+    const unplanned = records.filter((row) => row.side === "BUY");
+    expect(unplanned.length).toBeGreaterThan(0);
+    expect(unplanned.every((row) => row.result === "NOT_IN_PLAN")).toBe(true);
+    // The audit trail matches what happened: no ADMITTED intent and no ACT executor row for the dropped entry.
+    const intents = await prisma.tradeIntent.findMany({ where: { cycleId, clientOrderId: { in: unplanned.map((row) => row.clientOrderId) } } });
+    expect(intents.filter((row) => row.status === "ADMITTED")).toEqual([]);
+    const executorRow = await prisma.agentDecision.findFirstOrThrow({ where: { cycleId, agent: "EXECUTOR", pairAddress } });
+    expect(executorRow.decision).toBe("REJECT");
+    expect(executorRow.reasonCodes).toContain("NOT_IN_CYCLE_PLAN");
+    const runtime = (await prisma.engineControl.findUniqueOrThrow({ where: { id: "primary" } })).runtimeState as { fairnessCursor?: string | null } | null;
+    expect(runtime?.fairnessCursor ?? null).toBeNull();
+  });
+
+  it("executes the planned entry when nothing changes between stages", async () => {
+    const { cycleId, snapshot } = await runCycle(0);
+    expect(snapshot.orders.some((order) => order.side === "BUY")).toBe(true);
+    await assertProjectionsMatch(cycleId, snapshot);
+    const filled = await prisma.order.count({ where: { cycleId, side: "BUY", status: "FILLED" } });
+    expect(filled).toBeGreaterThan(0);
+  });
+
+  it("keeps AEGIS/ATLAS identical to the plan and executes nothing unplanned when the quote ages before admission", async () => {
+    const { cycleId, snapshot } = await runCycle(DEFAULT_STRATEGY.liveMaxAgeMs + 15_000);
+    await assertProjectionsMatch(cycleId, snapshot);
+    const admission = await prisma.agentDecision.findFirstOrThrow({ where: { cycleId, agent: "EXECUTOR", pairAddress: "(admission)" } });
+    expect(admission.reasonCodes).toContain("CYCLE_PLAN_ADMISSION");
+    const output = admission.output as { records: Array<{ result: string; side: string }> };
+    // Whatever the planned entries were, none was executed beyond the plan; any that the stale quote
+    // invalidated are recorded as rejected at admission rather than silently replaced.
+    for (const record of output.records.filter((row) => row.side === "BUY")) {
+      expect(["ADMITTED", "ADMITTED_REDUCED", "REJECTED_AT_ADMISSION"]).toContain(record.result);
+    }
+    // A quote older than liveMaxAgeMs at admission must not fill a new entry.
+    expect(await prisma.order.count({ where: { cycleId, side: "BUY", status: "FILLED" } })).toBe(0);
+    const input = admission.input as { planTime: string; admissionTime: string };
+    expect(Date.parse(input.admissionTime) - Date.parse(input.planTime)).toBeGreaterThanOrEqual(DEFAULT_STRATEGY.liveMaxAgeMs);
+  });
+
+  it("legacy cycle without a stored plan: the executor uses the re-check as before", async () => {
+    const { cycleId } = await runCycle(0, {
+      beforeExecutor: async (id) => {
+        await prisma.cyclePlan.delete({ where: { cycleId: id } });
+      },
+    });
+    const admission = await prisma.agentDecision.findFirstOrThrow({ where: { cycleId, agent: "EXECUTOR", pairAddress: "(admission)" } });
+    expect(admission.reasonCodes).toEqual(["CYCLE_PLAN_MISSING"]);
+    const records = (admission.output as { records: Array<{ result: string }> }).records;
+    expect(records.every((row) => row.result === "NO_SNAPSHOT")).toBe(true);
+    // The executor still writes AEGIS/ATLAS from its own plan, exactly as before cycle plans existed.
+    expect(await prisma.agentDecision.count({ where: { cycleId, agent: "ATLAS" } })).toBeGreaterThan(0);
+  });
+
+  it("a retried SENTINEL reuses the stored plan instead of recomputing", async () => {
+    await prisma.cycleRun.updateMany({ where: { status: "RUNNING" }, data: { status: "FAILED", error: "TEST_RESET" } });
+    clock = new Date();
+    const runner = new StageRunner(prisma, feed, silentBus, "live", () => clock);
+    const { cycleId } = await runner.ingest({ trigger: "cycle-plan-sentinel-retry" });
+    await runner.sentinel(cycleId);
+    const first = await prisma.cyclePlan.findUniqueOrThrow({ where: { cycleId } });
+    // A retry after the stage marker was lost, with the clock moved on.
+    await prisma.cycleRun.update({ where: { id: cycleId }, data: { stage: "created" } });
+    clock = new Date(clock.getTime() + 60_000);
+    await runner.sentinel(cycleId);
+    const second = await prisma.cyclePlan.findUniqueOrThrow({ where: { cycleId } });
+    expect(second.plannedAt.toISOString()).toBe(first.plannedAt.toISOString());
+    expect(second.plan).toEqual(first.plan);
+    await prisma.cycleRun.update({ where: { id: cycleId }, data: { status: "FAILED", error: "TEST_RESET" } });
+  });
+
+  it("a malformed stored plan refuses entries but still runs exits", async () => {
+    expect(await prisma.position.count({ where: { baseQty: { gt: 0 } } })).toBeGreaterThan(0);
+    const { cycleId } = await runCycle(0, {
+      beforeExecutor: async (id) => {
+        const stored = await prisma.cyclePlan.findUniqueOrThrow({ where: { cycleId: id } });
+        await prisma.cyclePlan.delete({ where: { cycleId: id } });
+        const plan = stored.plan as unknown as CyclePlanSnapshot;
+        await prisma.cyclePlan.create({
+          data: { cycleId: id, plannedAt: stored.plannedAt, plan: toJson({ ...plan, orders: [{ clientOrderId: "bad", pairAddress, qty: "0" }] }) },
+        });
+        await prisma.engineControl.update({ where: { id: "primary" }, data: { flattenRequested: true } });
+      },
+    });
+    const admission = await prisma.agentDecision.findFirstOrThrow({ where: { cycleId, agent: "EXECUTOR", pairAddress: "(admission)" } });
+    expect(admission.reasonCodes).toEqual(["CYCLE_PLAN_INVALID"]);
+    expect(await prisma.order.count({ where: { cycleId, side: "BUY" } })).toBe(0);
+    expect(await prisma.order.count({ where: { cycleId, side: "SELL", status: "FILLED" } })).toBeGreaterThan(0);
+    expect(await prisma.durableAlert.count({ where: { code: "CYCLE_PLAN_INVALID" } })).toBeGreaterThan(0);
+  });
+
+  it("refuses to rewrite a stored plan", async () => {
+    const plan = await prisma.cyclePlan.findFirstOrThrow();
+    await expect(prisma.cyclePlan.update({ where: { cycleId: plan.cycleId }, data: { plannedAt: new Date() } })).rejects.toThrow(
+      /EVIDENCE_IMMUTABLE/,
+    );
+  });
+});

@@ -831,6 +831,16 @@ export class TerminalService {
    * Paginated ledger query for History (D22). Snapshot still embeds the latest 40;
    * this endpoint pages beyond that with order vs trade (fill) views.
    */
+  /** The account the terminal is showing: the active environment's paper account (same as the snapshot). */
+  private async activeAccountId(): Promise<string> {
+    const engineRow = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
+    const config = this.readConfig(engineRow?.config);
+    return resolveExecutionContext({
+      config: { tradingEnvironment: config?.tradingEnvironment ?? "MARKET_DATA_PAPER" },
+      dataMode: this.mode(),
+    }).accountId;
+  }
+
   async orderHistory(input: {
     kind: "orders" | "trades" | "all";
     limit: number;
@@ -841,12 +851,15 @@ export class TerminalService {
   }) {
     const limit = Math.min(Math.max(input.limit || 40, 1), 100);
     const offset = Math.max(input.offset || 0, 0);
+    // Audit F3: only the active account's orders (another environment's account never bleeds in).
+    const accountId = await this.activeAccountId();
     const where: {
+      accountId: string;
       side?: string;
       baseSymbol?: { contains: string; mode: "insensitive" };
       status?: string;
       fills?: { some: Record<string, never> };
-    } = {};
+    } = { accountId };
     if (input.side === "BUY" || input.side === "SELL") where.side = input.side;
     if (input.symbol?.trim()) {
       where.baseSymbol = { contains: input.symbol.trim(), mode: "insensitive" };
@@ -1068,11 +1081,24 @@ export class TerminalService {
 
   async activityFeed(limit: number) {
     const take = Math.min(Math.max(limit, 1), 200);
+    // Audit F3: scope every source to the active account. Decisions carry no account, so they are
+    // taken from the account's own recent cycles.
+    const accountId = await this.activeAccountId();
+    const accountCycles = await this.prisma.cycleRun.findMany({
+      where: { accountId },
+      orderBy: { startedAt: "desc" },
+      take: 200,
+      select: { id: true },
+    });
     const [decisions, orders, cycles] = await Promise.all([
-      this.prisma.agentDecision.findMany({ orderBy: { createdAt: "desc" }, take }),
-      this.prisma.order.findMany({ orderBy: { createdAt: "desc" }, take, include: { fills: true } }),
+      this.prisma.agentDecision.findMany({
+        where: { cycleId: { in: accountCycles.map((cycle) => cycle.id) } },
+        orderBy: { createdAt: "desc" },
+        take,
+      }),
+      this.prisma.order.findMany({ where: { accountId }, orderBy: { createdAt: "desc" }, take, include: { fills: true } }),
       this.prisma.cycleRun.findMany({
-        where: { OR: [{ status: "FAILED" }, { error: { not: null } }] },
+        where: { accountId, OR: [{ status: "FAILED" }, { error: { not: null } }] },
         orderBy: { startedAt: "desc" },
         take: Math.min(take, 40),
       }),

@@ -10,6 +10,7 @@ import {
   type StrategyBar,
   type StrategySignal,
 } from "./strategy-interface.js";
+import { recordMetric } from "@odin/shared";
 import { sha256 } from "./compile-strategy.js";
 import { generateSeccompBpf } from "./seccomp-profile.js";
 
@@ -301,7 +302,15 @@ const CONTRACT_CODES = new Set([
   "STATE_LIMIT",
 ]);
 
-export async function executeCompiledStrategy(input: {
+export async function executeCompiledStrategy(input: Parameters<typeof executeCompiledStrategyInner>[0]): Promise<SandboxExecution> {
+  // Audit F5: sandbox run duration and outcome code.
+  const started = Date.now();
+  const result = await executeCompiledStrategyInner(input);
+  recordMetric("odin_sandbox_run_ms", Date.now() - started, { code: result.code, bars: String(input.bars.length) });
+  return result;
+}
+
+async function executeCompiledStrategyInner(input: {
   javascript: string;
   artifactHash: string;
   bars: StrategyBar[];

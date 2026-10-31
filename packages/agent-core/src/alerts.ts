@@ -12,6 +12,7 @@ export const ALERT_CODES = {
   LIVE_GATE_REFUSED: "LIVE_GATE_REFUSED",
   CIRCUIT_BREAKER: "CIRCUIT_BREAKER",
   CONFIG_INVALID: "CONFIG_INVALID",
+  CYCLE_PLAN_INVALID: "CYCLE_PLAN_INVALID",
   FLATTEN_INCOMPLETE: "FLATTEN_INCOMPLETE",
   RECONCILE_ISSUE: "RECONCILE_ISSUE",
   PROTECTION_UNRESOLVED: "PROTECTION_UNRESOLVED",
@@ -76,6 +77,16 @@ export function configInvalidAlert(issues: ReadonlyArray<{ path: ReadonlyArray<P
     code: ALERT_CODES.CONFIG_INVALID,
     message: `Stored strategy config is invalid (${names}); no cycle will plan until it is corrected`,
     payload: { fields },
+  };
+}
+
+/** Audit F1: a stored cycle plan failed to parse. Entries are refused this cycle; exits still run. */
+export function cyclePlanInvalidAlert(cycleId: string, detail: string): DurableAlertDraft {
+  return {
+    severity: "CRITICAL",
+    code: ALERT_CODES.CYCLE_PLAN_INVALID,
+    message: `Stored plan for cycle ${cycleId} is invalid (${detail}); no entries admitted, exits and protection still run`,
+    payload: { cycleId, detail },
   };
 }
 

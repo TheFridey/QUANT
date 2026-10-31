@@ -1,6 +1,9 @@
 import {
   ALERT_CODES,
   allocateOpportunities,
+  applyAdmissionToDecisions,
+  applyAdmissionToOutcomes,
+  parseCyclePlanSnapshot,
   assessSecurity,
   ensureDefaultStrategyInstances,
   entriesSuspendedAlert,
@@ -10,22 +13,21 @@ import {
   instanceAvailableUsd,
   uniqueFunnelEvents,
   configInvalidAlert,
-  liveGateAlert,
   marketSelectionMap,
   parseActiveStrategyIdentity,
   planCycle,
   reconcileIssueAlert,
-  strategyVersionStamp,
   toPlanIntents,
   unknownAssessment,
+  type AdmissionRecord,
+  type CyclePlanSnapshot,
   type DecisionDraft,
+  type ProposedOrder,
 } from "@odin/agent-core";
 import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
 import {
   BirdeyeClient,
   buildFixturePairsAtStep,
-  allowsLocalPaperBooking,
-  createExecutionGateway,
   fetchMandatoryMarks,
   fetchSolanaUniverse,
   FrankfurterFxProvider,
@@ -35,18 +37,15 @@ import {
 } from "@odin/market-data";
 import { ObservabilityRegistry } from "@odin/analytics";
 import type { ReservationBudget } from "@odin/risk-engine";
-import { releaseInTx, reserveInTx } from "@odin/risk-engine";
 import type { ObservationPoint, SecurityAssessment } from "@odin/shared";
 import {
   AGENT_BUS_CHANNEL,
   TERMINAL_CHANNEL,
-  assertPaperOrSandboxOnly,
   buildPositionKey,
   checkRowEnvironmentIsolation,
   classifyFreshness,
   clientOrderIdFor,
   d,
-  DEFAULT_STRATEGY,
   freshnessFromProvenance,
   inferObservationProvenance,
   instrumentIdFromPositionKey,
@@ -55,9 +54,9 @@ import {
   loadPinnedExecutionContext,
   newId,
   operatorOrderSchema,
-  parseStrategyConfig,
   pinExecutionContext,
   resolveExecutionContext,
+  recordMetric,
   rollSessionEquity,
   SAFETY_CODES,
   usd,
@@ -85,15 +84,21 @@ import {
   enrichReconcileReport,
   reconcileOrders,
   reconcilePositionQty,
-  releasePendingExitReservation,
   repairAllocationDrift,
   recoverProtectionAfterRestart,
   resolveSafetyState,
-  retryUnresolvedProtectionIntents,
-  settlePendingOrder,
   updateTrailing,
 } from "@odin/trading-engine";
+import { upsertDecision } from "./decisions.js";
+import { admitPlannedOrders } from "./executor/admit.js";
+import type { ExecutorHost } from "./executor/host.js";
+import { consumeCyclePlan } from "./executor/plan-consume.js";
+import { retryProtectionExits } from "./executor/protect.js";
+import { settlePendingPaperOrders } from "./executor/settle.js";
 import { processSandboxOutbox } from "./sandbox-execution.js";
+import { strategyConfigOrExitOnly } from "./strategy-config.js";
+
+export { strategyConfigOrExitOnly } from "./strategy-config.js";
 
 export type MarketFeed = {
   fetchUniverse(limit: number): Promise<ProviderResult<NormalizedPair[]>>;
@@ -121,22 +126,6 @@ function boundedIntFromEnv(name: string, fallback: number, max: number): number 
   return Number.isInteger(value) && value > 0 ? Math.min(value, max) : fallback;
 }
 
-type ConfigIssue = { path: PropertyKey[]; message: string };
-
-/**
- * Audit H1 (review F1): a stored config that fails validation is never healed or rewritten,
- * and it never stops risk reduction. Entries are blocked (pauseNewEntries) while settlement,
- * planned exits and protection run on DEFAULT_STRATEGY, the authoritative defaults, until the
- * operator corrects the fields named in the CONFIG_INVALID alert.
- */
-export function strategyConfigOrExitOnly(raw: unknown): { config: StrategyConfig; issues: ConfigIssue[] | null } {
-  try {
-    return { config: parseStrategyConfig(raw), issues: null };
-  } catch (error) {
-    const issues = (error as { issues?: ConfigIssue[] }).issues ?? [{ path: [], message: String(error) }];
-    return { config: { ...DEFAULT_STRATEGY, pauseNewEntries: true }, issues };
-  }
-}
 
 export class StageRunner {
   private readonly observability = new ObservabilityRegistry();
@@ -205,12 +194,31 @@ export class StageRunner {
 
   async sentinel(cycleId: string): Promise<void> {
     if (!(await this.ready(cycleId, "created"))) return;
-    const loaded = await this.loadPlan(cycleId, this.now(), this.prisma);
-    if (!loaded) return;
-    for (const decision of loaded.plan.decisions.filter((item) => item.agent === "SENTINEL")) {
+    // Audit F1: the cycle's plan is computed once, here, and stored immutably. A retried SENTINEL
+    // reuses the stored plan rather than recomputing with a different now().
+    let snapshot = await this.readCyclePlan(this.prisma, cycleId);
+    if (!snapshot) {
+      const now = this.now();
+      const loaded = await this.loadPlan(cycleId, now, this.prisma);
+      if (!loaded) return;
+      snapshot = await this.writeCyclePlan(cycleId, now, loaded.plan);
+    }
+    for (const decision of snapshot.decisions.filter((item) => item.agent === "SENTINEL")) {
       await upsertDecision(this.prisma, cycleId, decision);
     }
-    for (const entry of loaded.plan.watchlist) {
+    for (const entry of snapshot.watchlist as Array<{
+      pairAddress: string;
+      baseAddress: string;
+      baseSymbol: string;
+      quoteAddress: string;
+      quoteSymbol: string;
+      dexId: string;
+      source: string;
+      discoveryScore: string;
+      rank: number;
+      reasonCodes: string[];
+      receivedAt: string;
+    }>) {
       await this.prisma.watchlistEntry.upsert({
         where: { pairAddress: entry.pairAddress },
         create: {
@@ -275,6 +283,15 @@ export class StageRunner {
       timings[name] = at - phaseStarted;
       phaseStarted = at;
     };
+    // Audit F2: phases live in ./executor/*; they reach runner internals only through this host.
+    const host: ExecutorHost = {
+      dataMode: this.dataMode,
+      buildReservationBudget: (...args) => this.buildReservationBudget(...args),
+      armProtectionForFill: (...args) => this.armProtectionForFill(...args),
+      persistAlert: (...args) => this.persistAlert(...args),
+      readCyclePlan: (...args) => this.readCyclePlan(...args),
+      loadPlan: (...args) => this.loadPlan(...args),
+    };
     const transactionStarted = Date.now();
     await this.prisma.$transaction(async (tx) => {
       timings.lockWait = Date.now() - transactionStarted;
@@ -282,362 +299,26 @@ export class StageRunner {
       await lockAccount(tx, ctx.accountId);
 
       // R05: settle/cancel pending under explicit policy FIRST, then refresh book/caps, then admit.
-      const engine = await tx.engineControl.findUnique({ where: { id: "primary" } });
-      const { config } = strategyConfigOrExitOnly(engine?.config ?? {});
-      // Local settle loop must only touch PAPER — never locally fill SANDBOX pending orders (F01).
-      const pending = await tx.order.findMany({
-        where: { accountId: ctx.accountId, status: "PENDING", executionMode: "PAPER" },
-        orderBy: { submittedAt: "asc" },
-      });
-      let filled = 0;
-      const settleBudget = await this.buildReservationBudget(tx, {
-        accountId: ctx.accountId,
-        config,
-        valuation: { equityUsd: null },
-      });
-      for (const row of pending) {
-        // Pause / emergency: still settle eligible EXITs; cancel pending ENTRY/OPERATOR buys when halted.
-        const haltEntries =
-          engine?.status === "PAUSED" ||
-          engine?.status === "EMERGENCY_STOP" ||
-          engine?.status === "STOPPED" ||
-          config.pauseNewEntries === true;
-        if (
-          haltEntries &&
-          row.side === "BUY" &&
-          (row.intent === "ENTRY" || row.intent === "OPERATOR")
-        ) {
-          await tx.order.update({
-            where: { id: row.id },
-            data: {
-              status: "CANCELLED",
-              rejectReason: "ENGINE_HALTED",
-              reasonCodes: [...row.reasonCodes, "ENGINE_HALTED"],
-            },
-          });
-          await releasePendingExitReservation(tx, row);
-          await releaseInTx(
-            tx,
-            { accountId: ctx.accountId, mode: "PAPER", clientOrderId: row.clientOrderId },
-            settleBudget,
-            now,
-          );
-          continue;
-        }
-        const settled = await settlePendingOrder(tx, {
-          accountId: ctx.accountId,
-          orderId: row.id,
-          config,
-          mode: this.dataMode,
-          now,
-          tradingEnvironment: ctx.tradingEnvironment,
-        });
-        if (settled.status === "FILLED") {
-          filled += 1;
-          if (settled.side === "BUY" && settled.pairAddress) {
-            await this.armProtectionForFill(tx, {
-              accountId: ctx.accountId,
-              pairAddress: settled.pairAddress,
-              qty: settled.filledQty ?? row.qty.toString(),
-              config,
-              markUsd: null,
-            });
-          }
-        }
-        // Exit reservations are released inside settlePendingOrder only (review F3: no double release).
-        if (settled.status === "FILLED" || settled.status === "REJECTED" || settled.status === "EXPIRED") {
-          await releaseInTx(
-            tx,
-            { accountId: ctx.accountId, mode: "PAPER", clientOrderId: row.clientOrderId },
-            settleBudget,
-            now,
-          );
-        }
-      }
+      let filled = await settlePendingPaperOrders(host, tx, { ctx, now });
 
       endPhase("settle");
-      // Refresh authoritative book after settlement (R05).
-      const loaded = await this.loadPlan(cycleId, now, tx, ctx);
+      // Refresh authoritative book after settlement (R05). This is the admission re-check, not a new plan.
+      // Audit F1: admit only what the stored cycle plan decided (entries never larger than planned);
+      // risk-reducing exits are always admitted. Admission is applied inside loadPlan, before intent
+      // outcomes are persisted and the fairness cursor moves. Both plan-time and admission-time are recorded.
+      // A malformed stored plan fails closed for entries only: an empty plan admits no entry, while
+      // risk-reducing exits from the re-check are still admitted and protection still runs.
+      const loaded = await consumeCyclePlan(host, tx, { cycleId, now, ctx });
       if (!loaded) return;
-      for (const decision of loaded.plan.decisions.filter((item) => item.agent === "AEGIS" || item.agent === "ATLAS" || item.agent === "EXECUTOR")) {
-        await upsertDecision(tx, cycleId, decision);
-      }
       endPhase("plan");
 
       await this.reconcileAndAlert(tx, ctx);
       endPhase("reconcile");
 
-      const liveGate = assertPaperOrSandboxOnly(process.env);
-      const filledIds: string[] = [];
-      const reservationBudget = await this.buildReservationBudget(tx, {
-        accountId: ctx.accountId,
-        config: loaded.config,
-        valuation: loaded.valuation,
-      });
-
-      // Remaining PENDING after settle still consume slots/exposure/risk.
-      const stillPending = await tx.order.findMany({
-        where: { accountId: ctx.accountId, status: "PENDING" },
-      });
-      // Key by owner+pair so two instances can both have pending entries on the same symbol.
-      const pendingPairSuppress = new Set(
-        stillPending
-          .filter((o) => o.side === "BUY")
-          .map((o) => (o.strategyInstanceId ? `${o.strategyInstanceId}::${o.pairAddress}` : o.pairAddress)),
-      );
-
-      const executionGateway = createExecutionGateway(liveGate.ok ? liveGate.mode : "PAPER", process.env);
-
-      if (!liveGate.ok) {
-        await this.persistAlert(tx, liveGateAlert(liveGate.reason, liveGate.mode), ctx.accountId);
-        await upsertDecision(tx, cycleId, {
-          agent: "EXECUTOR",
-          modelVersion: "executor-paper-1.2.0",
-          pairAddress: "",
-          decision: "REJECT",
-          confidence: "1.000000",
-          reasonCodes: ["REJECTED"],
-          input: {},
-          output: { error: liveGate.reason, mode: liveGate.mode },
-          inputSource: "execution-gate",
-          durationMs: 0,
-        });
-      } else if (!allowsLocalPaperBooking(executionGateway)) {
-        // SANDBOX: admit durable PRE_SUBMIT orders under account lock; outbox submits outside tx.
-        // Never book a local PAPER fill as if it were the external demo (D09 / F01).
-        const gatewayReady = executionGateway.readiness();
-        await upsertDecision(tx, cycleId, {
-          agent: "EXECUTOR",
-          modelVersion: "executor-sandbox-1.0.0",
-          pairAddress: "",
-          decision: gatewayReady === "READY" ? "ACT" : "HOLD",
-          confidence: "1.000000",
-          reasonCodes: gatewayReady === "READY" ? ["ORDER_PENDING"] : ["REJECTED"],
-          input: { gatewayId: executionGateway.id, mode: executionGateway.mode },
-          output: {
-            sandboxOutbox: true,
-            readiness: gatewayReady,
-            note:
-              gatewayReady === "READY"
-                ? "SANDBOX orders admitted as PRE_SUBMIT; outbox submits externally"
-                : gatewayReady === "MISSING_CREDENTIALS"
-                  ? "SANDBOX credentials missing; orders held PRE_SUBMIT without local PAPER fill"
-                  : "SANDBOX gateway not ready; refusing local PAPER fill masquerade",
-          },
-          inputSource: "execution-gateway",
-          durationMs: 0,
-        });
-        for (const order of loaded.plan.orders) {
-          const needsReservation =
-            order.side === "BUY" && (order.intent === "ENTRY" || order.intent === "OPERATOR");
-          if (needsReservation) {
-            const cashUsd = order.estimatedCostUsd ?? order.estimatedNotionalUsd ?? order.qty;
-            const instanceBudget =
-              order.strategyInstanceId && "instanceAvailable" in loaded
-                ? d(
-                    (loaded as { instanceAvailable?: Map<string, string> }).instanceAvailable?.get(
-                      order.strategyInstanceId,
-                    ) ?? "0",
-                  )
-                    .plus(d(cashUsd))
-                    .toFixed(8)
-                : null;
-            const budgetRow =
-              order.strategyInstanceId && "instances" in loaded
-                ? (
-                    loaded as {
-                      instances?: Array<{ id: string; budgetUsd: string }>;
-                    }
-                  ).instances?.find((i) => i.id === order.strategyInstanceId)
-                : null;
-            const admitted = await reserveInTx(
-              tx,
-              {
-                id: newId("rsv"),
-                accountId: ctx.accountId,
-                mode: "SANDBOX",
-                clientOrderId: order.clientOrderId,
-                cashUsd,
-                exposureUsd: order.estimatedNotionalUsd ?? cashUsd,
-                slots: 1,
-                riskUsd: usd(d(cashUsd).mul(d(loaded.config.stopLossPct)).div(100)),
-                strategyInstanceId: order.strategyInstanceId ?? null,
-                intentId: order.intentId ?? null,
-                instanceBudgetUsd: budgetRow?.budgetUsd ?? instanceBudget,
-              },
-              reservationBudget,
-              now,
-            );
-            if (!admitted.ok) {
-              await upsertDecision(tx, cycleId, {
-                agent: "EXECUTOR",
-                modelVersion: "executor-sandbox-1.0.0",
-                pairAddress: order.pairAddress,
-                decision: "REJECT",
-                confidence: "1.000000",
-                reasonCodes: ["REJECTED"],
-                input: { clientOrderId: order.clientOrderId },
-                output: { reservationDenied: admitted.reason },
-                inputSource: "pg-reservations",
-                durationMs: 0,
-              });
-              continue;
-            }
-          }
-          await commitProposedOrder(tx, {
-            accountId: ctx.accountId,
-            cycleId,
-            order: {
-              ...order,
-              // Force pending so we never locally fill; submissionState marks the outbox.
-              eligibleAt: new Date(now.getTime() + 365 * 24 * 3600 * 1000).toISOString(),
-              expiresAt: order.expiresAt,
-              executionMode: "SANDBOX",
-              venue: executionGateway.id,
-              instrumentId: order.pairAddress.includes(":") ? order.pairAddress : null,
-              strategyVersion: strategyVersionStamp(
-                loaded.activeStrategy,
-                loaded.config.entryM5ChangePct,
-                order.strategyInstanceId,
-              ),
-              strategyInstanceId: order.strategyInstanceId ?? null,
-              intentId: order.intentId ?? null,
-              ownerScope: order.ownerScope ?? (order.strategyInstanceId ? "STRATEGY" : "LEGACY"),
-              submissionState: "PRE_SUBMIT",
-            },
-            config: loaded.config,
-            mode: this.dataMode,
-            now,
-          });
-          await tx.order.updateMany({
-            where: { clientOrderId: order.clientOrderId },
-            data: { submissionState: "PRE_SUBMIT", executionMode: "SANDBOX", venue: executionGateway.id },
-          });
-        }
-      } else {
-        for (const order of loaded.plan.orders) {
-          // Suppress duplicate pending BUY for same owner+pair (R05) — same-symbol other owners still flow.
-          const pendingKey = order.strategyInstanceId
-            ? `${order.strategyInstanceId}::${order.pairAddress}`
-            : order.pairAddress;
-          if (order.side === "BUY" && pendingPairSuppress.has(pendingKey)) {
-            await upsertDecision(tx, cycleId, {
-              agent: "EXECUTOR",
-              modelVersion: "executor-paper-1.2.0",
-              pairAddress: order.pairAddress,
-              decision: "REJECT",
-              confidence: "1.000000",
-              reasonCodes: ["REJECTED"],
-              input: { clientOrderId: order.clientOrderId },
-              output: { reservationDenied: "PENDING_DUPLICATE" },
-              inputSource: "pending-suppress",
-              durationMs: 0,
-            });
-            continue;
-          }
-          const needsReservation =
-            order.side === "BUY" && (order.intent === "ENTRY" || order.intent === "OPERATOR");
-          if (needsReservation) {
-            const cashUsd = order.estimatedCostUsd ?? order.estimatedNotionalUsd ?? (() => {
-              const mark = loaded.marks?.[order.pairAddress]?.priceUsd;
-              return mark && d(mark).gt(0) ? usd(d(order.qty).mul(d(mark))) : order.qty;
-            })();
-            const budgetRow =
-              order.strategyInstanceId && "instances" in loaded
-                ? (
-                    loaded as {
-                      instances?: Array<{ id: string; budgetUsd: string }>;
-                    }
-                  ).instances?.find((i) => i.id === order.strategyInstanceId)
-                : null;
-            const admitted = await reserveInTx(
-              tx,
-              {
-                id: newId("rsv"),
-                accountId: ctx.accountId,
-                mode: "PAPER",
-                clientOrderId: order.clientOrderId,
-                cashUsd,
-                exposureUsd: order.estimatedNotionalUsd ?? cashUsd,
-                slots: 1,
-                riskUsd: usd(d(cashUsd).mul(d(loaded.config.stopLossPct)).div(100)),
-                strategyInstanceId: order.strategyInstanceId ?? null,
-                intentId: order.intentId ?? null,
-                instanceBudgetUsd: budgetRow?.budgetUsd ?? null,
-              },
-              reservationBudget,
-              now,
-            );
-            if (!admitted.ok) {
-              await upsertDecision(tx, cycleId, {
-                agent: "EXECUTOR",
-                modelVersion: "executor-paper-1.2.0",
-                pairAddress: order.pairAddress,
-                decision: "REJECT",
-                confidence: "1.000000",
-                reasonCodes: ["REJECTED"],
-                input: { clientOrderId: order.clientOrderId },
-                output: { reservationDenied: admitted.reason },
-                inputSource: "pg-reservations",
-                durationMs: 0,
-              });
-              continue;
-            }
-          }
-          const result = await commitProposedOrder(tx, {
-            accountId: ctx.accountId,
-            cycleId,
-            order: {
-              ...order,
-              eligibleAt: order.eligibleAt,
-              expiresAt: order.expiresAt,
-              executionMode: "PAPER",
-              venue: "PAPER",
-              instrumentId: order.pairAddress.includes(":") ? order.pairAddress : null,
-              strategyVersion: strategyVersionStamp(
-                loaded.activeStrategy,
-                loaded.config.entryM5ChangePct,
-                order.strategyInstanceId,
-              ),
-              strategyInstanceId: order.strategyInstanceId ?? null,
-              intentId: order.intentId ?? null,
-              ownerScope: order.ownerScope ?? (order.strategyInstanceId ? "STRATEGY" : "LEGACY"),
-              submissionState: "LOCAL",
-            },
-            config: loaded.config,
-            mode: this.dataMode,
-            now,
-          });
-          if (needsReservation) {
-            if (result.status === "FILLED" || result.status === "REJECTED" || result.status === "EXPIRED") {
-              await releaseInTx(
-                tx,
-                { accountId: ctx.accountId, mode: "PAPER", clientOrderId: order.clientOrderId },
-                reservationBudget,
-                now,
-              );
-            }
-          }
-          if (result.status === "PENDING" && order.side === "BUY") {
-            pendingPairSuppress.add(pendingKey);
-          }
-          if (result.status === "FILLED") {
-            filled += 1;
-            filledIds.push(order.clientOrderId);
-            if (order.side === "BUY") {
-              await this.armProtectionForFill(tx, {
-                accountId: ctx.accountId,
-                pairAddress: order.pairAddress,
-                qty: order.qty,
-                config: loaded.config,
-                markUsd: loaded.marks?.[order.pairAddress]?.priceUsd ?? null,
-              });
-            }
-          }
-        }
-      }
+      const admitted = await admitPlannedOrders(host, tx, { cycleId, now, ctx, loaded });
+      filled += admitted.filled;
       await this.evaluateProtections(tx, loaded, now, ctx);
-      await this.persistFunnel(tx, cycleId, loaded, filledIds, now);
+      await this.persistFunnel(tx, cycleId, loaded, admitted.filledIds, now);
 
       if (loaded.flattenRequested) {
         const open = await tx.position.findMany({ where: { accountId: ctx.accountId } });
@@ -667,80 +348,13 @@ export class StageRunner {
     // SANDBOX outbox: submit / sync / book external fills outside the account lock (Stage Q).
     await processSandboxOutbox(this.prisma, { accountId: ctx.accountId, now });
     // Retry unresolved protection exits — account-scoped, lifecycle-fenced (D07).
-    await retryUnresolvedProtectionIntents(this.prisma, {
-      now,
-      accountId: ctx.accountId,
-      attemptExit: async (intent) => {
-        try {
-          const leg = await this.prisma.protectionOrder.findUnique({ where: { id: intent.legId } });
-          if (!leg) return { ok: false, error: "LEG_MISSING" };
-          if (leg.accountId !== intent.accountId) return { ok: false, error: "ACCOUNT_MISMATCH" };
-          const pair = instrumentIdFromPositionKey(leg.positionKey, intent.accountId);
-          if (!pair) return { ok: false, error: "POSITION_KEY_DECODE" };
-          const observation = await this.prisma.marketObservation.findFirst({
-            where: {
-              pairAddress: pair,
-              priceUsd: { not: null },
-              tradingEnvironment: ctx.tradingEnvironment,
-            },
-            orderBy: { receivedAt: "desc" },
-          });
-          if (!observation) return { ok: false, error: "MISSING_PRICE" };
-          const position = await this.prisma.position.findFirst({
-            where: { accountId: intent.accountId, pairAddress: pair },
-          });
-          if (!position || d(position.baseQty.toString()).lte(0)) {
-            return { ok: true };
-          }
-          // Fence: do not reduce a reopened lot with an old unresolved intent.
-          if (leg.lifecycleId && position.lifecycleId && leg.lifecycleId !== position.lifecycleId) {
-            return { ok: true };
-          }
-          const config = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
-          const parsed = strategyConfigOrExitOnly(config?.config ?? {}).config;
-          const result = await this.prisma.$transaction(async (tx) => {
-            await lockAccount(tx, intent.accountId);
-            const protKey = intentIdempotencyKey({
-              cycleId: `prot_retry_${intent.id}`,
-              accountId: intent.accountId,
-              source: "PROTECTION",
-              ownerRef: intent.legId,
-              pairAddress: pair,
-              action: "CLOSE_NET",
-            });
-            return commitProposedOrder(tx, {
-              accountId: intent.accountId,
-              cycleId: `prot_retry_${intent.id}`,
-              order: {
-                clientOrderId: clientOrderIdFor(protKey),
-                pairAddress: pair,
-                baseSymbol: position.baseSymbol,
-                side: "SELL",
-                intent: "EXIT",
-                qty: position.baseQty.toString(),
-                observationId: observation.id,
-                reasonCodes: ["STOP_LOSS"],
-                executionMode: "PAPER",
-                venue: "PAPER",
-                instrumentId: pair.includes(":") ? pair : null,
-                intentId: intentIdFor(protKey),
-                ownerScope: "PROTECTION",
-              },
-              config: parsed,
-              mode: ctx.dataMode,
-              now,
-            });
-          });
-          return result.status === "FILLED"
-            ? { ok: true }
-            : { ok: false, error: result.reason ?? result.status };
-        } catch (error) {
-          return { ok: false, error: error instanceof Error ? error.message : "RETRY_FAILED" };
-        }
-      },
-    });
+    await retryProtectionExits(this.prisma, { ctx, now });
     endPhase("protect");
     await this.prisma.cycleRun.update({ where: { id: cycleId }, data: { executorTimings: timings } });
+    // Audit F5: executor phase and transaction durations as structured metrics.
+    for (const [phase, ms] of Object.entries(timings)) {
+      recordMetric(phase === "transaction" ? "odin_executor_transaction_ms" : "odin_executor_phase_ms", ms, { phase });
+    }
     await this.advance(cycleId, "executor");
   }
 
@@ -982,10 +596,43 @@ export class StageRunner {
   }
 
   private async persistAgent(cycleId: string, agent: DecisionDraft["agent"]): Promise<void> {
-    const loaded = await this.loadPlan(cycleId, this.now(), this.prisma);
-    if (!loaded) return;
-    for (const decision of loaded.plan.decisions.filter((item) => item.agent === agent)) {
+    // Audit F1: agent decision rows are projections of the stored cycle plan, never a fresh plan.
+    const snapshot = await this.readCyclePlan(this.prisma, cycleId);
+    const decisions = snapshot
+      ? snapshot.decisions
+      : (await this.loadPlan(cycleId, this.now(), this.prisma))?.plan.decisions ?? null; // legacy cycle
+    if (!decisions) return;
+    for (const decision of decisions.filter((item) => item.agent === agent)) {
       await upsertDecision(this.prisma, cycleId, decision);
+    }
+  }
+
+  private async readCyclePlan(db: PrismaClient | Prisma.TransactionClient, cycleId: string): Promise<CyclePlanSnapshot | null> {
+    const row = await db.cyclePlan.findUnique({ where: { cycleId } });
+    return row ? parseCyclePlanSnapshot(row.plan) : null;
+  }
+
+  /** Write the cycle plan once. If another worker won the race, use the stored one. */
+  private async writeCyclePlan(
+    cycleId: string,
+    plannedAt: Date,
+    plan: { decisions: DecisionDraft[]; orders: ProposedOrder[]; watchlist: unknown[]; intentOutcomes: unknown[] },
+  ): Promise<CyclePlanSnapshot> {
+    const snapshot: CyclePlanSnapshot = {
+      cycleId,
+      plannedAt: plannedAt.toISOString(),
+      decisions: plan.decisions,
+      orders: plan.orders,
+      watchlist: plan.watchlist,
+      intentOutcomes: plan.intentOutcomes,
+    };
+    try {
+      await this.prisma.cyclePlan.create({ data: { cycleId, plannedAt, plan: toJson(snapshot) } });
+      return snapshot;
+    } catch (error) {
+      const existing = await this.readCyclePlan(this.prisma, cycleId);
+      if (existing) return existing;
+      throw error;
     }
   }
 
@@ -994,6 +641,7 @@ export class StageRunner {
     now: Date,
     db: PrismaClient | Prisma.TransactionClient,
     ctxOverride?: ExecutionContext,
+    admit?: (plan: { orders: ProposedOrder[]; decisions: DecisionDraft[] }) => { orders: ProposedOrder[]; records: AdmissionRecord[] },
   ) {
     const cycle = await db.cycleRun.findUnique({ where: { id: cycleId } });
     const engine = await db.engineControl.findUnique({ where: { id: "primary" } });
@@ -1220,7 +868,7 @@ export class StageRunner {
     // D15: MarketSelection governs new automatic ENTRY; open holdings still refresh/monitor.
     const selectionRows = await db.marketSelection.findMany();
     const marketEntryEnabled = marketSelectionMap(selectionRows);
-    const plan = planCycle({
+    const planned = planCycle({
       cycleId,
       accountId: ctx.accountId,
       engineStatus: engine.status as PlanStatus,
@@ -1249,6 +897,15 @@ export class StageRunner {
       marketEntryEnabled,
       now,
     });
+    const admission = admit ? admit(planned) : null;
+    const plan = admission
+      ? {
+          ...planned,
+          orders: admission.orders,
+          decisions: applyAdmissionToDecisions(planned.decisions, admission.records),
+          intentOutcomes: applyAdmissionToOutcomes(planned.intentOutcomes, admission),
+        }
+      : planned;
     // Fairness cursor advances only on actually admitted entries (not rejected/deferred).
     const admittedEntryIds = plan.intentOutcomes
       .filter((o) => o.status === "ADMITTED" && o.action === "ENTER" && o.strategyInstanceId)
@@ -1316,6 +973,7 @@ export class StageRunner {
       activeStrategy,
       marks,
       plan,
+      admission,
       instances,
       instanceAvailable,
     };
@@ -2528,40 +2186,6 @@ function toCyclePair(
   };
 }
 
-async function upsertDecision(
-  db: PrismaClient | Prisma.TransactionClient,
-  cycleId: string,
-  decision: DecisionDraft,
-): Promise<void> {
-  await db.agentDecision.upsert({
-    where: {
-      cycleId_agent_pairAddress: { cycleId, agent: decision.agent, pairAddress: decision.pairAddress },
-    },
-    create: {
-      cycleId,
-      agent: decision.agent,
-      modelVersion: decision.modelVersion,
-      pairAddress: decision.pairAddress,
-      decision: decision.decision,
-      confidence: decision.confidence,
-      reasonCodes: decision.reasonCodes,
-      input: toJson(decision.input),
-      output: toJson(decision.output),
-      inputSource: decision.inputSource ?? null,
-      durationMs: decision.durationMs ?? null,
-    },
-    update: {
-      modelVersion: decision.modelVersion,
-      decision: decision.decision,
-      confidence: decision.confidence,
-      reasonCodes: decision.reasonCodes,
-      input: toJson(decision.input),
-      output: toJson(decision.output),
-      inputSource: decision.inputSource ?? null,
-      durationMs: decision.durationMs ?? null,
-    },
-  });
-}
 
 function DecimalMax(left: ReturnType<typeof d>, right: ReturnType<typeof d>) {
   return left.gte(right) ? left : right;

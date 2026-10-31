@@ -1,5 +1,5 @@
 import { InjectQueue, OnWorkerEvent, Processor, WorkerHost } from "@nestjs/bullmq";
-import { QUEUES, stageJobId } from "@odin/shared";
+import { QUEUES, recordMetric, stageJobId, timed } from "@odin/shared";
 import type { DistributedLease } from "@odin/risk-engine";
 import { Job, Queue } from "bullmq";
 import { StageLeaseService } from "./stage-lease.js";
@@ -37,11 +37,17 @@ export async function withStageLease(
   stage: string,
   cycleId: string,
   run: () => Promise<void>,
+  queuedAt?: number,
 ): Promise<void> {
+  // Audit F5: queue lag = time from enqueue to the worker picking the job up.
+  if (queuedAt) recordMetric("odin_queue_lag_ms", Date.now() - queuedAt, { stage });
   const lease = await leases.tryAcquireStage(stage, cycleId);
-  if (!lease) throw new StageLeaseBusyError(stage, cycleId);
+  if (!lease) {
+    recordMetric("odin_stage_lease_busy", 1, { stage }, "count");
+    throw new StageLeaseBusyError(stage, cycleId);
+  }
   try {
-    await run();
+    await timed("odin_stage_duration_ms", { stage }, run);
   } finally {
     await leases.release(lease);
   }
@@ -90,7 +96,7 @@ export class SentinelProcessor extends WorkerHost {
     await withStageLease(this.leases, "sentinel", job.data.cycleId, async () => {
       await this.stages.sentinel(job.data.cycleId!);
       await enqueue(this.next, "pulse", job.data.cycleId!);
-    });
+    }, job.timestamp);
   }
 
   @OnWorkerEvent("failed")
@@ -114,7 +120,7 @@ export class PulseProcessor extends WorkerHost {
     await withStageLease(this.leases, "pulse", job.data.cycleId, async () => {
       await this.stages.pulse(job.data.cycleId!);
       await enqueue(this.next, "aegis", job.data.cycleId!);
-    });
+    }, job.timestamp);
   }
 
   @OnWorkerEvent("failed")
@@ -138,7 +144,7 @@ export class AegisProcessor extends WorkerHost {
     await withStageLease(this.leases, "aegis", job.data.cycleId, async () => {
       await this.stages.aegis(job.data.cycleId!);
       await enqueue(this.next, "atlas", job.data.cycleId!);
-    });
+    }, job.timestamp);
   }
 
   @OnWorkerEvent("failed")
@@ -162,7 +168,7 @@ export class AtlasProcessor extends WorkerHost {
     await withStageLease(this.leases, "atlas", job.data.cycleId, async () => {
       await this.stages.atlas(job.data.cycleId!);
       await enqueue(this.next, "executor", job.data.cycleId!);
-    });
+    }, job.timestamp);
   }
 
   @OnWorkerEvent("failed")
@@ -186,7 +192,7 @@ export class ExecutorProcessor extends WorkerHost {
     await withStageLease(this.leases, "executor", job.data.cycleId, async () => {
       await this.stages.executor(job.data.cycleId!);
       await enqueue(this.next, "archivist", job.data.cycleId!);
-    });
+    }, job.timestamp);
   }
 
   @OnWorkerEvent("failed")
@@ -208,7 +214,7 @@ export class ArchivistProcessor extends WorkerHost {
     if (!job.data.cycleId) return;
     await withStageLease(this.leases, "archivist", job.data.cycleId, async () => {
       await this.stages.archivist(job.data.cycleId!);
-    });
+    }, job.timestamp);
   }
 
   @OnWorkerEvent("failed")
