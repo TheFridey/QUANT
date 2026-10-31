@@ -11,7 +11,8 @@ const PING_TIMEOUT_MS = 1_000;
 export class RedisHealth implements OnModuleDestroy {
   private client: IORedis | null = null;
 
-  constructor(private readonly url: string | undefined = process.env.REDIS_URL) {}
+  /** The URL is passed explicitly (app.module factory); no env default, so "no URL" really means none. */
+  constructor(private readonly url: string | undefined) {}
 
   private connection(): IORedis | null {
     if (!this.url) return null;
