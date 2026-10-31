@@ -7,6 +7,7 @@ import { ensureFoundation } from "@odin/shared/bootstrap";
 import { PrismaClient, toJson } from "@odin/shared/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { silentBus, StageRunner, type MarketFeed } from "./stage-runner.js";
+import { passingSecuritySource } from "./test-security-source.js";
 
 const databaseUrl = process.env.DATABASE_URL_TEST;
 const enabled = Boolean(databaseUrl && databaseUrl.includes("odin_test"));
@@ -50,6 +51,7 @@ describe.skipIf(!enabled)("engine soak StageRunner+DB", () => {
     `runs StageRunner cycles for ~${soakSeconds}s wall clock`,
     async () => {
       const feed: MarketFeed = {
+        security: passingSecuritySource,
         async fetchUniverse() {
           return {
             ok: true,

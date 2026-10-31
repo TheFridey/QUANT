@@ -118,10 +118,12 @@ export const NO_TRADE_FAMILIES = {
   },
   SECURITY_SCREEN: {
     label: "Security screen",
-    action: "Token security review or block prevented the entry. (UNKNOWN security alone does not block paper entries.)",
+    action:
+      "Token security review, block or UNKNOWN prevented the entry. UNKNOWN is not PASS: Solana entries need a positive assessment (set BIRDEYE_API_KEY or a dedicated SOLANA_RPC_URL for holder data).",
     codes: [
       "SECURITY_BLOCK",
       "SECURITY_REVIEW",
+      "SECURITY_UNKNOWN",
       "BLOCKED_BY_SENTINEL",
       "MINT_AUTHORITY_PRESENT",
       "FREEZE_AUTHORITY_PRESENT",

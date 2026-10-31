@@ -4,6 +4,7 @@ import {
   applyAdmissionToDecisions,
   applyAdmissionToOutcomes,
   parseCyclePlanSnapshot,
+  assessOnChainSecurity,
   assessSecurity,
   ensureDefaultStrategyInstances,
   entriesSuspendedAlert,
@@ -28,6 +29,9 @@ import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
 import {
   BirdeyeClient,
   buildFixturePairsAtStep,
+  SOLANA_PUBLIC_RPC_URL,
+  SolanaRpcSecurityClient,
+  WSOL_MINT,
   fetchMandatoryMarks,
   fetchSolanaUniverse,
   FrankfurterFxProvider,
@@ -46,6 +50,7 @@ import {
   classifyFreshness,
   clientOrderIdFor,
   d,
+  Decimal,
   freshnessFromProvenance,
   inferObservationProvenance,
   instrumentIdFromPositionKey,
@@ -90,6 +95,7 @@ import {
   updateTrailing,
 } from "@odin/trading-engine";
 import { upsertDecision } from "./decisions.js";
+import { workerLog } from "./logger.js";
 import { admitPlannedOrders } from "./executor/admit.js";
 import type { ExecutorHost } from "./executor/host.js";
 import { consumeCyclePlan } from "./executor/plan-consume.js";
@@ -100,8 +106,13 @@ import { strategyConfigOrExitOnly } from "./strategy-config.js";
 
 export { strategyConfigOrExitOnly } from "./strategy-config.js";
 
+/** Read-only on-chain token facts for Aegis (SolanaRpcSecurityClient in production). */
+export type OnChainSecuritySource = Pick<SolanaRpcSecurityClient, "getMint" | "getTopHolderConcentration">;
+
 export type MarketFeed = {
   fetchUniverse(limit: number): Promise<ProviderResult<NormalizedPair[]>>;
+  /** Absent: no on-chain security source, so Solana assessments are UNKNOWN unless Birdeye is keyed. */
+  security?: OnChainSecuritySource;
 };
 
 export type AgentBus = {
@@ -109,6 +120,47 @@ export type AgentBus = {
 };
 
 export const silentBus: AgentBus = { async publish() {} };
+
+/** Provider-backed security assessments are reused for an hour (Birdeye or on-chain RPC). */
+const SECURITY_CACHE_MS = 3_600_000;
+/** New security lookups per cycle; bounds RPC/Birdeye load (the public RPC rate-limits per IP). */
+const SECURITY_FETCHES_PER_CYCLE = 4;
+/** A failed lookup (provider unreachable) is retried after this long, not every plan load. */
+const SECURITY_RETRY_MS = 120_000;
+
+/**
+ * How long a provider result may be reused, or null when it must never be reused. PASS/REVIEW/BLOCK
+ * hold for an hour; an incomplete UNKNOWN (e.g. holder data refused) is retried sooner so a newly
+ * configured provider takes effect; mock and failed lookups are never reused from cache.
+ */
+function cacheTtl(assessment: SecurityAssessment): number | null {
+  if (assessment.source === "mock") return null;
+  if (assessment.source === "unavailable") return SECURITY_RETRY_MS;
+  return assessment.category === "UNKNOWN" ? SECURITY_RETRY_MS : SECURITY_CACHE_MS;
+}
+
+/** FIXTURE environment only: labelled mock PASS so the isolated lifecycle can exercise entries. */
+function fixtureAssessment(tokenAddress: string, now: Date): SecurityAssessment {
+  return {
+    tokenAddress,
+    category: "PASS",
+    confidence: "0.000000",
+    reasonCodes: ["SECURITY_PASS"],
+    mintAuthority: "unknown",
+    freezeAuthority: "unknown",
+    transferRestricted: null,
+    token2022Extensions: null,
+    holderConcentrationTop10Pct: null,
+    suspiciousDeployer: null,
+    liquidityFragile: null,
+    largeWalletMove: null,
+    fraudIndicators: [],
+    source: "mock",
+    fetchedAt: now.toISOString(),
+    stale: false,
+    fields: { fixture: true },
+  };
+}
 
 /**
  * Executor interactive transaction limits (audit H3). Prisma's default is a 5 s timeout and
@@ -129,6 +181,12 @@ function boundedIntFromEnv(name: string, fallback: number, max: number): number 
 
 export class StageRunner {
   private readonly observability = new ObservabilityRegistry();
+  /**
+   * In-process security results per mint. The plan is loaded twice per cycle (Sentinel, then the
+   * executor inside its transaction); the memo keeps provider calls out of that transaction and
+   * both loads consistent. Failed lookups expire quickly so they are retried.
+   */
+  private readonly securityMemo = new Map<string, { at: number; assessment: SecurityAssessment }>();
   /** Fairness cursor for mandatory pair-address lookups across cycles (D08). */
   private heldRefreshFairness: FairnessCursor = { pairLookupOffset: 0 };
 
@@ -742,7 +800,8 @@ export class StageRunner {
       historyAddresses,
       ctx.tradingEnvironment,
     );
-    const securityByMint = await this.loadSecurity(pairs);
+    // The executor re-loads the plan inside its transaction: there, only memo/cache — no network.
+    const securityByMint = await this.loadSecurity(pairs, config, ctx.tradingEnvironment, db === this.prisma);
     const aggregateExposureUsd =
       valuation.equityUsd === null
         ? "0"
@@ -1351,83 +1410,139 @@ export class StageRunner {
     return history;
   }
 
-  private async loadSecurity(pairs: CyclePair[]): Promise<Record<string, SecurityAssessment>> {
+  /**
+   * Security assessments for the base mints most likely to reach entry. Birdeye when keyed, else
+   * on-chain mint state from the feed's security source (live: Solana RPC at SOLANA_RPC_URL; the
+   * public endpoint lacks holder data, so non-SOL assessments stay UNKNOWN). Fixture pairs get an explicit, never-persisted mock PASS so the
+   * isolated lifecycle can run; real-data environments never receive a mock assessment.
+   */
+  private async loadSecurity(
+    pairs: CyclePair[],
+    config: StrategyConfig,
+    tradingEnvironment: TradingEnvironment,
+    allowFetch: boolean,
+  ): Promise<Record<string, SecurityAssessment>> {
     const out: Record<string, SecurityAssessment> = {};
-    const client = new BirdeyeClient(process.env.BIRDEYE_API_KEY || undefined);
-    const unique = [...new Map(pairs.map((pair) => [pair.baseAddress, pair])).values()];
-    for (const pair of unique.slice(0, 8)) {
-      const cached = await this.prisma.securityAssessment.findUnique({ where: { tokenAddress: pair.baseAddress } });
-      const cachedAssessment = cached ? toSecurityAssessment(cached) : null;
-      if (!process.env.BIRDEYE_API_KEY) {
-        const assessment = unknownAssessment(pair.baseAddress, "unavailable", this.now(), [
-          "SECURITY_UNKNOWN",
-          "UPSTREAM_UNAVAILABLE",
-        ]);
-        out[pair.baseAddress] = assessment;
+    const solana = pairs.filter((pair) => pair.chainId === "solana");
+    if (tradingEnvironment === "FIXTURE") {
+      for (const pair of solana) out[pair.baseAddress] = fixtureAssessment(pair.baseAddress, this.now());
+      return out;
+    }
+    // REPLAY must not be gated by an assessment fetched today (look-ahead): UNKNOWN throughout.
+    if (tradingEnvironment === "REPLAY") {
+      for (const pair of solana) {
+        out[pair.baseAddress] = unknownAssessment(pair.baseAddress, "unavailable", this.now(), ["SECURITY_UNKNOWN"]);
+      }
+      return out;
+    }
+    const birdeyeKey = process.env.BIRDEYE_API_KEY || undefined;
+    const birdeye = birdeyeKey ? new BirdeyeClient(birdeyeKey) : null;
+    const rpc = this.feed.security ?? null;
+    // Assess pairs that clear Sentinel's liquidity/volume floors first, most active first, so the
+    // per-cycle provider budget is spent where an entry is possible.
+    const floorsMet = (pair: CyclePair) =>
+      pair.liquidityUsd !== null &&
+      pair.volume24hUsd !== null &&
+      d(pair.liquidityUsd).gte(config.minLiquidityUsd) &&
+      d(pair.volume24hUsd).gte(config.minVolume24hUsd);
+    const volume = (pair: CyclePair) => (pair.volume24hUsd === null ? new Decimal(0) : d(pair.volume24hUsd));
+    const ordered = [...solana].sort((a, b) => {
+      if (floorsMet(a) !== floorsMet(b)) return floorsMet(a) ? -1 : 1;
+      return volume(b).cmp(volume(a));
+    });
+    const unique = [...new Map(ordered.map((pair) => [pair.baseAddress, pair])).values()];
+    let fetched = 0;
+    for (const pair of unique) {
+      const memo = this.securityMemo.get(pair.baseAddress);
+      const memoTtl = memo ? cacheTtl(memo.assessment) : null;
+      if (memo && memoTtl !== null && this.now().getTime() - memo.at < memoTtl) {
+        out[pair.baseAddress] = memo.assessment;
         continue;
       }
-      if (cachedAssessment && cachedAssessment.fetchedAt) {
+      const cached = await this.prisma.securityAssessment.findUnique({ where: { tokenAddress: pair.baseAddress } });
+      const cachedAssessment = cached ? toSecurityAssessment(cached) : null;
+      const cachedTtl = cachedAssessment ? cacheTtl(cachedAssessment) : null;
+      if (cachedAssessment && cachedAssessment.fetchedAt && cachedTtl !== null) {
         const age = this.now().getTime() - Date.parse(cachedAssessment.fetchedAt);
-        if (Number.isFinite(age) && age < 3_600_000) {
+        if (Number.isFinite(age) && age >= 0 && age < cachedTtl) {
           out[pair.baseAddress] = { ...cachedAssessment, stale: false };
           continue;
         }
       }
-      const security = await client.getTokenSecurity(pair.baseAddress);
-      const holders = await client.getHolders(pair.baseAddress);
-      const assessment = assessSecurity({
-        tokenAddress: pair.baseAddress,
-        security: security.ok
-          ? { ok: true, fetchedAt: security.fetchedAt, fields: security.data.fields }
-          : { ok: false, code: security.code, error: security.error },
-        holders: holders.ok
-          ? { ok: true, fields: holders.data.fields, holderCount: holders.data.holderCount }
-          : { ok: false, code: holders.code, error: holders.error },
-        liquidityUsd: pair.liquidityUsd,
-        now: this.now(),
-        cached: cachedAssessment,
-      });
+      if (!allowFetch || fetched >= SECURITY_FETCHES_PER_CYCLE) {
+        out[pair.baseAddress] = unknownAssessment(pair.baseAddress, "unavailable", this.now(), ["SECURITY_UNKNOWN"]);
+        continue;
+      }
+      fetched += 1;
+      const assessment = birdeye
+        ? await this.assessWithBirdeye(birdeye, pair)
+        : rpc
+          ? await this.assessOnChain(rpc, pair)
+          : unknownAssessment(pair.baseAddress, "unavailable", this.now(), ["SECURITY_UNKNOWN", "UPSTREAM_UNAVAILABLE"]);
       out[pair.baseAddress] = assessment;
+      this.securityMemo.set(pair.baseAddress, { at: this.now().getTime(), assessment });
+      // Only provider-backed results are cached; a failed lookup is retried next cycle.
+      if (assessment.source === "unavailable" || !assessment.fetchedAt) continue;
+      const data = {
+        category: assessment.category,
+        confidence: assessment.confidence,
+        reasonCodes: assessment.reasonCodes,
+        mintAuthority: assessment.mintAuthority,
+        freezeAuthority: assessment.freezeAuthority,
+        transferRestricted: assessment.transferRestricted,
+        holderConcentrationTop10Pct: assessment.holderConcentrationTop10Pct,
+        suspiciousDeployer: assessment.suspiciousDeployer,
+        liquidityFragile: assessment.liquidityFragile,
+        largeWalletMove: assessment.largeWalletMove,
+        fraudIndicators: assessment.fraudIndicators,
+        source: assessment.source,
+        stale: assessment.stale,
+        fields: toJson(assessment.fields),
+        fetchedAt: new Date(assessment.fetchedAt),
+      };
       await this.prisma.securityAssessment.upsert({
         where: { tokenAddress: pair.baseAddress },
-        create: {
-          tokenAddress: assessment.tokenAddress,
-          category: assessment.category,
-          confidence: assessment.confidence,
-          reasonCodes: assessment.reasonCodes,
-          mintAuthority: assessment.mintAuthority,
-          freezeAuthority: assessment.freezeAuthority,
-          transferRestricted: assessment.transferRestricted,
-          holderConcentrationTop10Pct: assessment.holderConcentrationTop10Pct,
-          suspiciousDeployer: assessment.suspiciousDeployer,
-          liquidityFragile: assessment.liquidityFragile,
-          largeWalletMove: assessment.largeWalletMove,
-          fraudIndicators: assessment.fraudIndicators,
-          source: assessment.source,
-          stale: assessment.stale,
-          fields: toJson(assessment.fields),
-          fetchedAt: assessment.fetchedAt ? new Date(assessment.fetchedAt) : null,
-        },
-        update: {
-          category: assessment.category,
-          confidence: assessment.confidence,
-          reasonCodes: assessment.reasonCodes,
-          mintAuthority: assessment.mintAuthority,
-          freezeAuthority: assessment.freezeAuthority,
-          transferRestricted: assessment.transferRestricted,
-          holderConcentrationTop10Pct: assessment.holderConcentrationTop10Pct,
-          suspiciousDeployer: assessment.suspiciousDeployer,
-          liquidityFragile: assessment.liquidityFragile,
-          largeWalletMove: assessment.largeWalletMove,
-          fraudIndicators: assessment.fraudIndicators,
-          source: assessment.source,
-          stale: assessment.stale,
-          fields: toJson(assessment.fields),
-          fetchedAt: assessment.fetchedAt ? new Date(assessment.fetchedAt) : null,
-        },
+        create: { tokenAddress: assessment.tokenAddress, ...data },
+        update: data,
       });
     }
     return out;
+  }
+
+  private async assessWithBirdeye(client: BirdeyeClient, pair: CyclePair): Promise<SecurityAssessment> {
+    const security = await client.getTokenSecurity(pair.baseAddress);
+    const holders = await client.getHolders(pair.baseAddress);
+    return assessSecurity({
+      tokenAddress: pair.baseAddress,
+      security: security.ok
+        ? { ok: true, fetchedAt: security.fetchedAt, fields: security.data.fields }
+        : { ok: false, code: security.code, error: security.error },
+      holders: holders.ok
+        ? { ok: true, fields: holders.data.fields, holderCount: holders.data.holderCount }
+        : { ok: false, code: holders.code, error: holders.error },
+      liquidityUsd: pair.liquidityUsd,
+      now: this.now(),
+    });
+  }
+
+  private async assessOnChain(client: OnChainSecuritySource, pair: CyclePair): Promise<SecurityAssessment> {
+    const mint = await client.getMint(pair.baseAddress);
+    if (!mint.ok) {
+      return assessOnChainSecurity({
+        tokenAddress: pair.baseAddress,
+        mint: { ok: false, code: mint.code, error: mint.error },
+        holders: null,
+        liquidityUsd: pair.liquidityUsd,
+      });
+    }
+    const native = pair.baseAddress === WSOL_MINT;
+    const holders = native ? null : await client.getTopHolderConcentration(pair.baseAddress, mint.data.supply);
+    return assessOnChainSecurity({
+      tokenAddress: pair.baseAddress,
+      mint: { ok: true, ...mint.data, fetchedAt: mint.fetchedAt },
+      holders: holders === null ? null : holders.ok ? { ok: true, top10Pct: holders.data.top10Pct } : { ok: false, code: holders.code, error: holders.error },
+      liquidityUsd: pair.liquidityUsd,
+    });
   }
 
   private async persistTradeReconstruction(cycleId: string): Promise<void> {
@@ -2230,8 +2345,18 @@ function toSecurityAssessment(row: {
   };
 }
 
+let liveSecuritySource: OnChainSecuritySource | null = null;
+
 export const liveFeed: MarketFeed = {
-  fetchUniverse(limit) {
-    return fetchSolanaUniverse({ limit });
+  async fetchUniverse(limit) {
+    const result = await fetchSolanaUniverse({ limit });
+    // Discovery provenance: sources used, rejections by reason, duplicates collapsed.
+    if (result.discovery) workerLog.info({ discovery: result.discovery }, "solana discovery");
+    return result;
+  },
+  // Created on first use so SOLANA_RPC_URL is read after the worker has loaded its env file.
+  get security() {
+    liveSecuritySource ??= new SolanaRpcSecurityClient(process.env.SOLANA_RPC_URL || SOLANA_PUBLIC_RPC_URL);
+    return liveSecuritySource;
   },
 };

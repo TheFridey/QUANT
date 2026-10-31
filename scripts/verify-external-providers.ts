@@ -16,6 +16,45 @@ import {
   inventoryOandaCredentials,
   OandaPracticeProvider,
 } from "@odin/market-data";
+import type { ProviderReadiness } from "@odin/shared";
+
+type ReadOnlyProvider = {
+  readiness(): ProviderReadiness;
+  getQuotes(instrumentIds: string[]): ReturnType<AlpacaPaperProvider["getQuotes"]>;
+};
+
+/**
+ * Keys present but unproven report CONNECTING. That is not "missing credentials": make one
+ * read-only quote request (never an order) and report the readiness it proves.
+ */
+async function verifyReadOnly(
+  name: string,
+  provider: ReadOnlyProvider,
+  instrumentIds: string[],
+): Promise<ProviderReadiness | "QUOTES_FAILED"> {
+  const initial = provider.readiness();
+  if (initial === "MISSING_CREDENTIALS" || initial === "INVALID_CONFIGURATION") {
+    console.log(JSON.stringify({ provider: name, readiness: initial }, null, 2));
+    return initial;
+  }
+  const quotes = await provider.getQuotes(instrumentIds);
+  const readiness = provider.readiness();
+  console.log(
+    JSON.stringify(
+      {
+        provider: name,
+        initialReadiness: initial,
+        readiness,
+        quotesOk: quotes.ok,
+        count: quotes.ok ? quotes.data.length : 0,
+        error: quotes.ok ? null : quotes.error,
+      },
+      null,
+      2,
+    ),
+  );
+  return quotes.ok ? readiness : readiness === "READY" ? "QUOTES_FAILED" : readiness;
+}
 
 async function main() {
   const providerArg = process.argv.find((a) => a.startsWith("--provider="))?.split("=")[1]
@@ -28,30 +67,24 @@ async function main() {
   if (providerArg === "alpaca_paper" || providerArg === "all") {
     const creds = inventoryAlpacaCredentials();
     const provider = new AlpacaPaperProvider(creds);
-    const ready = provider.readiness();
-    console.log(JSON.stringify({ provider: "alpaca_paper", readiness: ready }, null, 2));
-    if (ready !== "READY") {
+    const outcome = await verifyReadOnly("alpaca_paper", provider, ["etf:SPY", "etf:QQQ"]);
+    if (outcome === "MISSING_CREDENTIALS") {
       console.error("BLOCKED_EXTERNAL_TEST: set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY (paper keys).");
       blocked = true;
-    } else {
-      const quotes = await provider.getQuotes(["etf:SPY", "etf:QQQ"]);
-      console.log(JSON.stringify({ alpaca_quotes_ok: quotes.ok, count: quotes.ok ? quotes.data.length : 0 }, null, 2));
-      if (!quotes.ok) failed = true;
+    } else if (outcome !== "READY") {
+      failed = true;
     }
   }
 
   if (providerArg === "oanda_practice" || providerArg === "all") {
     const creds = inventoryOandaCredentials();
     const provider = new OandaPracticeProvider(creds);
-    const ready = provider.readiness();
-    console.log(JSON.stringify({ provider: "oanda_practice", readiness: ready }, null, 2));
-    if (ready !== "READY") {
+    const outcome = await verifyReadOnly("oanda_practice", provider, ["fx:EURUSD", "fx:GBPUSD"]);
+    if (outcome === "MISSING_CREDENTIALS") {
       console.error("BLOCKED_EXTERNAL_TEST: set OANDA_API_TOKEN and OANDA_ACCOUNT_ID (fxpractice).");
       blocked = true;
-    } else {
-      const quotes = await provider.getQuotes(["fx:EURUSD", "fx:GBPUSD"]);
-      console.log(JSON.stringify({ oanda_quotes_ok: quotes.ok, count: quotes.ok ? quotes.data.length : 0 }, null, 2));
-      if (!quotes.ok) failed = true;
+    } else if (outcome !== "READY") {
+      failed = true;
     }
   }
 

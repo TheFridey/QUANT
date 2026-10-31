@@ -5,6 +5,7 @@ import {
   strategyVersionStamp,
 } from "./active-strategy.js";
 import { planCycle, type PlanInput } from "./plan.js";
+import { withPassingSecurity } from "./test-security.js";
 
 const hashA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const hashB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -39,7 +40,7 @@ function solPair(overrides: Partial<CyclePair> = {}): CyclePair {
 
 function planInput(activeStrategyId: string | null): PlanInput {
   const pair = solPair();
-  return {
+  return withPassingSecurity({
     cycleId: "cyc_promoted",
     engineStatus: "RUNNING",
     config: DEFAULT_STRATEGY,
@@ -55,7 +56,7 @@ function planInput(activeStrategyId: string | null): PlanInput {
     aggregateExposureUsd: "0.00000000",
     activeStrategyId,
     now: new Date("2026-10-28T16:00:00.000Z"),
-  };
+  });
 }
 
 describe("active strategy identity + runtime decisions", () => {

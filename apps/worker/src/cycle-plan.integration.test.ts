@@ -4,6 +4,7 @@ import { PrismaClient, toJson } from "@odin/shared/db";
 import type { CyclePlanSnapshot } from "@odin/agent-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { silentBus, StageRunner, type MarketFeed } from "./stage-runner.js";
+import { passingSecuritySource } from "./test-security-source.js";
 
 /**
  * Audit F1: one plan per cycle. AEGIS/ATLAS rows are projections of the stored plan, and the
@@ -14,6 +15,7 @@ const enabled = Boolean(databaseUrl && databaseUrl.includes("odin_test"));
 const pairAddress = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
 
 const feed: MarketFeed = {
+  security: passingSecuritySource,
   async fetchUniverse() {
     return {
       ok: true,

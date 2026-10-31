@@ -11,6 +11,7 @@ import {
   type DurableStrategyInstance,
 } from "./strategy-instances.js";
 import type { DecisionDraft, PlanIntent } from "./types.js";
+import { withPassingSecurity } from "./test-security.js";
 
 function intentFor(
   strategyInstanceId: string,
@@ -94,7 +95,7 @@ function etfPair(overrides: Partial<CyclePair> = {}): CyclePair {
 
 function planInput(overrides: Partial<PlanInput> = {}): PlanInput {
   const pair = fxPair();
-  return {
+  return withPassingSecurity({
     cycleId: "cyc_attr",
     engineStatus: "RUNNING",
     config: DEFAULT_STRATEGY,
@@ -110,7 +111,7 @@ function planInput(overrides: Partial<PlanInput> = {}): PlanInput {
     aggregateExposureUsd: "0",
     now: new Date("2026-10-28T16:00:00.000Z"),
     ...overrides,
-  };
+  });
 }
 
 const passSurveillance: DecisionDraft = {

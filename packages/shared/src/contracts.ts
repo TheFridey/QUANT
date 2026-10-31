@@ -119,7 +119,7 @@ export const securityAssessmentSchema = z
     liquidityFragile: z.boolean().nullable(),
     largeWalletMove: z.boolean().nullable(),
     fraudIndicators: z.array(z.string()),
-    source: z.enum(["birdeye", "unavailable", "cached", "mock"]),
+    source: z.enum(["birdeye", "solana_rpc", "unavailable", "cached", "mock"]),
     fetchedAt: z.string().datetime().nullable(),
     stale: z.boolean(),
     fields: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])),

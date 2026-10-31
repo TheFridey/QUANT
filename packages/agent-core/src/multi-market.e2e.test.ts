@@ -9,6 +9,7 @@ import { ReservationLedger } from "@odin/risk-engine";
 import { describe, expect, it } from "vitest";
 import { planCycle, type PlanInput } from "./plan.js";
 import { recordFunnelEvent, summarizeFunnel } from "./funnel.js";
+import { withPassingSecurity } from "./test-security.js";
 
 /**
  * Multi-market paper E2E (≥3 asset classes) with explicit fixture capital.
@@ -351,7 +352,7 @@ function pair(address: string, overrides: Partial<CyclePair> = {}): CyclePair {
 }
 
 function input(overrides: Partial<PlanInput> = {}): PlanInput {
-  return {
+  return withPassingSecurity({
     cycleId: "cyc_e2e",
     engineStatus: "RUNNING",
     config: DEFAULT_STRATEGY,
@@ -366,5 +367,5 @@ function input(overrides: Partial<PlanInput> = {}): PlanInput {
     highWaterMarkUsd: DEFAULT_STRATEGY.startingBalanceUsd,
     aggregateExposureUsd: "0.00000000",
     ...overrides,
-  };
+  });
 }

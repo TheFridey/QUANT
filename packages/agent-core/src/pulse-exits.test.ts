@@ -4,6 +4,7 @@ import { planCycle, type PlanInput } from "./plan.js";
 import { runPulse } from "./pulse.js";
 import { toPlanIntents } from "./strategy-instances.js";
 import type { DecisionDraft } from "./types.js";
+import { withPassingSecurity } from "./test-security.js";
 
 const pairAddress = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE";
 
@@ -37,7 +38,7 @@ function solPair(overrides: Partial<CyclePair> = {}): CyclePair {
 
 function planInput(overrides: Partial<PlanInput> = {}): PlanInput {
   const pair = solPair();
-  return {
+  return withPassingSecurity({
     cycleId: "cyc_pulse_exits",
     engineStatus: "RUNNING",
     config: DEFAULT_STRATEGY,
@@ -62,7 +63,7 @@ function planInput(overrides: Partial<PlanInput> = {}): PlanInput {
     aggregateExposureUsd: "250.00000000",
     now: new Date("2026-10-28T16:00:00.000Z"),
     ...overrides,
-  };
+  });
 }
 
 const passSurveillance: DecisionDraft = {
@@ -98,6 +99,28 @@ describe("pulse invariant exits (D12) + instance exits (D11)", () => {
     expect(draft.decision).toBe("ACT");
     expect(draft.reasonCodes).toContain("STOP_LOSS");
     expect(draft.output).toMatchObject({ side: "SELL", intent: "EXIT" });
+  });
+
+  it("a stop-loss SELL is planned even when the token's security is UNKNOWN", () => {
+    const pair = solPair({ priceUsd: "90" });
+    const plan = planCycle(
+      planInput({
+        pairs: [pair],
+        securityByMint: {},
+        positions: [
+          {
+            pairAddress,
+            baseSymbol: "SOL",
+            baseQty: "0.25000000",
+            avgCostUsd: "100.00000000",
+            realizedPnlUsd: "0.00000000",
+          },
+        ],
+        marks: { [pairAddress]: { priceUsd: "90", freshness: "LIVE" } },
+      }),
+    );
+    expect(plan.orders.some((order) => order.side === "SELL")).toBe(true);
+    expect(plan.orders.some((order) => order.side === "BUY")).toBe(false);
   });
 
   it("promoted HOLD still fires time exit when maxHoldingMs elapses", () => {

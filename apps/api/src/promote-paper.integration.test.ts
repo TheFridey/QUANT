@@ -10,12 +10,14 @@ import { PrismaClient } from "@odin/shared/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { silentBus, StageRunner, type MarketFeed } from "../../worker/src/stage-runner.js";
 import { EvolutionService } from "./evolution.service.js";
+import { passingSecuritySource } from "../../worker/src/test-security-source.js";
 
 const databaseUrl = process.env.DATABASE_URL_TEST;
 const enabled = Boolean(databaseUrl && databaseUrl.includes("odin_test"));
 const identity = builtinArtifactIdentity("pulse-momentum-v1")!;
 
 const feed: MarketFeed = {
+  security: passingSecuritySource,
   async fetchUniverse() {
     return {
       ok: true,

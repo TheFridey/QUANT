@@ -3,9 +3,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  discoveryRejection,
   discoverySourcesUsed,
   fetchSolanaUniverse,
   parseDexPair,
+  SOLANA_ANCHOR_MINTS,
+  USDC_MINT,
+  WSOL_MINT,
 } from "./dexscreener.js";
 
 const fixture = JSON.parse(
@@ -79,5 +83,125 @@ describe("DexScreener parser", () => {
     });
     expect(result.ok).toBe(true);
     expect(calls.some((url) => url.includes("token-boosts"))).toBe(false);
+  });
+});
+
+type DiscoveryFixture = {
+  search: { pairs: unknown[] };
+  wsolTokenPairs: unknown[];
+  anchorTokens: unknown[];
+  profiles: unknown[];
+  discoveredTokens: unknown[];
+};
+
+/** Real (trimmed) DexScreener responses captured 2026-10-31 — see fixtures file note. */
+const live = JSON.parse(
+  readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "../fixtures/dexscreener-discovery-2026-10-31.json"),
+    "utf8",
+  ),
+) as DiscoveryFixture;
+
+function liveFetch(calls: string[] = []): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("token-boosts")) return Response.json([]);
+    if (url.includes("token-profiles")) return Response.json(live.profiles);
+    if (url.includes("/latest/dex/search")) return Response.json(live.search);
+    if (url.includes(`/token-pairs/v1/solana/${WSOL_MINT}`)) return Response.json(live.wsolTokenPairs);
+    if (url.includes(`/tokens/v1/solana/${SOLANA_ANCHOR_MINTS[0]}`)) return Response.json(live.anchorTokens);
+    if (url.includes("/tokens/v1/solana/")) return Response.json(live.discoveredTokens);
+    return new Response("unexpected", { status: 404 });
+  }) as typeof fetch;
+}
+
+describe("Solana discovery quality (real captured responses)", () => {
+  it("rejects every counterfeit SOL pair returned by the text search", async () => {
+    for (const item of live.search.pairs) {
+      const parsed = parseDexPair(item);
+      expect(parsed?.baseSymbol).toBe("SOL");
+      expect(parsed?.baseAddress).not.toBe(WSOL_MINT);
+      expect(discoveryRejection(parsed!)).toBe("IMPERSONATED_SYMBOL");
+    }
+  });
+
+  it("selects genuine, active pairs with real momentum fields and canonical mints", async () => {
+    const calls: string[] = [];
+    const result = await fetchSolanaUniverse({ limit: 24, fetchImpl: liveFetch(calls) });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const sol = result.data.find((pair) => pair.baseAddress === WSOL_MINT);
+    expect(sol?.quoteAddress).toBe(USDC_MINT);
+    // The most active SOL/USDC pool wins the per-mint collapse (orca, ~$67.6M 24h volume).
+    expect(sol?.pairAddress.startsWith("Czfq3x")).toBe(true);
+    expect(sol?.priceChangeM5Pct).not.toBeNull();
+    expect(sol?.priceChangeH1Pct).not.toBeNull();
+    for (const pair of result.data) {
+      expect(discoveryRejection(pair)).toBeNull();
+      expect(pair.source).toBe("dexscreener");
+    }
+    // One pair per base mint — duplicated SOL/USDC pools are collapsed, not traded side by side.
+    expect(new Set(result.data.map((pair) => pair.baseAddress)).size).toBe(result.data.length);
+    expect(result.discovery?.rejected.IMPERSONATED_SYMBOL).toBe(live.search.pairs.length);
+    expect(result.discovery?.duplicatesCollapsed).toBeGreaterThan(0);
+    // Ranked by activity (24h volume), not by reported liquidity.
+    const volumes = result.data.map((pair) => Number(pair.volume24hUsd));
+    expect([...volumes].sort((a, b) => b - a)).toEqual(volumes);
+    expect(calls.some((url) => url.includes("/token-pairs/v1/solana/"))).toBe(true);
+  });
+
+  it("keeps a missing provider momentum window as null, never 0%", () => {
+    const garrett = live.discoveredTokens
+      .map((item) => parseDexPair(item))
+      .find((pair) => pair?.baseSymbol === "Garrett");
+    expect(garrett?.priceChangeM5Pct).toBeNull();
+  });
+
+  it("rejects inactive pools and implausible liquidity relative to volume", () => {
+    const base = parseDexPair(fixture)!;
+    expect(discoveryRejection(base)).toBeNull();
+    expect(discoveryRejection({ ...base, volume24hUsd: "0" })).toBe("INACTIVE");
+    expect(
+      discoveryRejection({ ...base, raw: { txns: { m5: { buys: 0, sells: 0 }, h24: { buys: 0, sells: 0 } } } }),
+    ).toBe("INACTIVE");
+    expect(discoveryRejection({ ...base, liquidityUsd: "2500000000", volume24hUsd: "48" })).toBe(
+      "LIQUIDITY_IMPLAUSIBLE",
+    );
+    expect(discoveryRejection({ ...base, priceUsd: null })).toBe("MISSING_PRICE");
+    expect(
+      discoveryRejection({ ...base, baseAddress: USDC_MINT, baseSymbol: "USDC", quoteAddress: WSOL_MINT, quoteSymbol: "SOL" }),
+    ).toBe("STABLE_BASE");
+  });
+
+  it("still discovers when search and boosts fail (search is a supplement)", async () => {
+    const result = await fetchSolanaUniverse({
+      limit: 24,
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/latest/dex/search") || url.includes("token-boosts")) return new Response("no", { status: 429 });
+        return liveFetch()(input);
+      }) as typeof fetch,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.some((pair) => pair.baseAddress === WSOL_MINT)).toBe(true);
+      expect(result.discovery?.sources.search).toBe("failed");
+    }
+  });
+
+  it("fails safely as INVALID when only counterfeit pairs are available", async () => {
+    const result = await fetchSolanaUniverse({
+      limit: 24,
+      includeBoosts: false,
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/latest/dex/search")) return Response.json(live.search);
+        if (url.includes("token-profiles")) return Response.json([]);
+        return Response.json([]);
+      }) as typeof fetch,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("INVALID");
   });
 });

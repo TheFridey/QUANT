@@ -9,6 +9,7 @@ import {
 } from "@odin/trading-engine";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { silentBus, StageRunner, type MarketFeed } from "./stage-runner.js";
+import { passingSecuritySource } from "./test-security-source.js";
 
 const databaseUrl = process.env.DATABASE_URL_TEST;
 const enabled = Boolean(databaseUrl && databaseUrl.includes("odin_test"));
@@ -77,6 +78,7 @@ describe.skipIf(!enabled)("release1 executor regressions", () => {
 
   it("R01: filled entry arms lifecycle-scoped protection", async () => {
     const feed: MarketFeed = {
+      security: passingSecuritySource,
       async fetchUniverse() {
         return { ok: true, fetchedAt: new Date().toISOString(), data: [livePair("100")] };
       },
@@ -125,6 +127,7 @@ describe.skipIf(!enabled)("release1 executor regressions", () => {
     expect(await isEntriesSuspended(prisma, "primary")).toBe(true);
 
     const feed: MarketFeed = {
+      security: passingSecuritySource,
       async fetchUniverse() {
         return { ok: true, fetchedAt: new Date().toISOString(), data: [livePair("120")] };
       },
@@ -183,6 +186,7 @@ describe.skipIf(!enabled)("release1 executor regressions", () => {
 
     // Settle is not yet eligible — executor should suppress duplicate same-symbol proposal.
     const feed: MarketFeed = {
+      security: passingSecuritySource,
       async fetchUniverse() {
         return { ok: true, fetchedAt: new Date().toISOString(), data: [livePair("130")] };
       },
