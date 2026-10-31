@@ -9,7 +9,6 @@ import { inspectSource, STRATEGY_DEPENDENCY_ALLOWLIST } from "./static-gate.js";
 import {
   STRATEGY_CONTRACT_VERSION,
   strategyModuleManifestSchema,
-  strategySignalSchema,
   type StrategyBar,
   type StrategyModuleManifest,
   type StrategySignal,
@@ -131,7 +130,7 @@ export async function forgeStrategyModule(input: {
     return {
       ok: false,
       code: "STATIC_REJECT",
-      error: "Generated source failed the static source gate",
+      error: "Generated source failed the static source lint",
       findings: staticFindings.map((finding) => `${finding.code}: ${finding.detail}`),
       signalsClaimed: false,
       integrity: baseIntegrity({
@@ -262,29 +261,8 @@ export async function forgeStrategyModule(input: {
     };
   }
 
-  const signals: StrategySignal[] = [];
-  for (const signal of execution.signals) {
-    const parsed = strategySignalSchema.safeParse(signal);
-    if (!parsed.success) {
-      return {
-        ok: false,
-        code: "CONTRACT_FAIL",
-        error: "Strategy signal failed the contract schema",
-        findings: parsed.error.issues.map((issue) => issue.message),
-        signalsClaimed: false,
-        workspacePath,
-        integrity: {
-          ...integrity,
-          signalsClaimed: false,
-          executionResult: "CONTRACT_FAIL",
-          testOutcomes: integrity.testOutcomes.map((row) =>
-            row.name === "isolated_execution" ? { ...row, status: "FAIL" } : row,
-          ),
-        },
-      };
-    }
-    signals.push(parsed.data);
-  }
+  // executeCompiledStrategy has already validated one contract-valid signal per bar.
+  const signals: StrategySignal[] = execution.signals;
 
   return {
     ok: true,
@@ -303,7 +281,7 @@ function mapExecutionCode(
   code: string,
 ): "ISOLATION_DISABLED" | "SANDBOX_TIMEOUT" | "HASH_MISMATCH" | "CONTRACT_FAIL" | "SANDBOX_EXIT" {
   if (code === "ISOLATION_DISABLED" || code === "SANDBOX_TIMEOUT" || code === "HASH_MISMATCH") return code;
-  if (code === "CONTRACT" || code.startsWith("SIGNAL_")) return "CONTRACT_FAIL";
+  if (code === "CONTRACT_FAIL" || code === "CONTRACT" || code.startsWith("SIGNAL_")) return "CONTRACT_FAIL";
   return "SANDBOX_EXIT";
 }
 

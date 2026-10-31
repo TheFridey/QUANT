@@ -1,7 +1,8 @@
 import { d, usd } from "./money.js";
 
 /**
- * Roll session-start equity at UTC midnight when the calendar day changes.
+ * Roll session-start equity at Europe/London midnight when the London calendar day changes.
+ * The daily loss limit is a percentage of this start-of-day equity (audit L3).
  * HWM is ratcheted up only — never lowered on session roll.
  */
 export function rollSessionEquity(input: {
@@ -24,7 +25,7 @@ export function rollSessionEquity(input: {
   const hwm = usd(d(hwmBase).gte(equity) ? d(hwmBase) : d(equity));
 
   if (!input.sessionStartedAt || !input.sessionStartEquityUsd) {
-    const start = startOfUtcDay(input.now);
+    const start = startOfLondonDay(input.now);
     return {
       sessionStartedAt: start,
       sessionStartEquityUsd: usd(d(equity)),
@@ -34,11 +35,22 @@ export function rollSessionEquity(input: {
     };
   }
 
-  const sessionDay = startOfUtcDay(input.sessionStartedAt).getTime();
-  const today = startOfUtcDay(input.now).getTime();
+  const sessionDay = startOfLondonDay(input.sessionStartedAt).getTime();
+  const today = startOfLondonDay(input.now).getTime();
+  if (today > sessionDay && input.currentEquityUsd == null) {
+    // Never base a new day on startingBalanceUsd because marks are missing at the boundary (review F6).
+    // Keep the old session, report daily P&L unavailable (entries blocked), and roll once equity is known.
+    return {
+      sessionStartedAt: input.sessionStartedAt,
+      sessionStartEquityUsd: input.sessionStartEquityUsd,
+      highWaterMarkUsd: hwm,
+      rolled: false,
+      dailyPnlUsd: null,
+    };
+  }
   if (today > sessionDay) {
     return {
-      sessionStartedAt: startOfUtcDay(input.now),
+      sessionStartedAt: startOfLondonDay(input.now),
       sessionStartEquityUsd: usd(d(equity)),
       highWaterMarkUsd: hwm,
       rolled: true,
@@ -65,6 +77,32 @@ export function ratchetHighWaterMark(currentHwmUsd: string | null, equityUsd: st
   if (equityUsd == null) return currentHwmUsd;
   if (currentHwmUsd == null) return usd(d(equityUsd));
   return usd(d(currentHwmUsd).gte(equityUsd) ? d(currentHwmUsd) : d(equityUsd));
+}
+
+const londonParts = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/London",
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+/** London wall-clock offset from UTC at `at`, in ms (0 in GMT, 3,600,000 in BST). */
+function londonOffsetMs(at: Date): number {
+  const parts = Object.fromEntries(londonParts.formatToParts(at).map((part) => [part.type, part.value]));
+  const wall = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute), Number(parts.second));
+  return wall - Math.floor(at.getTime() / 1000) * 1000;
+}
+
+/** The UTC instant of 00:00 Europe/London on the London calendar day containing `value`. */
+export function startOfLondonDay(value: Date): Date {
+  const parts = Object.fromEntries(londonParts.formatToParts(value).map((part) => [part.type, part.value]));
+  const wallMidnight = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day));
+  // UK clocks change at 01:00 UTC, never at local midnight, so the offset an hour before is the midnight offset.
+  return new Date(wallMidnight - londonOffsetMs(new Date(wallMidnight - 3_600_000)));
 }
 
 export function startOfUtcDay(value: Date): Date {

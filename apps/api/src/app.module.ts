@@ -14,6 +14,7 @@ import { LabService } from "./lab.service.js";
 import { OperatorCapacityService } from "./operator-capacity.service.js";
 import { OperatorController } from "./operator.controller.js";
 import { TerminalController } from "./terminal.controller.js";
+import { RedisHealth } from "./redis-health.js";
 import { TerminalFanout, TerminalGateway } from "./terminal.gateway.js";
 import { TerminalService } from "./terminal.service.js";
 
@@ -34,6 +35,7 @@ import { TerminalService } from "./terminal.service.js";
     { provide: PrismaClient, useFactory: () => createPrismaClient() },
     AuthService,
     TerminalService,
+    { provide: RedisHealth, useFactory: () => new RedisHealth(process.env.REDIS_URL) },
     OperatorCapacityService,
     LabService,
     EvolutionService,

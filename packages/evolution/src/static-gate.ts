@@ -1,6 +1,7 @@
 /**
- * Static source gate.
- * This layer rejects obvious dangerous syntax before compilation.
+ * Static source lint.
+ * This layer rejects obvious dangerous syntax before compilation. It is a lint for
+ * honest mistakes, not a security control: string concatenation bypasses it trivially.
  * It is not a sandbox and it is not proof of runtime isolation.
  */
 

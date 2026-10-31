@@ -8,8 +8,8 @@ import {
 import type { MarketDataProvider, InstrumentQuote, OrderSpec, MarketSessionStatus } from "../market-provider.js";
 import type { ProviderResult } from "../provider.js";
 import {
-  ALPACA_DATA_HOSTS,
-  ALPACA_PAPER_TRADE_HOSTS,
+  ALPACA_DATA_HOSTS_STRICT,
+  ALPACA_PAPER_TRADE_HOSTS_STRICT,
   assertAllowlistedHttpsUrl,
   assertCompleteQuote,
 } from "../practice-url.js";
@@ -57,8 +57,10 @@ export class AlpacaPaperProvider implements MarketDataProvider {
   }
 
   private urlsValid(): boolean {
-    const trade = assertAllowlistedHttpsUrl(this.credentials.baseUrl, ALPACA_PAPER_TRADE_HOSTS);
-    const data = assertAllowlistedHttpsUrl(this.credentials.dataUrl, ALPACA_DATA_HOSTS);
+    // Audit L5: strict allowlist — HTTPS to Alpaca's own paper/data hosts only; no localhost or plain HTTP,
+    // so practice credentials can never be sent to another host.
+    const trade = assertAllowlistedHttpsUrl(this.credentials.baseUrl, ALPACA_PAPER_TRADE_HOSTS_STRICT);
+    const data = assertAllowlistedHttpsUrl(this.credentials.dataUrl, ALPACA_DATA_HOSTS_STRICT);
     return trade.ok && data.ok;
   }
 

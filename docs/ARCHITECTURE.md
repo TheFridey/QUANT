@@ -82,6 +82,12 @@ Older configs merge missing keys from `DEFAULT_STRATEGY`:
 | `maxTotalDrawdownPct` | `10` |
 | `maxPositions` | `4` |
 | `maxPriceImpactBps` | `150` |
+| `maxExitImpactBps` | `1000` (must be ≥ the entry caps) |
+| `paperLatencyMs` | `1000` (CI soak median ingest→executor 706 ms, rounded up) |
+
+The daily loss limit is `maxDailyLossPct` of **start-of-day equity**. The trading day rolls at **Europe/London midnight** (BST/GMT aware). A day never rolls while equity is unknown; daily P&L then reads unavailable and entries are blocked until marks return.
+
+An invalid stored config is never healed or rewritten. The worker raises a CRITICAL `CONFIG_INVALID` alert naming the failing fields, pauses entries, and keeps settling, exiting and protecting on `DEFAULT_STRATEGY` values until the operator corrects it. `scripts/report-invalid-configs.mjs` lists affected rows read-only.
 
 ## Accounting
 
@@ -90,7 +96,10 @@ Older configs merge missing keys from `DEFAULT_STRATEGY`:
 - Buy cash movement is `-(notional + fee)`. Sell cash movement is `+(notional - fee)`.
 - Fees enter the cost basis. Realized P&L is informational and does not move cash a second time.
 - Cash must equal the sum of cash-affecting ledger rows.
-- Fill price is the observed mid adjusted by participation impact and optional half-spread; rejected when impact exceeds `maxSlippageBps` / `maxPriceImpactBps`.
+- **Impact model.** DexScreener `liquidityUsd` is the whole pool, so the per-side reserve is `R = liquidityUsd / 2`. Constant-product average-price impact is `N / R` for a BUY of notional `N` and `N / (R + N)` for a SELL, floored at the former linear `N / liquidityUsd`. Fill price is mid adjusted by that impact and half the spread estimate. `Fill.slippageBps` records the realised slippage from mid (including adverse gap fills).
+- **Entries** are rejected when impact exceeds `maxSlippageBps` or `maxPriceImpactBps`; sizing caps notional at `R · min(those caps)` so a max-size entry passes.
+- **Exit execution policy.** Risk-reducing SELLs (EXIT, FLATTEN, protection closes, OPERATOR reduce) are never rejected for impact. They fill as much as stays within `maxExitImpactBps` at the modelled worse price; the rest is booked as a PENDING reduce order (`EXIT_PARTIAL_REMAINDER`, eligible immediately, normal expiry) that the next cycle's settle phase retries against a fresh quote. A STRATEGY remainder reserves its quantity first; if it cannot, nothing is booked and the next cycle plans a fresh exit. Exit reservations are released only inside `settlePendingOrder`.
+- **Known bias (documented, not corrected).** Each remainder is quoted against fresh pool liquidity that does not subtract earlier paper sells in the same chain, so a very large exit split into chunks is modelled more favourably than one real constant-product exit. Backtests share this bias, and an end-of-run liquidation above the exit cap leaves the remainder marked at mid. Partial exits add one closed-P&L entry per chunk, which inflates trade counts in win-rate statistics.
 - `clientOrderId` is unique. A retried job cannot double-fill.
 - The account row is locked with `FOR UPDATE` before a fill is applied.
 - There is no wallet, private key, or external order route. Venue is `PAPER`.
@@ -125,6 +134,16 @@ See `docs/EVOLUTION.md`. Live paper BullMQ path is unchanged.
 | Autonomy 0–3 (4 disabled) | `AutonomyControl` + `/api/evolution/autonomy` |
 | ORACLE queues / briefings | `ResearchQueueItem` + research centre endpoints |
 | Command centre modules | Market Selector, AI Research Centre, Model Ops, Genome, Memory, Autonomy |
+
+### Forge sandbox contract (`packages/evolution/src/sandbox-runner.ts`)
+
+- **Isolation boundary** is bubblewrap (user, net, pid, ipc, uts namespaces; read-only root; uid 65534) plus the x86_64 seccomp preload. The static source check is a **lint** for honest mistakes, not a security control.
+- **Streaming protocol.** The host writes a header (contract version, metadata, history limit, artifact hash, per-run nonce), waits for `ready`, then writes exactly one bar and waits for exactly one frame before the next. The sandbox never holds a bar the strategy has not been shown, so scanning `/proc/self/mem` cannot reveal future bars. Per-bar and overall timeouts both apply; either yields `SANDBOX_TIMEOUT`.
+- **Results** travel only on fd 3, a pipe opened by the host. stdout/stderr are diagnostics and are never parsed. Each frame must echo the run nonce, the expected sequence number and a fresh per-bar token sent with that bar, so a frame written before its bar was sent is rejected, never buffered for later. Any extra frame (a second answer for a bar) fails the run. The host re-validates every signal with `strategySignalSchema`, checks it names the delivered bar's instrument, and requires one signal per bar; anything else is `CONTRACT_FAIL` or `SANDBOX_PROTOCOL`. The nonce is defence in depth: the strategy shares the harness process, so the guarantee is that it can only ever emit a contract-valid signal for the bar it was given.
+- **Memory** is bounded by `RLIMIT_AS`, measured per host as Node's peak virtual size inside bubblewrap plus 256 MiB, and reported as `memoryEnforcement: "rlimit-as"`. `--max-old-space-size` is advisory only.
+- **No `/proc`.** Strategy runs do not mount `/proc` (CI showed Node starts without it), so a strategy cannot read `/proc/self/mem` at all. The look-ahead test mounts it deliberately to prove the streaming protocol alone is sufficient.
+- **Seccomp binaries** are built at install/build time by `packages/evolution/scripts/build-sandbox.mjs` into `packages/evolution/sandbox/build/` (binaries mode 0555) with SHA-256 recorded in `manifest.json`. The runner pins those hashes on first load, re-hashes the files before every run, and also requires `seccomp.so` to embed the BPF program whose SHA-256 is committed in `sandbox/seccomp-bpf.sha256` (generated from `src/seccomp-profile.ts`); any mismatch refuses the run. The postinstall never fails `pnpm install`; without a build the runner reports seccomp unavailable.
+- **Threat model.** These hashes catch accidental corruption, stale builds and edits after the process started; they do not stop someone who can already write to the repository checkout, who could change the runner itself. The real M2 fix is that binaries no longer live in shared `/tmp`, where another local user could pre-plant them. Without seccomp (non-x86_64 or no gcc) isolation reports unavailable unless `ODIN_SANDBOX_ALLOW_NO_SECCOMP=true`, in which case the runner reason says `seccomp: unavailable`.
 
 ## Engine
 

@@ -16,10 +16,13 @@ describe("paper fill", () => {
     });
     expect(quoted.ok).toBe(true);
     if (!quoted.ok) return;
-    expect(quoted.fill.priceUsd).toBe("100.01000000");
-    expect(quoted.fill.notionalUsd).toBe("100.01000000");
-    expect(quoted.fill.feeUsd).toBe("0.30003000");
-    expect(quoted.fill.slippageBps).toBe("1.0000");
+    // Audit C3 (B2): constant-product impact on the per-side reserve, $100 / ($1M / 2) = 2 bps
+    // (was linear $100 / $1M = 1 bps → 100.01).
+    expect(quoted.fill.priceUsd).toBe("100.02000000");
+    expect(quoted.fill.notionalUsd).toBe("100.02000000");
+    expect(quoted.fill.feeUsd).toBe("0.30006000");
+    expect(quoted.fill.slippageBps).toBe("2.0000");
+    expect(quoted.fill.remainderQty).toBe("0.00000000");
   });
 
   it("rejects participation that would slip through the configured maximum", () => {

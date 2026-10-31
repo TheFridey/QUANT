@@ -58,8 +58,11 @@ async function seedValidatedPromotion(prisma: PrismaClient, entryM5ChangePct: st
       rationale: "integration fixture hypothesis",
     },
   });
-  const artifact = await prisma.strategyArtifact.create({
-    data: {
+  // artifactHash is unique; later fixtures reuse the same builtin artifact.
+  const artifact = await prisma.strategyArtifact.upsert({
+    where: { artifactHash: identity.artifactHash },
+    update: {},
+    create: {
       kind: "BUILTIN_MODULE",
       moduleRef: identity.moduleRef,
       moduleVersion: identity.moduleVersion,
@@ -132,7 +135,7 @@ async function seedValidatedPromotion(prisma: PrismaClient, entryM5ChangePct: st
     executable,
   );
   const reportPayload = buildExperimentReport({
-    reportId: "rpt_integration_placeholder",
+    reportId: `rpt_integration_m5_${entryM5ChangePct}`,
     hypothesisId: hypothesis.id,
     strategyModuleId: "strat_reviewed",
     strategyVersion: "1.0.0",
@@ -289,5 +292,50 @@ describe.skipIf(!enabled)("promoted strategy persisted in PostgreSQL", () => {
       pulse?.reasonCodes.some((c) => c === "NO_EDGE" || c === "STRATEGY_INSTANCE_GATING" || c === "NO_INTENT"),
     ).toBe(true);
     expect(await prisma.fill.count({ where: { order: { cycleId: ingested.cycleId } } })).toBe(0);
+  });
+  it("refuses promotion while RUNNING and leaves the stored config unchanged (audit C4)", async () => {
+    const service = new EvolutionService(prisma);
+    const seeded = await seedValidatedPromotion(prisma, "6");
+    await prisma.engineControl.update({ where: { id: "primary" }, data: { status: "RUNNING" } });
+    const before = await prisma.engineControl.findUniqueOrThrow({ where: { id: "primary" } });
+    const promotionsBefore = await prisma.strategyPromotion.count();
+    await expect(
+      service.promotePaperStrategy(
+        { authorised: true, reportId: seeded.report.id, artifactId: seeded.artifact.id, approvalId: seeded.approval.id, config: seeded.config },
+        "operator@odin.local",
+      ),
+    ).rejects.toThrow(/RUNNING/);
+    const after = await prisma.engineControl.findUniqueOrThrow({ where: { id: "primary" } });
+    expect(after.config).toEqual(before.config);
+    expect(after.activeStrategy).toEqual(before.activeStrategy);
+    expect(await prisma.strategyPromotion.count()).toBe(promotionsBefore);
+  });
+  it("serialises concurrent promotions so the previousPromotionId chain stays consistent (audit C4)", async () => {
+    const service = new EvolutionService(prisma);
+    await prisma.engineControl.update({ where: { id: "primary" }, data: { status: "PAUSED" } });
+    const first = await seedValidatedPromotion(prisma, "7");
+    const second = await seedValidatedPromotion(prisma, "8");
+    const latestBefore = await prisma.strategyPromotion.findFirst({ orderBy: { createdAt: "desc" } });
+    const promote = (seeded: Awaited<ReturnType<typeof seedValidatedPromotion>>) =>
+      service.promotePaperStrategy(
+        { authorised: true, reportId: seeded.report.id, artifactId: seeded.artifact.id, approvalId: seeded.approval.id, config: seeded.config },
+        "operator@odin.local",
+      );
+    const results = await Promise.allSettled([promote(first), promote(second)]);
+    const succeeded = results.filter((result) => result.status === "fulfilled");
+    expect(succeeded.length).toBeGreaterThanOrEqual(1);
+    const created = await prisma.strategyPromotion.findMany({
+      where: { createdAt: { gt: latestBefore?.createdAt ?? new Date(0) } },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(created).toHaveLength(succeeded.length);
+    // Each promotion points at the one written immediately before it: no two share a predecessor.
+    expect(created[0]?.previousPromotionId).toBe(latestBefore?.id ?? null);
+    for (let index = 1; index < created.length; index += 1) {
+      expect(created[index]?.previousPromotionId).toBe(created[index - 1]?.id);
+    }
+    const engine = await prisma.engineControl.findUniqueOrThrow({ where: { id: "primary" } });
+    const lastConfig = created.at(-1)?.config as { entryM5ChangePct: string };
+    expect((engine.config as { entryM5ChangePct: string }).entryM5ChangePct).toBe(lastConfig.entryM5ChangePct);
   });
 });

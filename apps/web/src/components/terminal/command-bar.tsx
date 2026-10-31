@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { AnimatedValue } from "@/components/terminal/animated-value";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
-import { setToken } from "@/lib/api";
+import { signOut } from "@/lib/api";
 import { formatLondon, formatUsd } from "@/lib/format";
 import type { DataState } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -121,7 +121,8 @@ export function CommandBar() {
             Emergency stop
           </Button>
         </div>
-        {/* UI item 8: Sign out lives in the account menu so Emergency stop stands alone. */}
+        {/* UI item 8: Sign out lives in the account menu so Emergency stop stands alone. It revokes the
+            session server-side first (audit M5). */}
         <div className="flex items-center">
           <HeaderMenu
             label="Account"
@@ -129,8 +130,7 @@ export function CommandBar() {
               {
                 label: "Sign out",
                 onSelect: () => {
-                  setToken(null);
-                  router.push("/login");
+                  void signOut().finally(() => router.push("/login"));
                 },
               },
             ]}

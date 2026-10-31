@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --hostname 0.0.0.0 --port 4317",
+    "dev": "node scripts/next-serve.mjs dev",
     "build": "next build",
-    "start": "next start --hostname 0.0.0.0 --port 4317",
+    "start": "node scripts/next-serve.mjs start",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test"
   },

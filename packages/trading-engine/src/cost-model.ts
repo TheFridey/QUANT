@@ -1,5 +1,40 @@
-import type { AssetClass } from "@odin/shared";
-import { findInstrument, productSemanticsFor } from "@odin/shared";
+import type { AssetClass, OrderSide } from "@odin/shared";
+import { Decimal, d, findInstrument, productSemanticsFor } from "@odin/shared";
+
+/**
+ * DEX price impact in bps of mid, for the average fill price (audit C3 model).
+ *
+ * DexScreener `liquidityUsd` is the whole pool (both sides), so the per-side reserve is
+ * R = liquidityUsd / 2. In a constant-product pool, trading notional N at mid moves the
+ * average price by N / R for a BUY and N / (R + N) for a SELL. The former linear model
+ * (N / liquidityUsd) is kept as a floor, so this never estimates less impact than before.
+ */
+export function dexImpactBps(side: OrderSide, notionalUsd: Decimal, liquidityUsd: Decimal): Decimal {
+  if (liquidityUsd.lte(0)) throw new Error("dexImpactBps requires positive liquidity");
+  const reserve = liquidityUsd.div(2);
+  const constantProduct = side === "BUY" ? notionalUsd.div(reserve) : notionalUsd.div(reserve.plus(notionalUsd));
+  const linear = notionalUsd.div(liquidityUsd);
+  return Decimal.max(constantProduct, linear).mul(10000);
+}
+
+/** Largest BUY notional whose impact stays within `capBps`: N / R ≤ cap with R = liquidity / 2. */
+export function maxBuyNotionalWithinImpact(capBps: Decimal, liquidityUsd: Decimal): Decimal {
+  if (capBps.lte(0) || liquidityUsd.lte(0)) return d("0");
+  return liquidityUsd.div(2).mul(capBps).div(10000);
+}
+
+/**
+ * Largest SELL notional whose impact stays within `capBps` (inverse of dexImpactBps for SELL).
+ * Both the constant-product and the linear floor must be within the cap.
+ */
+export function maxSellNotionalWithinImpact(capBps: Decimal, liquidityUsd: Decimal): Decimal {
+  const cap = capBps.div(10000);
+  if (cap.lte(0) || liquidityUsd.lte(0)) return d("0");
+  const reserve = liquidityUsd.div(2);
+  const linearLimit = cap.mul(liquidityUsd);
+  const constantProductLimit = cap.gte(1) ? linearLimit : reserve.mul(cap).div(new Decimal(1).minus(cap));
+  return Decimal.min(linearLimit, constantProductLimit);
+}
 
 export type MarketCostModel = {
   /** Half-spread estimate in bps applied to mid. */

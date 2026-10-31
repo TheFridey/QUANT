@@ -1,27 +1,37 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
-import IORedis from "ioredis";
+import { RedisHealth } from "./redis-health.js";
 import { AdminGuard, Public, type RequestWithUser } from "./http.js";
 import { TerminalService } from "./terminal.service.js";
 
 @Controller()
 export class TerminalController {
-  constructor(private readonly terminal: TerminalService) {}
+  constructor(
+    private readonly terminal: TerminalService,
+    private readonly redisHealth: RedisHealth,
+  ) {}
 
+  /** Public liveness: status only (audit M9). Component detail is behind auth at health/detail. */
   @Public()
   @Get("health")
   async health() {
-    const redis = await pingRedis();
-    return this.terminal.health(async () => redis);
+    const report = await this.terminal.health(() => this.redisHealth.ping());
+    return { status: report.status };
   }
 
+  /** Public readiness for orchestrators: status only, 503 when degraded. */
   @Public()
   @Get("ready")
   async ready(@Res({ passthrough: true }) response: Response) {
-    const redis = await pingRedis();
-    const report = await this.terminal.health(async () => redis);
+    const report = await this.terminal.health(() => this.redisHealth.ping());
     if (report.status !== "ok") response.status(503);
-    return report;
+    return { status: report.status };
+  }
+
+  /** Authenticated component detail: postgres, redis, engine, data state and cycle timing. */
+  @Get("health/detail")
+  healthDetail() {
+    return this.terminal.health(() => this.redisHealth.ping());
   }
 
   @Get("terminal/snapshot")
@@ -156,18 +166,5 @@ export class TerminalController {
   @Get("cycles/:id")
   cycle(@Param("id") id: string) {
     return this.terminal.snapshot().then((snapshot) => ({ snapshot, focus: id }));
-  }
-}
-
-async function pingRedis(): Promise<boolean> {
-  const url = process.env.REDIS_URL;
-  if (!url) return false;
-  const redis = new IORedis(url, { maxRetriesPerRequest: 1, connectTimeout: 1000 });
-  try {
-    return (await redis.ping()) === "PONG";
-  } catch {
-    return false;
-  } finally {
-    redis.disconnect();
   }
 }

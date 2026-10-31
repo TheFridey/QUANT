@@ -64,6 +64,21 @@ export function protectionUnresolvedAlert(detail: Record<string, unknown>): Dura
   };
 }
 
+/**
+ * Stored strategy config failed validation (audit H1). Values are never healed on load, so the
+ * operator must fix the named fields; the engine plans nothing until they do.
+ */
+export function configInvalidAlert(issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }>): DurableAlertDraft {
+  const fields = issues.map((issue) => ({ field: issue.path.map(String).join(".") || "(root)", message: issue.message }));
+  const names = fields.map((entry) => entry.field).join(", ") || "unknown field";
+  return {
+    severity: "CRITICAL",
+    code: ALERT_CODES.CONFIG_INVALID,
+    message: `Stored strategy config is invalid (${names}); no cycle will plan until it is corrected`,
+    payload: { fields },
+  };
+}
+
 export function providerNotReadyAlert(providerId: string, readiness: string): DurableAlertDraft {
   return {
     severity: "INFO",

@@ -46,7 +46,9 @@ Socket origins are restricted to `WEB_ORIGIN` plus local paper defaults (`127.0.
 
 - **Compose (this repo):** publish Postgres `5432` and Redis `6379` on `127.0.0.1` only — never `0.0.0.0`.
 - **Shared/production host:** prefer **no host port publish**; attach Postgres/Redis to a private Docker/K8s network reachable only by api/worker. Terminate TLS at a reverse proxy; do not expose DB/cache.
-- **API listen:** `main.ts` still binds `0.0.0.0` for container port-mapping; place it behind loopback or a private network + reverse proxy in production. Do not publish raw API/DB ports to the public internet.
+- **API and web listen:** both bind `127.0.0.1` by default (`API_HOST`, `WEB_HOST` override). In a container set `API_HOST=0.0.0.0` / `WEB_HOST=0.0.0.0` only behind a private network + reverse proxy. Do not publish raw API/DB ports to the public internet.
+- **Secrets off loopback:** when `WEB_ORIGIN` is not a loopback origin the API refuses to start with a `JWT_SECRET` under 32 characters, any published sample secret, or the sample `ADMIN_PASSWORD`, regardless of `NODE_ENV`.
+- **Login rate limit behind a proxy:** the limiter keys on `request.ip` and Express `trust proxy` is off, so behind a reverse proxy all clients share the proxy IP (one attacker can lock the operator out for 10 minutes). Enable `trust proxy` only for the exact proxy hop you control; never `true` on an internet-facing listener.
 - Development compose credentials (`odin`/`odin`) are for local paper only — replace before any shared deployment.
 
 ### ADMIN_PASSWORD rotation limitation

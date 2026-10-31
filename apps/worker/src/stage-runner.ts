@@ -9,6 +9,7 @@ import {
   funnelEventsFromPlan,
   instanceAvailableUsd,
   uniqueFunnelEvents,
+  configInvalidAlert,
   liveGateAlert,
   marketSelectionMap,
   parseActiveStrategyIdentity,
@@ -45,6 +46,7 @@ import {
   classifyFreshness,
   clientOrderIdFor,
   d,
+  DEFAULT_STRATEGY,
   freshnessFromProvenance,
   inferObservationProvenance,
   instrumentIdFromPositionKey,
@@ -102,6 +104,39 @@ export type AgentBus = {
 };
 
 export const silentBus: AgentBus = { async publish() {} };
+
+/**
+ * Executor interactive transaction limits (audit H3). Prisma's default is a 5 s timeout and
+ * 2 s maxWait; the executor settles, plans, reconciles and admits under one account lock, so it
+ * gets explicit, overridable bounds. Tune with ODIN_EXECUTOR_TX_TIMEOUT_MS / _MAX_WAIT_MS.
+ */
+const EXECUTOR_TRANSACTION_LIMITS = {
+  timeout: boundedIntFromEnv("ODIN_EXECUTOR_TX_TIMEOUT_MS", 20_000, 60_000),
+  maxWait: boundedIntFromEnv("ODIN_EXECUTOR_TX_MAX_WAIT_MS", 10_000, 30_000),
+};
+
+/** Positive integer from env, clamped to `max` so a typo cannot hold the account lock for minutes. */
+function boundedIntFromEnv(name: string, fallback: number, max: number): number {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? Math.min(value, max) : fallback;
+}
+
+type ConfigIssue = { path: PropertyKey[]; message: string };
+
+/**
+ * Audit H1 (review F1): a stored config that fails validation is never healed or rewritten,
+ * and it never stops risk reduction. Entries are blocked (pauseNewEntries) while settlement,
+ * planned exits and protection run on DEFAULT_STRATEGY, the authoritative defaults, until the
+ * operator corrects the fields named in the CONFIG_INVALID alert.
+ */
+export function strategyConfigOrExitOnly(raw: unknown): { config: StrategyConfig; issues: ConfigIssue[] | null } {
+  try {
+    return { config: parseStrategyConfig(raw), issues: null };
+  } catch (error) {
+    const issues = (error as { issues?: ConfigIssue[] }).issues ?? [{ path: [], message: String(error) }];
+    return { config: { ...DEFAULT_STRATEGY, pauseNewEntries: true }, issues };
+  }
+}
 
 export class StageRunner {
   private readonly observability = new ObservabilityRegistry();
@@ -232,12 +267,23 @@ export class StageRunner {
     await this.ensureAccount(ctx);
     // Crash/restart: restore confirmed protection + durable unresolved exit intents before admission.
     await recoverProtectionAfterRestart(this.prisma, { accountId: ctx.accountId });
+    // Audit H3: explicit transaction limits plus per-phase timings recorded on the cycle.
+    const timings: Record<string, number> = {};
+    let phaseStarted = Date.now();
+    const endPhase = (name: string) => {
+      const at = Date.now();
+      timings[name] = at - phaseStarted;
+      phaseStarted = at;
+    };
+    const transactionStarted = Date.now();
     await this.prisma.$transaction(async (tx) => {
+      timings.lockWait = Date.now() - transactionStarted;
+      phaseStarted = Date.now();
       await lockAccount(tx, ctx.accountId);
 
       // R05: settle/cancel pending under explicit policy FIRST, then refresh book/caps, then admit.
       const engine = await tx.engineControl.findUnique({ where: { id: "primary" } });
-      const config = parseStrategyConfig(engine?.config ?? {});
+      const { config } = strategyConfigOrExitOnly(engine?.config ?? {});
       // Local settle loop must only touch PAPER — never locally fill SANDBOX pending orders (F01).
       const pending = await tx.order.findMany({
         where: { accountId: ctx.accountId, status: "PENDING", executionMode: "PAPER" },
@@ -298,9 +344,7 @@ export class StageRunner {
             });
           }
         }
-        if (settled.status === "REJECTED" || settled.status === "EXPIRED") {
-          await releasePendingExitReservation(tx, row);
-        }
+        // Exit reservations are released inside settlePendingOrder only (review F3: no double release).
         if (settled.status === "FILLED" || settled.status === "REJECTED" || settled.status === "EXPIRED") {
           await releaseInTx(
             tx,
@@ -311,14 +355,17 @@ export class StageRunner {
         }
       }
 
+      endPhase("settle");
       // Refresh authoritative book after settlement (R05).
       const loaded = await this.loadPlan(cycleId, now, tx, ctx);
       if (!loaded) return;
       for (const decision of loaded.plan.decisions.filter((item) => item.agent === "AEGIS" || item.agent === "ATLAS" || item.agent === "EXECUTOR")) {
         await upsertDecision(tx, cycleId, decision);
       }
+      endPhase("plan");
 
       await this.reconcileAndAlert(tx, ctx);
+      endPhase("reconcile");
 
       const liveGate = assertPaperOrSandboxOnly(process.env);
       const filledIds: string[] = [];
@@ -613,7 +660,10 @@ export class StageRunner {
         }
       }
       await tx.cycleRun.update({ where: { id: cycleId }, data: { orderCount: filled } });
-    });
+      endPhase("admit");
+    }, EXECUTOR_TRANSACTION_LIMITS);
+    timings.transaction = Date.now() - transactionStarted;
+    phaseStarted = Date.now();
     // SANDBOX outbox: submit / sync / book external fills outside the account lock (Stage Q).
     await processSandboxOutbox(this.prisma, { accountId: ctx.accountId, now });
     // Retry unresolved protection exits — account-scoped, lifecycle-fenced (D07).
@@ -647,7 +697,7 @@ export class StageRunner {
             return { ok: true };
           }
           const config = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
-          const parsed = parseStrategyConfig(config?.config ?? {});
+          const parsed = strategyConfigOrExitOnly(config?.config ?? {}).config;
           const result = await this.prisma.$transaction(async (tx) => {
             await lockAccount(tx, intent.accountId);
             const protKey = intentIdempotencyKey({
@@ -689,6 +739,8 @@ export class StageRunner {
         }
       },
     });
+    endPhase("protect");
+    await this.prisma.cycleRun.update({ where: { id: cycleId }, data: { executorTimings: timings } });
     await this.advance(cycleId, "executor");
   }
 
@@ -946,12 +998,12 @@ export class StageRunner {
     const cycle = await db.cycleRun.findUnique({ where: { id: cycleId } });
     const engine = await db.engineControl.findUnique({ where: { id: "primary" } });
     if (!cycle || !engine) return null;
-    let config: StrategyConfig;
-    try {
-      config = parseStrategyConfig(engine.config);
-    } catch {
+    const resolved = strategyConfigOrExitOnly(engine.config);
+    const config = resolved.config;
+    if (resolved.issues) {
+      // Audit H1: never healed. Name the failing fields; plan exits only (entries paused) until fixed.
+      await this.persistAlert(db, configInvalidAlert(resolved.issues));
       await upsertDecision(db, cycleId, emptyDecision("CONFIG_INVALID", "Strategy configuration failed validation"));
-      return null;
     }
     const ctx =
       ctxOverride ??
@@ -1175,6 +1227,7 @@ export class StageRunner {
       config,
       cashUsd: account.cashUsd.toString(),
       startingBalanceUsd: account.startingBalanceUsd.toString(),
+      dayStartEquityUsd: sessionRoll.sessionStartEquityUsd,
       positions: positionViews,
       pairs,
       marks,
@@ -1932,7 +1985,7 @@ export class StageRunner {
   private async config(): Promise<StrategyConfig> {
     const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     if (!engine) throw new Error("ENGINE_MISSING");
-    return parseStrategyConfig(engine.config);
+    return strategyConfigOrExitOnly(engine.config).config;
   }
 
   /**

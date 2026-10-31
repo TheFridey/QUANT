@@ -8,8 +8,10 @@ import { FixtureModelProvider } from "./fixture-provider.js";
 import { MemoryBudgetStore } from "./budget-store.js";
 import { ModelRouter } from "./router.js";
 import { sha256 } from "./compile-strategy.js";
-import { isolationAvailable } from "./sandbox-runner.js";
+import { isolationAvailable, probeIsolation } from "./sandbox-runner.js";
 import type { TradeMemoryRecord } from "@odin/shared";
+
+const isolationSkip = isolationAvailable() ? "" : ` [skipped: isolation unavailable — ${probeIsolation().reason}]`;
 
 const holdSource = `export function onBar() {
   return { intent: "HOLD", reasonCodes: ["HOLD_LOGIC"] };
@@ -106,8 +108,7 @@ function cycleInput(router: ModelRouter, queue = emptyOracleQueue()) {
 }
 
 describe("bounded oracle research cycle", () => {
-  it("runs the thirteen capabilities in order and executes the engineering source", async () => {
-    expect(isolationAvailable(), "bubblewrap is required to prove the executed hash").toBe(true);
+  it.skipIf(!isolationAvailable())(`runs the thirteen capabilities in order and executes the engineering source${isolationSkip}`, async () => {
     const hold = await runBoundedResearchCycle(cycleInput(routerFor(holdSource)));
     const enter = await runBoundedResearchCycle(cycleInput(routerFor(enterSource)));
     expect(hold.steps.map((step) => step.capability)).toEqual([...ORACLE_CAPABILITIES]);

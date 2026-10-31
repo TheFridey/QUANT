@@ -3,6 +3,7 @@ import {
   alertAckDoesNotClearSafety,
   ALERT_CODES,
   circuitBreakerAlert,
+  configInvalidAlert,
   protectionUnresolvedAlert,
   sortAlertsForOps,
 } from "./alerts.js";
@@ -27,5 +28,20 @@ describe("durable alerts ops depth (D50)", () => {
   it("circuit breaker / unresolved protection drafts carry honest payloads", () => {
     expect(circuitBreakerAlert({ open: true }).code).toBe(ALERT_CODES.CIRCUIT_BREAKER);
     expect(protectionUnresolvedAlert({ id: "x" }).message).toMatch(/ACK/i);
+  });
+
+  it("names the failing fields of an invalid stored strategy config (audit H1)", async () => {
+    const { DEFAULT_STRATEGY, parseStrategyConfig } = await import("@odin/shared");
+    let issues: Array<{ path: PropertyKey[]; message: string }> = [];
+    try {
+      parseStrategyConfig({ ...DEFAULT_STRATEGY, startingBalanceUsd: "100.00000000", minOrderNotionalUsd: "5" });
+    } catch (error) {
+      issues = (error as { issues: typeof issues }).issues;
+    }
+    const alert = configInvalidAlert(issues);
+    expect(alert.code).toBe(ALERT_CODES.CONFIG_INVALID);
+    expect(alert.severity).toBe("CRITICAL");
+    expect(alert.message).toContain("minOrderNotionalUsd");
+    expect(alert.payload).toMatchObject({ fields: [expect.objectContaining({ field: "minOrderNotionalUsd" })] });
   });
 });

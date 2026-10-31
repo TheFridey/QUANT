@@ -19,6 +19,12 @@ export type RiskContext = {
   maxPositions: number;
   dailyPnlUsd: string | null;
   startingBalanceUsd: string;
+  /**
+   * Equity at the start of the trading day (Europe/London midnight session roll). The daily loss
+   * limit is a percentage of this, not of startingBalanceUsd (audit L3). Callers without a session
+   * fall back to startingBalanceUsd.
+   */
+  dayStartEquityUsd?: string | null;
   maxDailyLossPct: string;
   valuation: ValuationState;
   equityUsd?: string | null;
@@ -72,7 +78,7 @@ export function evaluateRisk(input: RiskContext): RiskGate {
       return gate("REJECT", ["VALUATION_NOT_LIVE"], 1);
     }
     if (input.dailyPnlUsd === null) return gate("REJECT", ["DAILY_PNL_UNAVAILABLE"], 0);
-    const limit = d(input.startingBalanceUsd).mul(d(input.maxDailyLossPct)).div(100);
+    const limit = dailyLossLimitUsd(input);
     if (d(input.dailyPnlUsd).lte(limit.neg())) return gate("REJECT", ["DAILY_LOSS_LIMIT"], 1);
     if (input.openPositions >= input.maxPositions) return gate("REJECT", ["MAX_POSITIONS"], 1);
 
@@ -90,9 +96,20 @@ export function evaluateRisk(input: RiskContext): RiskGate {
 }
 
 /** Independent circuit breaker: trip on daily loss or HWM drawdown breach. */
+/** Daily loss limit in USD: maxDailyLossPct of start-of-day equity (startingBalanceUsd only as fallback). */
+export function dailyLossLimitUsd(input: {
+  startingBalanceUsd: string;
+  dayStartEquityUsd?: string | null;
+  maxDailyLossPct: string;
+}): Decimal {
+  const base = input.dayStartEquityUsd != null && d(input.dayStartEquityUsd).gt(0) ? input.dayStartEquityUsd : input.startingBalanceUsd;
+  return d(base).mul(d(input.maxDailyLossPct)).div(100);
+}
+
 export function evaluateCircuitBreaker(input: {
   dailyPnlUsd: string | null;
   startingBalanceUsd: string;
+  dayStartEquityUsd?: string | null;
   maxDailyLossPct: string;
   equityUsd: string | null;
   highWaterMarkUsd: string | null;
@@ -100,7 +117,7 @@ export function evaluateCircuitBreaker(input: {
 }): { open: boolean; reasonCodes: ReasonCode[] } {
   const reasons: ReasonCode[] = [];
   if (input.dailyPnlUsd !== null) {
-    const dailyLimit = d(input.startingBalanceUsd).mul(d(input.maxDailyLossPct)).div(100);
+    const dailyLimit = dailyLossLimitUsd(input);
     if (d(input.dailyPnlUsd).lte(dailyLimit.neg())) reasons.push("DAILY_LOSS_LIMIT");
   }
   if (input.equityUsd !== null && input.highWaterMarkUsd !== null && d(input.highWaterMarkUsd).gt(0)) {
