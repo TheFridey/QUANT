@@ -1,6 +1,6 @@
 import type { ProviderResult } from "@odin/market-data";
 import { assertPaperOrSandboxOnly, type NormalizedPair } from "@odin/shared";
-import type { MarketFeed } from "./stage-runner.js";
+import type { MarketFeed, OnChainSecuritySource } from "./stage-runner.js";
 
 /**
  * Seeded, network-free Solana-shaped universe for CI and browser E2E (`ODIN_MARKET_FEED=deterministic`).
@@ -122,6 +122,7 @@ export function deterministicFeed(options: { stepMs: number; now?: () => Date })
       const step = Math.floor(at.getTime() / options.stepMs);
       return { ok: true, fetchedAt: at.toISOString(), data: deterministicPairsAt(step, at).slice(0, Math.max(0, limit)) };
     },
+    security: deterministicSecuritySource(now),
   };
 }
 
@@ -181,5 +182,33 @@ export function installDeterministicNetworkGuard(options: {
   globalThis.fetch = guarded;
   return () => {
     globalThis.fetch = original;
+  };
+}
+
+/**
+ * CI/e2e harness only (network-guarded): deterministic mints read as clean SPL Token mints with
+ * low holder concentration, so Aegis can PASS them without a network RPC. Never used by liveFeed.
+ */
+function deterministicSecuritySource(now: () => Date): OnChainSecuritySource {
+  return {
+    async getMint(mint: string) {
+      return {
+        ok: true,
+        fetchedAt: now().toISOString(),
+        data: {
+          mint,
+          programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          mintAuthority: null,
+          freezeAuthority: null,
+          supply: "1000000000000",
+          decimals: 9,
+          extensions: [],
+          slot: null,
+        },
+      };
+    },
+    async getTopHolderConcentration() {
+      return { ok: true, fetchedAt: now().toISOString(), data: { top10Pct: "12.000000", accountsSampled: 10, slot: null } };
+    },
   };
 }
