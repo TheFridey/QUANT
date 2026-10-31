@@ -304,7 +304,7 @@ test.describe("Gate 1 local paper browser workflows", () => {
 
     // Disconnect / reconnect (offline kills socket; polling may continue)
     await page.goto("/terminal/settings");
-    const socketRow = page.locator("div.flex.justify-between").filter({ hasText: "API socket" });
+    const socketRow = page.locator("div.flex.justify-between").filter({ hasText: "Live connection" });
     await expect(socketRow).toBeVisible();
     await context.setOffline(true);
     await expect(socketRow.getByText(/down|error|connecting/i)).toBeVisible({ timeout: 20_000 });
