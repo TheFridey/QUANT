@@ -10,6 +10,7 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1", "localhost"],
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:4318",
+    NEXT_PUBLIC_BASIC_AUTH_BRIDGE: process.env.NEXT_PUBLIC_BASIC_AUTH_BRIDGE ?? "false",
   },
   // UI item 13: former research sub-pages are tabs of /terminal/research; keep their links working.
   async redirects() {
