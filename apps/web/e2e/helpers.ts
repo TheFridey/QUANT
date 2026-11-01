@@ -121,20 +121,35 @@ export async function tunePaperRiskForManualBuys(page: Page): Promise<void> {
       // ceiling must stay >= the entry threshold, so it moves to the same (unreachable) bound.
       entryM5ChangePct: "100",
       maxEntryM5ChangePct: "100",
-      // Entries are sized so a stop-out (here the widened 50% stop) plus worst costs fits the daily loss
-      // headroom left after open positions' stop-out risk (ASCEND-00 F2). With a 50% stop, one leftover
-      // automatic position commits roughly the whole default 3% allowance and the $50 manual buy sizes to
-      // zero, so this throwaway e2e account gets a matching allowance. Production limits are unchanged.
-      maxDailyLossPct: "50",
     },
   });
 }
 
+/**
+ * Turn automatic entries on or off per market (MarketSelection). Operator tickets are not gated by it, so
+ * disabling keeps the engine's strategy instances (including FX/ETF ones that ignore the M5 entry
+ * threshold) from opening positions mid-test. Returns the instrument ids it changed, for restoring.
+ */
+export async function setAutomaticEntries(page: Page, enabled: boolean, only?: readonly string[]): Promise<string[]> {
+  const { instruments } = await apiFromPage<{ instruments: Array<{ id: string; enabled: boolean }> }>(page, "/evolution/markets");
+  const changed: string[] = [];
+  for (const instrument of instruments) {
+    if (only && !only.includes(instrument.id)) continue;
+    if (instrument.enabled === enabled) continue;
+    await apiFromPage(page, "/evolution/markets", { method: "POST", body: { instrumentId: instrument.id, enabled } });
+    changed.push(instrument.id);
+  }
+  return changed;
+}
+
 export function pickLivePair(snap: Snapshot): Snapshot["market"]["pairs"][number] {
+  // A pair the account already holds would be (correctly) refused for a second entry.
+  const held = new Set(snap.portfolio.positions.filter((row) => Number(row.baseQty) > 0).map((row) => row.pairAddress));
   const ranked = [...snap.market.pairs]
+    .filter((pair) => !held.has(pair.pairAddress))
     .filter((pair) => pair.freshness === "LIVE" && pair.priceUsd && Number(pair.liquidityUsd ?? 0) > 1_000)
     .sort((a, b) => Number(b.liquidityUsd ?? 0) - Number(a.liquidityUsd ?? 0));
-  const chosen = ranked[0] ?? snap.market.pairs.find((pair) => pair.freshness === "LIVE");
+  const chosen = ranked[0] ?? snap.market.pairs.find((pair) => pair.freshness === "LIVE" && !held.has(pair.pairAddress));
   if (!chosen) throw new Error("No LIVE market pair available for paper ticket");
   return chosen;
 }
