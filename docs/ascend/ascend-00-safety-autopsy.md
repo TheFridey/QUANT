@@ -85,7 +85,9 @@ Left as is:
 - **OCO stop at entry price, not average cost.** About 0.01% of notional.
 - **Long-only assumption in `openStopRiskUsd`.** Holds today; add a guard if shorts are ever introduced.
 
-**F3: BUYs admitted before a breach can fill after it.** A `SANDBOX` (Alpaca practice) order admitted before the breach is still submitted by `apps/worker/src/sandbox-execution.ts` after it. Market-data paper fills settle in the same cycle, so this affects only the sandbox venue. Candidate fix: re-check the breaker before the first submission of a `BUY`. This is a venue/execution path and needs approval.
+**F3: BUYs admitted before a breach could fill after it (fixed, PR #24).** A `SANDBOX` (Alpaca practice) order admitted before a breach was still submitted by `apps/worker/src/sandbox-execution.ts` afterwards. Market-data paper fills settle in the same cycle, so this affected only the sandbox venue.
+
+The fix: before first submission, `sandboxEntryBlock` cancels a `PRE_SUBMIT` BUY when the engine is not running, entries are paused, the day is unrolled, or the breaker is open on the latest trusted snapshot or the persisted latch. The update is fenced on PENDING + PRE_SUBMIT. `UNKNOWN` orders, which may already be at the broker, are left to sync.
 
 ## 2. Production forensics
 
@@ -131,14 +133,16 @@ No history of engine config is stored: `EngineControl` keeps only the current co
 | 16:12:51 | $250k |
 | 16:15:21 (resume, current) | $250k |
 
-What else changed at 15:44:01 cannot be reconstructed. **F6: config changes, including risk-limit changes, are not audited with a before/after history.** Proposed: an append-only config-revision table, and a config hash or snapshot on each `CyclePlan`. This touches the Prisma schema; it is not a protected path, but it is a migration.
+What else changed at 15:44:01 cannot be reconstructed. **F6: config changes, including risk-limit changes, were not audited (fixed, PR #25).** A Postgres trigger now appends an `EngineConfigRevision` on every config insert or change: previous and new config, changed keys, actor, hash, and `engineUpdatedAt`. That last field matches `CycleRun.configRevision`. Rows are append-only. History before the deploy is not recoverable: the migration records the current config as a `BASELINE`.
 
 ### `SELL_EXCEEDS_POSITION` (20 rejections, not 14)
 
 Each one pairs one-for-one with one of the 20 PROTECTION exit fills: same cycle, same quantity, `ownerScope = NET_CLOSE`. The worker's protection step (`apps/worker/src/executor/protect.ts`) and the planner's stop/target exit (`plan.ts`, NET_CLOSE identity) both close the position in the same cycle. The protection fill settles first, and the store's guard (`packages/trading-engine/src/store.ts:663`) rejects the second close.
 - **Impact:** harmless to the ledger, with no double sell.
 - **Weakness:** two exit intents are produced, and rejected orders inflate the order count.
-- **Candidate fix:** the planner skips its NET_CLOSE when a protection close for the same pair is pending or planned in the cycle (F5).
+- **Actual mechanism (from order timestamps):** the NET_CLOSE was created first, as `PENDING` (paper latency). Protection then filled the whole position in the same transaction, and the next cycle's settle rejected the pending sell.
+- **Fixed (F5, PR #23):** settle now cancels a pending SELL on a flat position with `EXIT_SUPERSEDED` and releases its reservations. Protection is unchanged.
+- **Known residual (pre-existing):** a pending exit is not fenced by position lifecycle, so it could in principle reduce a reopened lot. The planner's pending-net-close guard makes this unlikely; fencing by `lifecycleId` is a follow-up.
 
 ### Slippage-limit rejections (9)
 
@@ -150,6 +154,8 @@ All were automatic `ENTRY` BUYs on 31 Oct between 15:45 and 15:57, in BNB, white
 2. Stop and target distances must be set relative to volatility per observation step, not as fixed percentages.
 3. GATO-type deep pools with a 2–7% m5 trigger showed no gross edge across 12 trips. This should become a registered hypothesis with a pre-declared sample size, not a tuning target.
 
-## 3. Permanent trade autopsy
+## 3. Permanent trade autopsy (PR #26)
 
-Planned once section 2 has defined the fields from real data: a pure function over a closed lifecycle's orders, fills, decisions and observations, producing an evidence record with explicit `null`s for anything that was not recorded.
+`packages/analytics/src/trade-autopsy.ts` implements the section 2 decomposition as pure, tested functions. `GET /api/terminal/autopsy` serves it.
+
+Run read-only against the production ledger, it reproduces the forensic totals for the 27 trips: net −$402.74, fees $73.62, slippage $226.93, mid move −$102.18. Small differences come from it using observed mids instead of reconstructions. Flags are factual only, and unrecorded inputs are listed in `notRecorded`.
