@@ -9,10 +9,14 @@ import {
 } from "@odin/agent-core";
 import {
   attributeNetPerformance,
+  autopsyRoundTrip,
+  closedRoundTrips,
   performanceReport,
   SNAPSHOT_BOUNDS,
+  summariseAutopsies,
   summarizeSnapshotCost,
   valuePortfolio,
+  type AutopsyFill,
   type Mark,
   type SnapshotQueryPhase,
 } from "@odin/analytics";
@@ -840,6 +844,92 @@ export class TerminalService {
    * Paginated ledger query for History (D22). Snapshot still embeds the latest 40;
    * this endpoint pages beyond that with order vs trade (fill) views.
    */
+  /**
+   * ASCEND-00 trade autopsy: evidence for the most recent closed round trips of the active account.
+   * Stop overshoot is measured against the current stopLossPct (returned), not the value at the time.
+   */
+  async tradeAutopsy(limitText: string) {
+    const parsed = Number.parseInt(limitText, 10);
+    const limit = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), 100) : 25;
+    const accountId = await this.activeAccountId();
+    const engineRow = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
+    const stopLossPct = this.readConfig(engineRow?.config)?.stopLossPct ?? DEFAULT_STRATEGY.stopLossPct;
+    const rows = await this.prisma.fill.findMany({
+      where: { order: { accountId } },
+      include: { order: true },
+      orderBy: { createdAt: "desc" },
+      take: 4000,
+    });
+    rows.reverse();
+    const observationIds = [
+      ...new Set(rows.flatMap((row) => [row.observationId, row.order.decisionObservationId]).filter((id): id is string => Boolean(id))),
+    ];
+    const observations = await this.prisma.marketObservation.findMany({
+      where: { id: { in: observationIds } },
+      select: { id: true, priceUsd: true, priceChangeM5: true, priceChangeH1: true, liquidityUsd: true, pairCreatedAt: true },
+    });
+    const byId = new Map(observations.map((row) => [row.id, row]));
+    const byPair = new Map<string, { symbol: string; fills: AutopsyFill[]; entryObs: Map<string, string | null> }>();
+    for (const row of rows) {
+      const group = byPair.get(row.pairAddress) ?? {
+        symbol: row.order.baseSymbol,
+        fills: [] as AutopsyFill[],
+        entryObs: new Map<string, string | null>(),
+      };
+      group.fills.push({
+        id: row.id,
+        side: row.side as "BUY" | "SELL",
+        qty: row.qty.toString(),
+        priceUsd: row.priceUsd.toString(),
+        notionalUsd: row.notionalUsd.toString(),
+        feeUsd: row.feeUsd.toString(),
+        slippageBps: row.slippageBps.toString(),
+        createdAt: row.createdAt.toISOString(),
+        observedMidUsd: (row.observationId ? byId.get(row.observationId)?.priceUsd?.toString() : null) ?? null,
+        ownerScope: row.order.ownerScope,
+        reasonCodes: row.order.reasonCodes ?? [],
+        strategyInstanceId: row.strategyInstanceId ?? row.order.strategyInstanceId,
+      });
+      group.entryObs.set(row.id, row.order.decisionObservationId ?? row.observationId);
+      byPair.set(row.pairAddress, group);
+    }
+    const trips = [...byPair.entries()]
+      .flatMap(([pairAddress, group]) => closedRoundTrips(group.fills).map((fills) => ({ pairAddress, group, fills })))
+      .sort((left, right) => left.fills.at(-1)!.createdAt.localeCompare(right.fills.at(-1)!.createdAt))
+      .slice(-limit);
+    const autopsies = [];
+    for (const trip of trips) {
+      const first = trip.fills[0]!;
+      const last = trip.fills.at(-1)!;
+      const entryObservation = byId.get(trip.group.entryObs.get(first.id) ?? "");
+      const path = await this.prisma.marketObservation.findMany({
+        where: { pairAddress: trip.pairAddress, receivedAt: { gt: new Date(first.createdAt), lte: new Date(last.createdAt) }, priceUsd: { not: null } },
+        select: { receivedAt: true, priceUsd: true },
+        orderBy: { receivedAt: "asc" },
+        take: 5000,
+      });
+      autopsies.push(
+        autopsyRoundTrip({
+          pairAddress: trip.pairAddress,
+          baseSymbol: trip.group.symbol,
+          fills: trip.fills,
+          entry: entryObservation
+            ? {
+                priceChangeM5Pct: entryObservation.priceChangeM5?.toString() ?? null,
+                priceChangeH1Pct: entryObservation.priceChangeH1?.toString() ?? null,
+                liquidityUsd: entryObservation.liquidityUsd?.toString() ?? null,
+                pairCreatedAt: entryObservation.pairCreatedAt?.toISOString() ?? null,
+              }
+            : null,
+          observations: path.map((row) => ({ receivedAt: row.receivedAt.toISOString(), priceUsd: row.priceUsd!.toString() })),
+          stopLossPct,
+        }),
+      );
+    }
+    autopsies.reverse();
+    return { accountId, stopLossPct, summary: summariseAutopsies(autopsies), trades: autopsies };
+  }
+
   /** The account the terminal is showing: the active environment's paper account (same as the snapshot). */
   private async activeAccountId(): Promise<string> {
     const engineRow = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
