@@ -13,7 +13,7 @@ import type { ResearchBar } from "./simulate.js";
  * Horizons are in bars, scaled by interval (short/medium/long ≈ 6h/1d/3d intraday; 5/20/60 days daily).
  */
 
-export const FEATURE_SET_VERSION = "features-1.0.0";
+export const FEATURE_SET_VERSION = "features-1.1.0";
 
 export type FeatureDefinition = {
   name: string;
@@ -38,9 +38,9 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
   { name: "range_pos_m", version: V, definition: "(close_i - min low_m) / (max high_m - min low_m)", inputs: ["high", "low", "close"], lookback: "m", missingPolicy: "null before m bars or zero range" },
   { name: "drawdown_l", version: V, definition: "close_i / max(close over l bars) - 1", inputs: ["close"], lookback: "l", missingPolicy: "null before l bars" },
   { name: "rel_volume_m", version: V, definition: "volume_i / median volume over m bars", inputs: ["volume"], lookback: "m", missingPolicy: "null when volume is missing or the median is 0" },
-  { name: "regime_trend_t", version: V, definition: "filtered drift t-statistic of returns (regime-det-1.0.0)", inputs: ["regime"], lookback: "regime", missingPolicy: "null while the regime is insufficient" },
-  { name: "regime_vol_pct", version: V, definition: "filtered realised-volatility percentile (regime-det-1.0.0)", inputs: ["regime"], lookback: "regime", missingPolicy: "null while the regime is insufficient" },
-  { name: "regime_vr", version: V, definition: "filtered variance ratio (regime-det-1.0.0)", inputs: ["regime"], lookback: "regime", missingPolicy: "null while the regime is insufficient" },
+  { name: "regime_trend_t", version: V, definition: "filtered drift t-statistic of returns (regime-det-1.1.0)", inputs: ["regime"], lookback: "regime", missingPolicy: "null while the regime is insufficient" },
+  { name: "regime_vol_pct", version: V, definition: "filtered realised-volatility percentile (regime-det-1.1.0)", inputs: ["regime"], lookback: "regime", missingPolicy: "null while the regime is insufficient" },
+  { name: "regime_vr", version: V, definition: "filtered variance ratio (regime-det-1.1.0)", inputs: ["regime"], lookback: "regime", missingPolicy: "null while the regime is insufficient" },
   { name: "hour_sin", version: V, definition: "sin(2π·UTC hour of bar close / 24); null for daily bars", inputs: ["t"], lookback: "0", missingPolicy: "null for daily bars" },
   { name: "hour_cos", version: V, definition: "cos(2π·UTC hour of bar close / 24); null for daily bars", inputs: ["t"], lookback: "0", missingPolicy: "null for daily bars" },
 ];

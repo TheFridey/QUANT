@@ -1,6 +1,6 @@
 import { mean } from "../stats.js";
 import { perBarSharpe } from "./metrics.js";
-import type { RegimeState } from "./regime.js";
+import { REGIME_MODEL_VERSION, type RegimeState } from "./regime.js";
 import type { ResearchBar, SimResult } from "./simulate.js";
 import type { StrategySpec } from "./strategies.js";
 
@@ -89,7 +89,7 @@ export function regimeGatedSpec(base: StrategySpec, gate: RegimeGate, statesByTi
   return {
     ...base,
     id: `${base.id}__${gate.name}`,
-    version: `${base.version}+regime-1.0.0`,
+    version: `${base.version}+${REGIME_MODEL_VERSION}`,
     family: "REGIME_CONDITIONED",
     hypothesis: `${base.hypothesis}; gated: ${gate.description}`,
     build: (params) => {

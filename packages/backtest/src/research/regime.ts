@@ -16,7 +16,25 @@ import type { ResearchBar } from "./simulate.js";
  * `confidence` values are heuristic margins to the nearest decision boundary, NOT calibrated probabilities.
  */
 
-export const REGIME_MODEL_VERSION = "regime-det-1.0.0";
+export const REGIME_MODEL_VERSION = "regime-det-1.1.0";
+
+/**
+ * Which bars a market is expected to print. CONTINUOUS (crypto) expects every interval; WEEKDAYS (US equities on
+ * daily bars) expects Monday to Friday only, so weekends are not gaps. Exchange holidays still count as missing,
+ * about 2 per 50 sessions, well inside `minCoverage`. 1.0.0 had no calendar: every daily equity bar was UNKNOWN.
+ */
+export type MarketCalendar = "CONTINUOUS" | "WEEKDAYS";
+
+function expectedBars(fromT: number, toT: number, barMs: number, calendar: MarketCalendar): number {
+  if (calendar === "CONTINUOUS" || barMs < 86_400_000) return Math.max(1, Math.round((toT - fromT) / barMs) + 1);
+  let n = 0;
+  // Daily equity bars open at New York midnight (04:00 or 05:00 UTC), so the UTC weekday is the session's weekday.
+  for (let t = fromT; t <= toT + barMs / 2; t += 86_400_000) {
+    const day = new Date(t).getUTCDay();
+    if (day !== 0 && day !== 6) n += 1;
+  }
+  return Math.max(1, n);
+}
 
 export type TrendState = "STRONG_UP" | "WEAK_UP" | "RANGE" | "WEAK_DOWN" | "STRONG_DOWN" | "UNKNOWN";
 export type VolatilityLevel = "COMPRESSED" | "NORMAL" | "ELEVATED" | "EXTREME" | "UNKNOWN";
@@ -134,7 +152,7 @@ const sign = (s: TrendState) => (s === "STRONG_UP" || s === "WEAK_UP" ? 1 : s ==
  * Filtered regime history for every bar. `benchmark`, when given, must be bars of a broader-market series; a
  * benchmark bar is used only once its close (t + its interval) is at or before the decision bar's close.
  */
-export function classifyRegimes(bars: readonly ResearchBar[], options: { config?: RegimeConfig; barMs?: number; benchmark?: readonly ResearchBar[] } = {}): RegimeState[] {
+export function classifyRegimes(bars: readonly ResearchBar[], options: { config?: RegimeConfig; barMs?: number; benchmark?: readonly ResearchBar[]; calendar?: MarketCalendar; benchmarkCalendar?: MarketCalendar } = {}): RegimeState[] {
   const barMs = options.barMs ?? inferBarMs(bars);
   const cfg = options.config ?? regimeConfigFor(barMs);
   const out: RegimeState[] = [];
@@ -145,7 +163,8 @@ export function classifyRegimes(bars: readonly ResearchBar[], options: { config?
 
   const bench = options.benchmark ?? null;
   const benchMs = bench ? inferBarMs(bench) : 0;
-  const benchStates = bench ? classifyRegimes(bench, { barMs: benchMs }) : null;
+  const benchStates = bench ? classifyRegimes(bench, { barMs: benchMs, calendar: options.benchmarkCalendar }) : null;
+  const calendar = options.calendar ?? "CONTINUOUS";
   let bj = -1;
 
   // Two-sided CUSUM on returns standardised by the trailing (pre-bar) volatility.
@@ -157,8 +176,7 @@ export function classifyRegimes(bars: readonly ResearchBar[], options: { config?
     const bar = bars[i]!;
     const explanation: string[] = [];
     const from = Math.max(0, i + 1 - cfg.trendWindow);
-    const span = bar.t - bars[from]!.t;
-    const expected = Math.max(1, Math.round(span / barMs) + 1);
+    const expected = expectedBars(bars[from]!.t, bar.t, barMs, calendar);
     const coverage = Math.min(1, (i - from + 1) / expected);
     const enough = i + 1 >= cfg.trendWindow && coverage >= cfg.minCoverage;
 

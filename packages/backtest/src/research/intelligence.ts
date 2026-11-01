@@ -1,6 +1,6 @@
 import { netForwardLabels, computeFeatures, horizonsFor } from "./features.js";
 import { evaluateModels, type MlReport } from "./ml.js";
-import { classifyRegimes, trendTransitions, type RegimeState } from "./regime.js";
+import { classifyRegimes, trendTransitions, type MarketCalendar, type RegimeState } from "./regime.js";
 import { performanceByRegime, REGIME_GATES, REGIME_HYPOTHESES, regimeGatedSpec, trendKey, volatilityKey, type RegimeBucket } from "./regime-analysis.js";
 import { simulate, type ResearchBar } from "./simulate.js";
 import { STRATEGY_LIBRARY } from "./strategies.js";
@@ -70,9 +70,10 @@ export function runIntelligenceStudy(input: {
   /** Omitted means no holdout may be read: a caller that cannot record the access must not consume it. */
   holdoutAvailable?: (strategyId: string) => boolean;
   benchmark?: readonly ResearchBar[];
+  calendar?: MarketCalendar;
 }): IntelligenceStudy {
   const { bars, barMs } = input;
-  const states = classifyRegimes(bars, { barMs, benchmark: input.benchmark });
+  const states = classifyRegimes(bars, { barMs, benchmark: input.benchmark, calendar: input.calendar });
   const byT = new Map(states.map((s) => [s.t, s]));
   const find = (id: string) => STRATEGY_LIBRARY.find((s) => s.id === id)!;
   const controls = { buyAndHold: find("control_buy_and_hold"), random: find("control_random"), cash: find("control_cash") };
