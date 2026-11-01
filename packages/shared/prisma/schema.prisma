@@ -1158,3 +1158,58 @@ model HistoricalBackfillJob {
 
   @@index([status])
 }
+
+/// ASCEND-03: one validation run of one strategy version on one historical dataset. Append-only.
+model ResearchRun {
+  id              String   @id @default(cuid())
+  datasetId       String
+  datasetVersion  String
+  codeVersion     String
+  strategyId      String
+  strategyVersion String
+  family          String
+  config          Json
+  verdict         String
+  reasons         String[]
+  evidence        String
+  summary         Json
+  createdAt       DateTime @default(now())
+
+  trials ResearchTrial[]
+
+  @@index([strategyId, createdAt])
+  @@index([datasetId, createdAt])
+  @@index([verdict])
+}
+
+/// Every configuration tried, failures included (the denominator for DSR and PBO). Append-only.
+model ResearchTrial {
+  id           String   @id @default(cuid())
+  runId        String
+  window       String
+  fold         Int?
+  params       Json
+  startT       DateTime
+  endT         DateTime
+  bars         Int
+  trades       Int
+  netReturn    Float
+  sharpe       Float?
+  perBarSharpe Float?
+
+  run ResearchRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@index([runId])
+}
+
+/// A strategy version may evaluate a dataset's final holdout once. The unique key enforces it.
+model ResearchHoldoutAccess {
+  id              String   @id @default(cuid())
+  strategyId      String
+  strategyVersion String
+  datasetId       String
+  runId           String
+  consumedAt      DateTime @default(now())
+
+  @@unique([strategyId, strategyVersion, datasetId])
+}

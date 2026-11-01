@@ -7,3 +7,7 @@ export * from "./report.js";
 export * from "./stats.js";
 export * from "./execution-intelligence.js";
 export * from "./exit-research.js";
+export * from "./research/simulate.js";
+export * from "./research/metrics.js";
+export * from "./research/strategies.js";
+export * from "./research/validate.js";
