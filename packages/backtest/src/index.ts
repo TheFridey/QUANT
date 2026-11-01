@@ -4,3 +4,6 @@ export * from "./engine.js";
 export * from "./validation.js";
 export * from "./baselines.js";
 export * from "./report.js";
+export * from "./stats.js";
+export * from "./execution-intelligence.js";
+export * from "./exit-research.js";

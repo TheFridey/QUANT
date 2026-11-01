@@ -50,6 +50,12 @@ export class TerminalController {
     return this.terminal.tradeAutopsy(limit);
   }
 
+  /** ASCEND-06: predicted vs observed execution cost over recent closed round trips (advisory). */
+  @Get("terminal/execution-costs")
+  executionCosts(@Query("limit") limit = "100") {
+    return this.terminal.executionCostReport(limit);
+  }
+
   /** Paginated order/trade ledger beyond the snapshot's recent-40 window (D22). */
   @Get("terminal/history")
   history(
