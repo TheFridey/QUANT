@@ -42,3 +42,25 @@ ML: `NO_SKILL`. Brier base 0.2579, logistic 0.2788, boosted 0.2798 (skill −0.0
 ## Conclusion
 
 **NO TRADE — NO VALIDATED POSITIVE NET EDGE** on all three datasets. Nothing is eligible for shadow evaluation. No active paper strategy, engine setting or risk limit changed.
+
+## SPY re-run with `regime-det-1.1.0` (operator-approved, ~20:57 UTC)
+
+- Merged PR #42 after green CI, and deployed `0e970a9` → `d2d1526`. The diff had no lockfile, schema or protected-path change. Packages and worker were rebuilt; there was no migration and no restart.
+- Backup `/srv/quant/backups/quant-20261101T205615Z.dump` (154 MB, 57 table-data entries). Rollback: `0e970a9`, build snapshot `/srv/quant/releases/0e970a9-20261101T205631Z`.
+- Health before and after the run: API ok, public 401 (Basic Auth), `PAPER` / live money off, 364 market observations in 5 min, other sites 200.
+- The run (`GIT_COMMIT=d2d1526`, `nice 15`) took 1.95 s with 145 MB peak RSS. Registry 168 → 174 runs, 2,239 → 2,454 trials, holdouts still 0. Engine config revision and EngineControl hash unchanged.
+
+Trend is now known on 96.7% of SPY bars: RANGE 82.4%, WEAK_UP 13.8%, WEAK_DOWN 0.4%, UNKNOWN 3.3%. Under 1.0.0 it was 0%.
+
+| Gated hypothesis | OOS trades | Net | 2× cost | Ungated (trades, net) | Verdict |
+| --- | ---: | ---: | ---: | --- | --- |
+| TSMOM, trend only | 9 | +1.95% | +1.58% | 10, +11.58% | `INSUFFICIENT_EVIDENCE` |
+| MA trend, trend only | 8 | +2.07% | +1.75% | 7, +15.22% | `INSUFFICIENT_EVIDENCE` |
+| Z-score, range only | 6 | −0.78% | −1.01% | 3, +1.60% | `INSUFFICIENT_EVIDENCE` |
+| Bollinger, range only | 4 | +0.21% | +0.05% | 6, +15.85% | `INSUFFICIENT_EVIDENCE` |
+| TSMOM, not unstable | 10 | +11.58% | +11.13% | 10, +11.58% | `INSUFFICIENT_EVIDENCE` |
+
+All SPY gated runs are short of 30 OOS trades. The gates cut drawdown (4.9% against 14.7% for TSMOM) but gave up most of the return; at 4–10 trades none of this is evidence. "Not unstable" never fired differently from ungated TSMOM. ML: `INSUFFICIENT_EVIDENCE` (≈41 independent 20-day labels). Conclusion unchanged: **NO TRADE — NO VALIDATED POSITIVE NET EDGE**.
+
+The 1.0.0 SPY rows (code `0e970a9`) remain in the registry and are superseded by these; they are invalid as regime tests, as noted above.
+
