@@ -34,7 +34,11 @@ The account reached about $9,679.11 (−3.21% of $10,000) against `maxDailyLossP
 
 **Evidence:**
 - `VERIFIED_UNIT`: `pnpm vitest run packages/agent-core/src/daily-loss-lockout.test.ts` passes 14 tests. They run the real planner and risk engine on the incident's numbers.
-- `VERIFIED_INTEGRATION` (locally, Postgres 16): `apps/worker/src/daily-loss-latch.integration.test.ts` runs full `StageRunner` cycles. It covers the latch holding across fresh runners (a worker restart), a no-breach control, and the London roll lifting the latch. CI has not run it yet.
+- `VERIFIED_INTEGRATION` (locally, Postgres 16): `apps/worker/src/daily-loss-latch.integration.test.ts` runs full `StageRunner` cycles. It covers the latch holding across fresh runners (a worker restart), a no-breach control, and the London roll lifting the latch. CI passed on PR #21 (`test`, `browser-e2e`, `build-packages`).
+
+**Deployment (1 Nov 2026):**
+- Merged as `982c045` and deployed at 13:11 UTC, after a verified database backup (`/srv/quant/backups/quant-20261101T131037Z.dump`) and a build snapshot of `a5a4674` in `/srv/quant/releases/`.
+- After the deploy, the migration was applied, all services were active, health was `ok`, cycles completed with no failures, and `sessionLowEquityUsd` was populated ($9,581.94 against the $9,679.11 day start, so the latch was inactive).
 
 ### Findings
 
