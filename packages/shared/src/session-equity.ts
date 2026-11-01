@@ -4,6 +4,8 @@ import { d, usd } from "./money.js";
  * Roll session-start equity at Europe/London midnight when the London calendar day changes.
  * The daily loss limit is a percentage of this start-of-day equity (audit L3).
  * HWM is ratcheted up only — never lowered on session roll.
+ * Session-low equity ratchets down only within a London day and resets on the roll, so the
+ * worst daily P&L latches the daily loss limit for the rest of the day (ASCEND-00 F1).
  */
 export function rollSessionEquity(input: {
   now: Date;
@@ -11,14 +13,25 @@ export function rollSessionEquity(input: {
   sessionStartEquityUsd: string | null;
   currentEquityUsd: string | null;
   highWaterMarkUsd: string | null;
+  /** Lowest known equity this London day; null before the first known valuation. */
+  sessionLowEquityUsd?: string | null;
+  /**
+   * False when current equity rests on marks that are not LIVE (stale, delayed, demo, replay). The
+   * session low then does not ratchet from it, matching the LIVE/CASH_ONLY rule for daily P&L.
+   */
+  equityTrusted?: boolean;
   startingBalanceUsd: string;
 }): {
   sessionStartedAt: Date;
   sessionStartEquityUsd: string;
   highWaterMarkUsd: string;
+  /** Lowest known equity this London day; null when no equity has been known this day. */
+  sessionLowEquityUsd: string | null;
   rolled: boolean;
   /** Daily PnL vs session-start equity; null when equity incomplete. */
   dailyPnlUsd: string | null;
+  /** Worst daily PnL seen this London day (session low − session start); null when never known. */
+  worstDailyPnlUsd: string | null;
 } {
   const equity = input.currentEquityUsd ?? input.startingBalanceUsd;
   const hwmBase = input.highWaterMarkUsd ?? equity;
@@ -30,8 +43,10 @@ export function rollSessionEquity(input: {
       sessionStartedAt: start,
       sessionStartEquityUsd: usd(d(equity)),
       highWaterMarkUsd: hwm,
+      sessionLowEquityUsd: input.currentEquityUsd == null || input.equityTrusted === false ? null : usd(d(input.currentEquityUsd)),
       rolled: true,
       dailyPnlUsd: input.currentEquityUsd == null ? null : "0.00000000",
+      worstDailyPnlUsd: input.currentEquityUsd == null ? null : "0.00000000",
     };
   }
 
@@ -40,12 +55,16 @@ export function rollSessionEquity(input: {
   if (today > sessionDay && input.currentEquityUsd == null) {
     // Never base a new day on startingBalanceUsd because marks are missing at the boundary (review F6).
     // Keep the old session, report daily P&L unavailable (entries blocked), and roll once equity is known.
+    // The old day's low still applies until the roll happens.
+    const low = input.sessionLowEquityUsd ?? null;
     return {
       sessionStartedAt: input.sessionStartedAt,
       sessionStartEquityUsd: input.sessionStartEquityUsd,
       highWaterMarkUsd: hwm,
+      sessionLowEquityUsd: low,
       rolled: false,
       dailyPnlUsd: null,
+      worstDailyPnlUsd: low == null ? null : usd(d(low).minus(d(input.sessionStartEquityUsd))),
     };
   }
   if (today > sessionDay) {
@@ -53,8 +72,10 @@ export function rollSessionEquity(input: {
       sessionStartedAt: startOfLondonDay(input.now),
       sessionStartEquityUsd: usd(d(equity)),
       highWaterMarkUsd: hwm,
+      sessionLowEquityUsd: input.equityTrusted === false ? null : usd(d(equity)),
       rolled: true,
-      dailyPnlUsd: input.currentEquityUsd == null ? null : "0.00000000",
+      dailyPnlUsd: "0.00000000",
+      worstDailyPnlUsd: input.equityTrusted === false ? null : "0.00000000",
     };
   }
 
@@ -62,14 +83,23 @@ export function rollSessionEquity(input: {
     input.currentEquityUsd == null
       ? null
       : usd(d(input.currentEquityUsd).minus(d(input.sessionStartEquityUsd)));
+  const low = lowerOf(input.sessionLowEquityUsd ?? null, input.equityTrusted === false ? null : input.currentEquityUsd);
 
   return {
     sessionStartedAt: input.sessionStartedAt,
     sessionStartEquityUsd: input.sessionStartEquityUsd,
     highWaterMarkUsd: hwm,
+    sessionLowEquityUsd: low,
     rolled: false,
     dailyPnlUsd,
+    worstDailyPnlUsd: low == null ? null : usd(d(low).minus(d(input.sessionStartEquityUsd))),
   };
+}
+
+function lowerOf(left: string | null, right: string | null): string | null {
+  if (left == null) return right == null ? null : usd(d(right));
+  if (right == null) return left;
+  return usd(d(left).lte(right) ? d(left) : d(right));
 }
 
 /** Same-day HWM ratchet without rolling the session window. */

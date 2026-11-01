@@ -45,6 +45,7 @@ import {
   operatorOrderSchema,
   productSemanticsFor,
   resolveExecutionContext,
+  startOfLondonDay,
   stageJobId,
   parseStrategyConfig,
   isOperationalStrategyKey,
@@ -390,6 +391,14 @@ export class TerminalService {
         : report.valuation.realizedPnlUsd,
       startingBalanceUsd: account.startingBalanceUsd.toString(),
       dayStartEquityUsd: account.sessionStartEquityUsd?.toString() ?? null,
+      // ASCEND-00 F1: show the same-day latch the worker applies (only while the stored session is today).
+      worstDailyPnlUsd:
+        account.sessionLowEquityUsd &&
+        account.sessionStartEquityUsd &&
+        account.sessionStartedAt &&
+        startOfLondonDay(account.sessionStartedAt).getTime() === startOfLondonDay(new Date()).getTime()
+          ? usd(d(account.sessionLowEquityUsd.toString()).minus(d(account.sessionStartEquityUsd.toString())))
+          : null,
       maxDailyLossPct: config?.maxDailyLossPct ?? "3",
       equityUsd: report.valuation.equityUsd,
       highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,
