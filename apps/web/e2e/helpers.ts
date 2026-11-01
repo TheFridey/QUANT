@@ -142,6 +142,43 @@ export async function setAutomaticEntries(page: Page, enabled: boolean, only?: r
   return changed;
 }
 
+/**
+ * Flatten the paper book, including entries the engine placed before the test paused it or tuned its config.
+ * Paper fills settle one cycle after the order is placed, so an engine entry can still be PENDING when the test
+ * takes over. If it is left pending, its fill settles at the start of the test's own order cycle, and its stop
+ * risk can use up the daily-loss headroom. The executor's re-check then caps the test's buy at zero and drops it.
+ * So wait for pending orders to settle before flattening, and stop only when the book is flat with nothing pending.
+ */
+export async function flattenPaperBook(page: Page): Promise<void> {
+  for (let i = 0; i < 5; i += 1) {
+    const current = await snapshot(page);
+    if (current.orders.some((order) => order.status === "PENDING")) {
+      await expect
+        .poll(async () => (await snapshot(page)).orders.filter((order) => order.status === "PENDING").length, {
+          timeout: 90_000,
+        })
+        .toBe(0);
+      continue;
+    }
+    const open = current.portfolio.positions.filter((row) => Number(row.baseQty) > 0);
+    if (open.length === 0) return;
+    for (const position of open) {
+      const intent = `intent_sell_cleanup_${Date.now()}_${i}`;
+      const receipt = await apiFromPage<{ cycleId: string; clientIntentId: string }>(page, "/orders", {
+        method: "POST",
+        body: { side: "SELL", pairAddress: position.pairAddress, clientIntentId: intent },
+      });
+      await waitForOrderTerminal(page, receipt.cycleId, intent);
+    }
+  }
+  const final = await snapshot(page);
+  const open = final.portfolio.positions.filter((row) => Number(row.baseQty) > 0).map((row) => row.baseSymbol);
+  const pending = final.orders.filter((order) => order.status === "PENDING").map((order) => `${order.side}:${order.baseSymbol}`);
+  if (open.length > 0 || pending.length > 0) {
+    throw new Error(`Paper book not flat before manual order: open=${open.join(",") || "none"} pending=${pending.join(",") || "none"}`);
+  }
+}
+
 export function pickLivePair(snap: Snapshot): Snapshot["market"]["pairs"][number] {
   // A pair the account already holds would be (correctly) refused for a second entry.
   const held = new Set(snap.portfolio.positions.filter((row) => Number(row.baseQty) > 0).map((row) => row.pairAddress));
