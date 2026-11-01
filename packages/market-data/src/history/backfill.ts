@@ -110,7 +110,7 @@ export async function runBackfill(input: { job: BackfillJobState; source: Histor
       rowCount: page.bars.length,
       payload: serialised.length <= maxRaw ? page.payload : null,
     });
-    const normalised = normaliseBars(page.bars, { intervalMs, collectedAt: fetchedAt });
+    const normalised = normaliseBars(page.bars, { intervalMs, collectedAt: fetchedAt, alignment: source.barAlignment?.(job.interval) ?? "UTC_GRID" });
     const result = await store.upsertBars(
       job.datasetId,
       normalised.bars.map((bar) => ({ ...bar, hash: barHash(bar), collectedAt: fetchedAt })),

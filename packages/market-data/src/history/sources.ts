@@ -1,5 +1,5 @@
 import { assertAllowlistedHttpsUrl, ALPACA_DATA_HOSTS_STRICT, type AllowedHost } from "../practice-url.js";
-import type { RawBar } from "./integrity.js";
+import type { BarAlignment, RawBar } from "./integrity.js";
 
 /**
  * ASCEND-01 historical bar sources. Read-only GETs against documented public endpoints; no order flow.
@@ -29,6 +29,8 @@ export interface HistoricalBarSource {
   readonly licence: SourceLicence;
   /** Conservative request budget the backfill runner must respect. */
   readonly maxRequestsPerMinute: number;
+  /** How this source stamps bar opens for an interval. Defaults to UTC_GRID. */
+  barAlignment?(interval: HistoryInterval): BarAlignment;
   /**
    * One page of bars for `instrumentKey` in [startMs, endMs). `cursor` is opaque and comes from the
    * previous page; null starts a fresh window.
@@ -142,6 +144,10 @@ export class AlpacaBarsSource implements HistoricalBarSource {
   ) {
     // The free plan allows 200/min; research takes a small share so live quotes keep priority.
     this.maxRequestsPerMinute = options.maxRequestsPerMinute ?? 30;
+  }
+
+  barAlignment(interval: HistoryInterval): BarAlignment {
+    return interval === "1d" ? "NEW_YORK_DAY" : "UTC_GRID";
   }
 
   async fetchPage(input: { instrumentKey: string; interval: HistoryInterval; startMs: number; endMs: number; cursor: string | null }): Promise<SourcePage> {
