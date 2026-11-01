@@ -44,6 +44,12 @@ export class TerminalController {
     return this.terminal.equityHistory(range);
   }
 
+  /** ASCEND-00: evidence-backed autopsy of the most recent closed round trips (newest first). */
+  @Get("terminal/autopsy")
+  autopsy(@Query("limit") limit = "25") {
+    return this.terminal.tradeAutopsy(limit);
+  }
+
   /** Paginated order/trade ledger beyond the snapshot's recent-40 window (D22). */
   @Get("terminal/history")
   history(
