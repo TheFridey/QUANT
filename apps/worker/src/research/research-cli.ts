@@ -3,6 +3,7 @@ import { DEFAULT_VALIDATION, predictRoundTripCost, STRATEGY_LIBRARY, validateStr
 import { fetchGeckoTerminalPoolReserve } from "@odin/market-data";
 import { DEFAULT_STRATEGY } from "@odin/shared";
 import { Prisma, PrismaClient } from "@odin/shared/db";
+import { holdoutAvailable, programmeTrialCount } from "./holdout-policy.js";
 
 /**
  * ASCEND-02/03 research run, outside the trading loop:
@@ -11,7 +12,8 @@ import { Prisma, PrismaClient } from "@odin/shared/db";
  *
  * Reads closed bars from the warehouse, prices costs with the ASCEND-06 model (conservative case), validates
  * every library strategy, and writes each run and every trial to the append-only registry. A strategy
- * version evaluates a dataset's holdout at most once (unique key). Research verdicts never change engine
+ * evaluates a holdout at most once per instrument and interval, across versions (`holdout-policy.ts`; the
+ * unique key backs the exact case), and DSR is deflated by every trial in the programme. Research verdicts never change engine
  * config, strategy instances or promotion state.
  */
 
@@ -66,6 +68,8 @@ function summary(r: ValidationReport, costBasis: string) {
     oosControls: r.oosControls,
     psr: r.psr,
     dsr: r.dsr,
+    dsrProgramme: r.dsrProgramme,
+    costSensitivity: r.costSensitivity,
     pbo: r.pbo,
     holdout: r.holdout && { params: r.holdout.params, totalReturn: r.holdout.stats.totalReturn, sharpe: r.holdout.stats.sharpe, trades: r.holdout.stats.trades },
   };
@@ -97,10 +101,11 @@ async function main() {
     const controls = { buyAndHold: find("control_buy_and_hold"), random: find("control_random"), cash: find("control_cash") };
     const out: Array<Record<string, unknown>> = [];
     for (const spec of STRATEGY_LIBRARY) {
-      const consumed = await prisma.researchHoldoutAccess.findUnique({
-        where: { strategyId_strategyVersion_datasetId: { strategyId: spec.id, strategyVersion: spec.version, datasetId } },
-      });
-      const report = validateStrategy({ spec, bars, config, codeVersion, controls, holdoutAvailable: consumed === null });
+      const available = await holdoutAvailable(prisma, { strategyId: spec.id, instrumentKey: dataset.instrumentKey, interval: dataset.interval });
+      const priorTrials = await programmeTrialCount(prisma);
+      // No cost basis here is point-in-time (present-day liquidity, or a static ETF spread), so every
+      // candidate must survive double cost.
+      const report = validateStrategy({ spec, bars, config, codeVersion, controls, holdoutAvailable: available, programmeTrialCount: priorTrials, costIsProxy: true });
       await prisma.$transaction(async (tx) => {
         const run = await tx.researchRun.create({
           data: {
@@ -148,6 +153,8 @@ async function main() {
         oosSharpe: report.oos?.sharpe === null || !report.oos ? null : +report.oos.sharpe.toFixed(2),
         bhSharpeAnn: report.oosControls.buyAndHoldSharpe === null ? null : +(report.oosControls.buyAndHoldSharpe * Math.sqrt(config.periodsPerYear)).toFixed(2),
         dsr: report.dsr?.dsr === null || !report.dsr ? null : +report.dsr.dsr.toFixed(3),
+        dsrProgramme: report.dsrProgramme?.dsr === null || !report.dsrProgramme ? null : +report.dsrProgramme.dsr.toFixed(3),
+        net2xCostPct: +((report.costSensitivity[0]?.netReturn ?? 0) * 100).toFixed(2),
         pbo: report.pbo?.pbo === null || !report.pbo ? null : +report.pbo.pbo.toFixed(2),
         trials: report.trialCount,
         gridScale: report.gridScale ? +report.gridScale.factor.toFixed(3) : null,

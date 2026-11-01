@@ -75,6 +75,10 @@ export type ValidationReport = {
   oosControls: { buyAndHoldSharpe: number | null; randomSharpe: number | null; cashSharpe: number | null };
   psr: number | null;
   dsr: { dsr: number | null; benchmark: number; trials: number } | null;
+  /** DSR deflated by every trial in the research programme (null when no programme count was given). The verdict uses this when present. */
+  dsrProgramme: { dsr: number | null; benchmark: number; trials: number } | null;
+  /** OOS net return of the selected configurations with every cost multiplied (liquidity-deterioration scenarios). */
+  costSensitivity: Array<{ multiplier: number; netReturn: number }>;
   pbo: { pbo: number | null; splits: number } | null;
   holdout: { params: Record<string, ParamValue>; stats: PerformanceStats } | null;
   evidence: "VERIFIED_HISTORICAL" | "VERIFIED_OUT_OF_SAMPLE" | "INSUFFICIENT_EVIDENCE" | "RESEARCH_ONLY";
@@ -169,8 +173,19 @@ export function validateStrategy(input: {
   config: ValidationConfig;
   codeVersion: string;
   controls: { buyAndHold: StrategySpec; random: StrategySpec; cash: StrategySpec };
-  /** False when this strategy version already consumed this dataset's holdout (see the trial registry). */
+  /**
+   * False when this strategy (any version) already consumed a holdout on this instrument and interval (see the
+   * trial registry). Keyed wider than the unique key so a version bump or a re-imported dataset cannot buy a
+   * fresh look at the same bars.
+   */
   holdoutAvailable?: boolean;
+  /** Trials already recorded across the whole research programme; deflates DSR for programme-wide selection. */
+  programmeTrialCount?: number;
+  /**
+   * True when the cost basis is a proxy rather than point-in-time (e.g. present-day pool liquidity standing in
+   * for history). A candidate must then stay net-positive at twice the modelled cost.
+   */
+  costIsProxy?: boolean;
 }): ValidationReport {
   const { spec, bars, config: cfg } = input;
   const base = {
@@ -181,7 +196,7 @@ export function validateStrategy(input: {
     codeVersion: input.codeVersion,
     config: cfg,
   };
-  const empty = { trials: [], trialCount: 0, selectedParamsByFold: [], gridScale: null, oos: null, oosGross: null, oosControls: { buyAndHoldSharpe: null, randomSharpe: null, cashSharpe: null }, psr: null, dsr: null, pbo: null, holdout: null };
+  const empty = { trials: [], trialCount: 0, selectedParamsByFold: [], gridScale: null, oos: null, oosGross: null, oosControls: { buyAndHoldSharpe: null, randomSharpe: null, cashSharpe: null }, psr: null, dsr: null, dsrProgramme: null, costSensitivity: [], pbo: null, holdout: null };
   if (!spec.supported || !spec.build) {
     return { ...base, ...empty, verdict: "RESEARCH_ONLY", reasons: [spec.unsupportedReason ?? "unsupported"], evidence: "RESEARCH_ONLY" };
   }
@@ -211,6 +226,7 @@ export function validateStrategy(input: {
   const selected: Array<Record<string, ParamValue>> = [];
   const oosParts: SimResult[] = [];
   const oosGrossParts: SimResult[] = [];
+  const tested: Array<{ params: Record<string, ParamValue>; start: number; end: number }> = [];
   for (const f of folds) {
     let best: { params: Record<string, ParamValue>; score: number } | null = null;
     for (const params of grid) {
@@ -221,6 +237,7 @@ export function validateStrategy(input: {
       if (!best || score > best.score) best = { params, score };
     }
     selected.push(best!.params);
+    tested.push({ params: best!.params, start: f.testStart, end: f.testEnd });
     const test = run(spec, best!.params, bars, f.testStart, f.testEnd, cfg);
     trials.push(trial(spec, best!.params, "TEST", f.fold, test, cfg));
     oosParts.push(test);
@@ -255,6 +272,15 @@ export function validateStrategy(input: {
   const psr = sr !== null && oos.perBar.skew !== null && oos.perBar.kurtosis !== null ? probabilisticSharpe({ sharpe: sr, benchmark: 0, n: oos.bars, skew: oos.perBar.skew, kurtosis: oos.perBar.kurtosis }) : null;
   const trainSharpes = trials.filter((t) => t.window === "TRAIN" && t.perBarSharpe !== null).map((t) => t.perBarSharpe!);
   const dsr = sr !== null && oos.perBar.skew !== null && oos.perBar.kurtosis !== null ? deflatedSharpe({ sharpe: sr, n: oos.bars, skew: oos.perBar.skew, kurtosis: oos.perBar.kurtosis, trialSharpes: [...trainSharpes, ...allSharpes] }) : null;
+  const dsrProgramme =
+    input.programmeTrialCount !== undefined && sr !== null && oos.perBar.skew !== null && oos.perBar.kurtosis !== null
+      ? deflatedSharpe({ sharpe: sr, n: oos.bars, skew: oos.perBar.skew, kurtosis: oos.perBar.kurtosis, trialSharpes: [...trainSharpes, ...allSharpes], trialCount: input.programmeTrialCount + trials.length })
+      : null;
+  const effectiveDsr = dsrProgramme ?? dsr;
+  const costSensitivity = [2, 3].map((multiplier) => {
+    const parts = tested.map((t) => run(spec, t.params, bars, t.start, t.end, cfg, cfg.costBpsPerSide * multiplier));
+    return { multiplier, netReturn: performanceStats(concat(parts), cfg.periodsPerYear).totalReturn };
+  });
   const pbo = grid.length >= 2 ? probabilityOfBacktestOverfitting(matrix) : { pbo: null, splits: 0 };
 
   const reasons: string[] = [];
@@ -278,14 +304,20 @@ export function validateStrategy(input: {
   } else if (oos.totalReturn <= 0 || (sr ?? 0) <= 0) {
     verdict = "INSUFFICIENT_EVIDENCE";
     reasons.push("OOS net return not positive");
-  } else if (dsr?.dsr === null || dsr === null || dsr.dsr < 0.95) {
+  } else if (effectiveDsr?.dsr === null || effectiveDsr === null || effectiveDsr.dsr < 0.95) {
     verdict = isControl ? "INSUFFICIENT_EVIDENCE" : "REJECTED_OVERFIT";
-    reasons.push(`DSR ${dsr?.dsr?.toFixed(3) ?? "n/a"} < 0.95 after ${dsr?.trials ?? 0} trials`);
+    reasons.push(`DSR ${effectiveDsr?.dsr?.toFixed(3) ?? "n/a"} < 0.95 after ${effectiveDsr?.trials ?? 0} trials${dsrProgramme ? " (programme-wide)" : ""}`);
   } else if (!isControl && ((oosControls.buyAndHoldSharpe ?? Number.NEGATIVE_INFINITY) >= sr! || (oosControls.randomSharpe ?? Number.NEGATIVE_INFINITY) >= sr!)) {
     verdict = "INSUFFICIENT_EVIDENCE";
     reasons.push("Does not beat buy-and-hold and the random control out of sample");
   } else {
     verdict = "VALIDATED_CANDIDATE";
+  }
+  const doubled = costSensitivity.find((c) => c.multiplier === 2)!;
+  if (verdict === "VALIDATED_CANDIDATE" && input.costIsProxy && doubled.netReturn <= 0) {
+    // A proxy cost basis cannot carry a candidate whose edge vanishes if the true cost was twice the estimate.
+    verdict = "INSUFFICIENT_EVIDENCE";
+    reasons.push(`Cost basis is a proxy and OOS net at 2× cost is ${(doubled.netReturn * 100).toFixed(2)}%`);
   }
 
   // The final holdout is touched exactly once, with the last fold's selection, and only for a candidate
@@ -294,7 +326,7 @@ export function validateStrategy(input: {
   if (verdict === "VALIDATED_CANDIDATE" && input.holdoutAvailable === false) {
     // Re-evaluating a consumed holdout would turn it into another validation set.
     verdict = "INSUFFICIENT_EVIDENCE";
-    reasons.push("Holdout already consumed by this strategy version on this dataset; bump the version or wait for new data");
+    reasons.push("Holdout already consumed by this strategy on this instrument and interval; only genuinely new bars can confirm it");
   } else if (verdict === "VALIDATED_CANDIDATE") {
     const params = selected.at(-1)!;
     const sim = run(spec, params, bars, holdoutStart, bars.length, cfg);
@@ -320,6 +352,8 @@ export function validateStrategy(input: {
     oosControls,
     psr,
     dsr,
+    dsrProgramme,
+    costSensitivity,
     pbo,
     holdout,
     evidence: verdict === "VALIDATED_CANDIDATE" ? "VERIFIED_OUT_OF_SAMPLE" : oos.sufficient.bars ? "VERIFIED_HISTORICAL" : "INSUFFICIENT_EVIDENCE",
