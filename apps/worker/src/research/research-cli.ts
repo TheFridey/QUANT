@@ -1,9 +1,9 @@
 import "../load-env.js";
-import { DEFAULT_VALIDATION, predictRoundTripCost, STRATEGY_LIBRARY, validateStrategy, type ResearchBar, type ValidationReport } from "@odin/backtest";
-import { fetchGeckoTerminalPoolReserve } from "@odin/market-data";
-import { DEFAULT_STRATEGY } from "@odin/shared";
-import { Prisma, PrismaClient } from "@odin/shared/db";
+import { DEFAULT_VALIDATION, STRATEGY_LIBRARY, validateStrategy, type ResearchBar } from "@odin/backtest";
+import { PrismaClient } from "@odin/shared/db";
+import { costPerSide, PERIODS } from "./cost-basis.js";
 import { holdoutAvailable, programmeTrialCount } from "./holdout-policy.js";
+import { recordValidation } from "./registry-writer.js";
 
 /**
  * ASCEND-02/03 research run, outside the trading loop:
@@ -16,64 +16,6 @@ import { holdoutAvailable, programmeTrialCount } from "./holdout-policy.js";
  * unique key backs the exact case), and DSR is deflated by every trial in the programme. Research verdicts never change engine
  * config, strategy instances or promotion state.
  */
-
-const PERIODS: Record<string, { crypto: number; equity: number }> = {
-  "5m": { crypto: 12 * 24 * 365, equity: 78 * 252 },
-  "1h": { crypto: 24 * 365, equity: 7 * 252 },
-  "1d": { crypto: 365, equity: 252 },
-};
-
-async function costPerSide(prisma: PrismaClient, dataset: { instrumentKind: string; instrumentKey: string; sourceId: string }): Promise<{ bps: number; basis: string }> {
-  const feeBps = Number(DEFAULT_STRATEGY.feeBps);
-  const spreadBpsEstimate = Number(DEFAULT_STRATEGY.spreadBpsEstimate);
-  if (dataset.instrumentKind === "EQUITY_ETF") {
-    const p = predictRoundTripCost({ instrumentId: `etf:${dataset.instrumentKey}`, notionalUsd: 500, liquidityUsd: null, feeBps, spreadBpsEstimate, stepVolatilityBps: null, latencySteps: 0 });
-    return { bps: p.conservativeBps / 2, basis: `ETF quoted spread + fee (conservative ${p.conservativeBps.toFixed(1)} bps round trip)` };
-  }
-  const obs = await prisma.marketObservation.findFirst({
-    where: { pairAddress: dataset.instrumentKey, liquidityUsd: { not: null } },
-    orderBy: { receivedAt: "desc" },
-    select: { liquidityUsd: true, receivedAt: true },
-  });
-  let liquidity: number;
-  let source: string;
-  if (obs?.liquidityUsd) {
-    liquidity = Number(obs.liquidityUsd);
-    source = `latest QUANT observation ${obs.receivedAt.toISOString()}`;
-  } else if (dataset.sourceId === "geckoterminal") {
-    // QUANT never observed this pool: use the pool's own current reserves, labelled, never a guess.
-    const reserve = await fetchGeckoTerminalPoolReserve(dataset.instrumentKey);
-    if (!reserve.ok) throw new Error(`no observed liquidity for ${dataset.instrumentKey} and GeckoTerminal reserve unavailable (${reserve.error}); refusing to assume a cost`);
-    liquidity = reserve.data.reserveUsd;
-    source = `GeckoTerminal reserve_in_usd at ${new Date(reserve.data.fetchedAt).toISOString()}`;
-  } else {
-    throw new Error(`no observed liquidity for ${dataset.instrumentKey}; refusing to assume a cost`);
-  }
-  const p = predictRoundTripCost({ instrumentId: dataset.instrumentKey, notionalUsd: 500, liquidityUsd: liquidity, feeBps, spreadBpsEstimate, stepVolatilityBps: null, latencySteps: 0 });
-  // Liquidity history is not stored, so the latest observation stands in for the whole window: labelled.
-  return { bps: p.conservativeBps / 2, basis: `DEX $500 at liquidity $${Math.round(liquidity)} (${source}), conservative ${p.conservativeBps.toFixed(1)} bps round trip; present-day liquidity stands in for the whole window (no liquidity history)` };
-}
-
-function summary(r: ValidationReport, costBasis: string) {
-  return {
-    costBasis,
-    trialCount: r.trialCount,
-    selectedParamsByFold: r.selectedParamsByFold,
-    gridScale: r.gridScale,
-    oos: r.oos && {
-      bars: r.oos.bars, trades: r.oos.trades, totalReturn: r.oos.totalReturn, sharpe: r.oos.sharpe, sortino: r.oos.sortino, maxDrawdown: r.oos.maxDrawdown,
-      winRate: r.oos.winRate, profitFactor: r.oos.profitFactor, expectancy: r.oos.expectancy, exposure: r.oos.exposure, turnover: r.oos.turnover,
-    },
-    oosGross: r.oosGross,
-    oosControls: r.oosControls,
-    psr: r.psr,
-    dsr: r.dsr,
-    dsrProgramme: r.dsrProgramme,
-    costSensitivity: r.costSensitivity,
-    pbo: r.pbo,
-    holdout: r.holdout && { params: r.holdout.params, totalReturn: r.holdout.stats.totalReturn, sharpe: r.holdout.stats.sharpe, trades: r.holdout.stats.trades },
-  };
-}
 
 async function main() {
   const [datasetId, codeVersion = process.env.GIT_COMMIT ?? "unknown"] = process.argv.slice(2);
@@ -106,44 +48,7 @@ async function main() {
       // No cost basis here is point-in-time (present-day liquidity, or a static ETF spread), so every
       // candidate must survive double cost.
       const report = validateStrategy({ spec, bars, config, codeVersion, controls, holdoutAvailable: available, programmeTrialCount: priorTrials, costIsProxy: true });
-      await prisma.$transaction(async (tx) => {
-        const run = await tx.researchRun.create({
-          data: {
-            datasetId,
-            datasetVersion: report.datasetVersion,
-            codeVersion,
-            strategyId: spec.id,
-            strategyVersion: spec.version,
-            family: spec.family,
-            config: config as unknown as Prisma.InputJsonValue,
-            verdict: report.verdict,
-            reasons: report.reasons,
-            evidence: report.evidence,
-            summary: summary(report, cost.basis) as unknown as Prisma.InputJsonValue,
-          },
-        });
-        if (report.trials.length) {
-          await tx.researchTrial.createMany({
-            data: report.trials.map((t) => ({
-              runId: run.id,
-              window: t.window,
-              fold: t.fold,
-              params: t.params,
-              startT: new Date(t.startT),
-              endT: new Date(t.endT),
-              bars: t.bars,
-              trades: t.trades,
-              netReturn: t.netReturn,
-              sharpe: t.sharpe,
-              perBarSharpe: t.perBarSharpe,
-            })),
-          });
-        }
-        // The unique key makes a second holdout evaluation fail the whole transaction.
-        if (report.trials.some((t) => t.window === "HOLDOUT")) {
-          await tx.researchHoldoutAccess.create({ data: { strategyId: spec.id, strategyVersion: spec.version, datasetId, runId: run.id } });
-        }
-      });
+      await recordValidation(prisma, { datasetId, codeVersion, config, report, costBasis: cost.basis });
       out.push({
         strategy: spec.id,
         verdict: report.verdict,
