@@ -21,7 +21,7 @@ const PERIODS: Record<string, { crypto: number; equity: number }> = {
   "1d": { crypto: 365, equity: 252 },
 };
 
-async function costPerSide(prisma: PrismaClient, dataset: { instrumentKind: string; instrumentKey: string }): Promise<{ bps: number; basis: string }> {
+async function costPerSide(prisma: PrismaClient, dataset: { instrumentKind: string; instrumentKey: string; sourceId: string }): Promise<{ bps: number; basis: string }> {
   const feeBps = Number(DEFAULT_STRATEGY.feeBps);
   const spreadBpsEstimate = Number(DEFAULT_STRATEGY.spreadBpsEstimate);
   if (dataset.instrumentKind === "EQUITY_ETF") {
