@@ -145,6 +145,12 @@ export class TerminalController {
     return this.terminal.act("emergency_stop", request.user?.email ?? "unknown", body);
   }
 
+  /** ASCEND-00 F6: append-only engine config history, newest first, with the keys each change touched. */
+  @Get("engine/config/history")
+  configHistory(@Query("limit") limit = "50") {
+    return this.terminal.configHistory(limit);
+  }
+
   @UseGuards(AdminGuard)
   @Patch("engine/config")
   config(@Body() body: unknown, @Req() request: RequestWithUser) {

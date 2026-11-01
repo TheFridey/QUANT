@@ -532,6 +532,25 @@ model Hypothesis {
   @@index([market])
 }
 
+/// ASCEND-00 F6: append-only history of EngineControl.config, written by a database trigger on every
+/// insert and config change. Updates and deletes are rejected.
+model EngineConfigRevision {
+  id              BigInt   @id @default(autoincrement())
+  engineId        String
+  /// INSERT | UPDATE (trigger) | BASELINE (migration backfill)
+  source          String
+  config          Json
+  previousConfig  Json?
+  changedKeys     String[] @default([])
+  configHash      String
+  actor           String?
+  /// EngineControl.updatedAt after the change; matches CycleRun.configRevision for cycles planned on it
+  engineUpdatedAt DateTime
+  createdAt       DateTime @default(now())
+
+  @@index([engineId, engineUpdatedAt])
+}
+
 model LifecycleAudit {
   id           String   @id @default(cuid())
   strategyId   String
