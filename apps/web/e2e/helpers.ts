@@ -121,6 +121,11 @@ export async function tunePaperRiskForManualBuys(page: Page): Promise<void> {
       // ceiling must stay >= the entry threshold, so it moves to the same (unreachable) bound.
       entryM5ChangePct: "100",
       maxEntryM5ChangePct: "100",
+      // Entries are sized so a stop-out (here the widened 50% stop) plus worst costs fits the daily loss
+      // headroom left after open positions' stop-out risk (ASCEND-00 F2). With a 50% stop, one leftover
+      // automatic position commits roughly the whole default 3% allowance and the $50 manual buy sizes to
+      // zero, so this throwaway e2e account gets a matching allowance. Production limits are unchanged.
+      maxDailyLossPct: "50",
     },
   });
 }

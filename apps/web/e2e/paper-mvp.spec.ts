@@ -195,7 +195,9 @@ test.describe("Gate 1 local paper browser workflows", () => {
         );
         const cashDrop = Number(snap.portfolio.cashUsd) < cashBefore - 1;
         if (freshFill && open && cashDrop) return "filled";
-        return `newOrders=${snap.orders.filter((o) => !orderIdsBefore.has(o.id)).map((o) => `${o.side}:${o.status}`).join(",") || "none"};pos=${open ? open.baseQty : 0};cash=${snap.portfolio.cashUsd}`;
+        const blocked = (snap.whyBlocked ?? []).flatMap((row) => row.reasonCodes).slice(0, 6).join("|") || "none";
+        const openCount = snap.portfolio.positions.filter((row) => Number(row.baseQty) > 0).length;
+        return `newOrders=${snap.orders.filter((o) => !orderIdsBefore.has(o.id)).map((o) => `${o.side}:${o.status}`).join(",") || "none"};pos=${open ? open.baseQty : 0};openPositions=${openCount};cash=${snap.portfolio.cashUsd};blocked=${blocked}`;
       }, { timeout: 60_000 })
       .toBe("filled");
 
