@@ -1302,6 +1302,31 @@ export class TerminalService {
     return { status: updated.status, flattenRequested: updated.flattenRequested, allowedActions: allowedActions(next) };
   }
 
+  async configHistory(limitText: string) {
+    const parsed = Number.parseInt(limitText, 10);
+    const take = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), 200) : 50;
+    const rows = await this.prisma.engineConfigRevision.findMany({
+      where: { engineId: "primary" },
+      orderBy: { id: "desc" },
+      take,
+    });
+    return {
+      revisions: rows.map((row) => {
+        const next = (row.config ?? {}) as Record<string, unknown>;
+        const previous = (row.previousConfig ?? null) as Record<string, unknown> | null;
+        return {
+          id: row.id.toString(),
+          source: row.source,
+          actor: row.actor,
+          configHash: row.configHash,
+          engineUpdatedAt: row.engineUpdatedAt.toISOString(),
+          createdAt: row.createdAt.toISOString(),
+          changes: row.changedKeys.map((key) => ({ key, from: previous?.[key] ?? null, to: next[key] ?? null })),
+        };
+      }),
+    };
+  }
+
   async updateConfig(patch: unknown, actor: string) {
     if (patch && typeof patch === "object" && !Array.isArray(patch)) {
       const identityKey = ["sourceHash", "artifactHash", "strategyId", "strategyVersion", "activeStrategy"].find(
