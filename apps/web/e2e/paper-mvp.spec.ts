@@ -4,6 +4,7 @@ import {
   ensureEngineStatus,
   login,
   pickLivePair,
+  setAutomaticEntries,
   snapshot,
   tunePaperRiskForManualBuys,
   waitForOrderTerminal,
@@ -140,6 +141,9 @@ test.describe("Gate 1 local paper browser workflows", () => {
   test("preview/submit manual paper order; assert pending then fill; protection + close", async ({ page }) => {
     await login(page);
     await tunePaperRiskForManualBuys(page);
+    // Strategy instances that ignore the M5 entry threshold (FX/ETF) could otherwise open the test pair
+    // between cleanup and the manual buy; operator tickets are not gated by market selection.
+    const autoEntriesDisabled = await setAutomaticEntries(page, false);
     await ensureEngineStatus(page, "RUNNING");
 
     // Flatten any leftover paper lots so cash/position assertions are about THIS buy.
@@ -232,6 +236,7 @@ test.describe("Gate 1 local paper browser workflows", () => {
         return "open";
       }, { timeout: 60_000 })
       .toMatch(/^closed$|^sell:FILLED$/);
+    await setAutomaticEntries(page, true, autoEntriesDisabled);
   });
 
   test("history filters, alert ack API + safety honesty, disconnect/reconnect, mobile nav, keyboard", async ({
