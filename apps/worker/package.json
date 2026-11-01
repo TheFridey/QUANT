@@ -14,6 +14,7 @@
     "@nestjs/core": "^11.1.6",
     "@odin/agent-core": "workspace:*",
     "@odin/analytics": "workspace:*",
+    "@odin/backtest": "workspace:*",
     "@odin/market-data": "workspace:*",
     "@odin/risk-engine": "workspace:*",
     "@odin/shared": "workspace:*",
