@@ -2,12 +2,12 @@ import { expect, test } from "@playwright/test";
 import {
   apiFromPage,
   ensureEngineStatus,
+  flattenPaperBook,
   login,
   pickLivePair,
   setAutomaticEntries,
   snapshot,
   tunePaperRiskForManualBuys,
-  waitForOrderTerminal,
 } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
@@ -146,20 +146,9 @@ test.describe("Gate 1 local paper browser workflows", () => {
     const autoEntriesDisabled = await setAutomaticEntries(page, false);
     await ensureEngineStatus(page, "RUNNING");
 
-    // Flatten any leftover paper lots so cash/position assertions are about THIS buy.
-    for (let i = 0; i < 5; i += 1) {
-      const current = await snapshot(page);
-      const open = current.portfolio.positions.filter((row) => Number(row.baseQty) > 0);
-      if (open.length === 0) break;
-      for (const position of open) {
-        const intent = `intent_sell_cleanup_${Date.now()}_${i}`;
-        const receipt = await apiFromPage<{ cycleId: string; clientIntentId: string }>(page, "/orders", {
-          method: "POST",
-          body: { side: "SELL", pairAddress: position.pairAddress, clientIntentId: intent },
-        });
-        await waitForOrderTerminal(page, receipt.cycleId, intent);
-      }
-    }
+    // Flatten leftover paper lots, and entries still pending from before the pause, so cash/position
+    // assertions are about THIS buy.
+    await flattenPaperBook(page);
 
     const before = await snapshot(page);
     const pair = pickLivePair(before);
