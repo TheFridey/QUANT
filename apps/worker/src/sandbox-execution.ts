@@ -107,8 +107,10 @@ export async function processSandboxOutbox(
     if (order.side === "BUY" && order.submissionState === "PRE_SUBMIT") {
       entryBlock ??= await sandboxEntryBlock(prisma, { accountId: input.accountId, now });
       if (entryBlock) {
-        await prisma.order.update({
-          where: { id: order.id },
+        // Fenced: only a still-unsubmitted order is cancelled, so an overlapping outbox run that has
+        // already moved it to SUBMITTING cannot be overwritten into a terminal state (review note).
+        const cancelled = await prisma.order.updateMany({
+          where: { id: order.id, status: "PENDING", submissionState: "PRE_SUBMIT" },
           data: {
             status: "CANCELLED",
             rejectReason: entryBlock,
@@ -117,6 +119,7 @@ export async function processSandboxOutbox(
             nextSyncAt: null,
           },
         });
+        if (cancelled.count === 0) continue;
         if (input.reservationBudget) {
           await releaseInTx(
             prisma,
