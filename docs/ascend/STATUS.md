@@ -14,6 +14,6 @@ Updated 1 Nov 2026. Deployed commit: `d0260a3` (services restarted 1 Nov 2026 14
 | ASCEND-01 historical data | Not started | none | Provider audit |
 | ASCEND-02 to 05, 07 to 11 | Not started | none | See the dependency graph in `README.md` |
 
-CI note: since #21, the manual-buy e2e failed intermittently, because the fixture's 50% stop consumed the daily headroom under F2. PR #28 gives the throwaway e2e account a matching `maxDailyLossPct` and makes the failure message report open positions and block reasons. Production limits are unchanged.
+CI note: since about #21, the manual-buy e2e failed intermittently. #28 guessed at F2 headroom and was wrong. Its added diagnostics showed the real cause: automatic entries from FX/ETF strategy instances (which ignore the M5 threshold) held the picked pair, so the manual BUY was refused as a second entry. #30 disables automatic entries per market for that test, restores them afterwards, and reverts #28's `maxDailyLossPct` override. It passed two CI attempts. No production code or limits changed.
 
 No strategy, model or return figure has been produced by ASCEND yet.
