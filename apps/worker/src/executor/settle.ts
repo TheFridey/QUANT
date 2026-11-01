@@ -1,6 +1,6 @@
 // Audit F2: one executor phase, moved out of StageRunner.executor without behaviour change.
 import { releaseInTx } from "@odin/risk-engine";
-import type { ExecutionContext } from "@odin/shared";
+import { d, type ExecutionContext } from "@odin/shared";
 import type { Prisma } from "@odin/shared/db";
 import { releasePendingExitReservation, settlePendingOrder } from "@odin/trading-engine";
 import { strategyConfigOrExitOnly } from "../strategy-config.js";
@@ -57,6 +57,32 @@ export async function settlePendingPaperOrders(
         now,
       );
       continue;
+    }
+    // ASCEND-00 F5: a pending SELL whose position another exit already closed (typically protection
+    // firing in the same cycle as a planner NET_CLOSE) has nothing left to sell. Cancel it explicitly and
+    // release its reservations, rather than letting the store reject it as SELL_EXCEEDS_POSITION.
+    if (row.side === "SELL") {
+      const position = await tx.position.findFirst({
+        where: { accountId: ctx.accountId, pairAddress: row.pairAddress },
+      });
+      if (!position || d(position.baseQty.toString()).lte(0)) {
+        await tx.order.update({
+          where: { id: row.id },
+          data: {
+            status: "CANCELLED",
+            rejectReason: "EXIT_SUPERSEDED",
+            reasonCodes: [...row.reasonCodes, "EXIT_SUPERSEDED"],
+          },
+        });
+        await releasePendingExitReservation(tx, row);
+        await releaseInTx(
+          tx,
+          { accountId: ctx.accountId, mode: "PAPER", clientOrderId: row.clientOrderId },
+          settleBudget,
+          now,
+        );
+        continue;
+      }
     }
     const settled = await settlePendingOrder(tx, {
       accountId: ctx.accountId,
