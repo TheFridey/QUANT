@@ -36,7 +36,8 @@ function compact(study: IntelligenceStudy) {
     hypotheses: study.hypotheses.map((h) => ({
       strategy: h.gated.strategyId,
       hypothesis: h.hypothesis,
-      base: { verdict: h.base.verdict, trades: h.base.oos?.trades ?? null, netPct: pct(h.base.oos?.totalReturn), maxDdPct: pct(h.base.oos?.maxDrawdown) },
+      // The base is a comparison with its holdout withheld, so a would-be candidate shows as INSUFFICIENT_EVIDENCE.
+      base: { verdict: `${h.base.verdict} (holdout withheld)`, trades: h.base.oos?.trades ?? null, netPct: pct(h.base.oos?.totalReturn), maxDdPct: pct(h.base.oos?.maxDrawdown) },
       gated: {
         verdict: h.gated.verdict,
         trades: h.gated.oos?.trades ?? null,
@@ -138,8 +139,8 @@ async function main() {
       codeVersion,
       programmeTrialCount: await programmeTrialCount(prisma),
       costIsProxy: true,
-      // Ids not resolved above get no holdout: never hand one out by omission.
-      holdoutAvailable: (id) => available.get(id) ?? false,
+      // A holdout is read only when the access is recorded (--record); ids not resolved above never get one.
+      holdoutAvailable: (id) => record && (available.get(id) ?? false),
     });
     if (record) {
       for (const h of study.hypotheses) await recordValidation(prisma, { datasetId, codeVersion, config: h.gated.config, report: h.gated, costBasis: cost.basis });

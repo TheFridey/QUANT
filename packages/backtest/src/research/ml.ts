@@ -266,7 +266,9 @@ export function evaluateModels(input: { features: readonly FeatureRow[]; labels:
     });
   const featureNames = FEATURE_NAMES.filter((_, j) => keep[j]);
   const holdoutStart = Math.floor(usableRows.length * (1 - cfg.holdoutFraction));
-  const pre = usableRows.slice(0, holdoutStart);
+  const firstHoldoutBar = usableRows[holdoutStart]?.i ?? Number.POSITIVE_INFINITY;
+  // A pre-holdout label may not read a holdout bar.
+  const pre = usableRows.slice(0, holdoutStart).filter((r) => r.end < firstHoldoutBar);
   const segment = Math.floor(pre.length / (cfg.folds + 1));
   const base: Omit<MlReport, "folds" | "oos" | "brierSkill" | "aucPValue" | "drift" | "decisions" | "verdict" | "reasons" | "finalArtefacts"> = {
     protocol: ML_PROTOCOL_VERSION,
@@ -383,10 +385,11 @@ export function evaluateModels(input: { features: readonly FeatureRow[]; labels:
 
   let verdict: MlVerdict;
   const bestSkill = Math.max(brierSkill.logistic ?? Number.NEGATIVE_INFINITY, brierSkill.boosted ?? Number.NEGATIVE_INFINITY);
-  const bestP = Math.min(aucPValue.logistic ?? 1, aucPValue.boosted ?? 1);
+  // Bonferroni over the two learned models.
+  const bestP = Math.min(1, 2 * Math.min(aucPValue.logistic ?? 1, aucPValue.boosted ?? 1));
   if (!(bestSkill > 0) || bestP > 0.05) {
     verdict = "NO_SKILL";
-    reasons.push(`best OOS Brier skill vs base rate ${Number.isFinite(bestSkill) ? bestSkill.toFixed(4) : "n/a"}; best AUC p-value ${bestP.toFixed(3)} (overlap-deflated)`);
+    reasons.push(`best OOS Brier skill vs base rate ${Number.isFinite(bestSkill) ? bestSkill.toFixed(4) : "n/a"}; best AUC p-value ${bestP.toFixed(3)} (overlap-deflated, Bonferroni ×2)`);
   } else if (selected.length / Math.max(1, input.horizon) < 30) {
     verdict = "INSUFFICIENT_EVIDENCE";
     reasons.push(`${selected.length} signals ≈ ${(selected.length / Math.max(1, input.horizon)).toFixed(0)} independent (< 30)`);

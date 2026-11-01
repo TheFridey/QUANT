@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { seededRng } from "../stats.js";
 import { barrierLabels, computeFeatures, FEATURE_NAMES, netForwardLabels } from "./features.js";
 import { calibration, DEFAULT_ML_CONFIG, evaluateModels, fitLogistic, predict, psi } from "./ml.js";
+import { runIntelligenceStudy } from "./intelligence.js";
 import { classifyRegimes, regimeConfigFor, trendTransitions } from "./regime.js";
 import { performanceByRegime, REGIME_GATES, regimeGatedSpec, trendKey } from "./regime-analysis.js";
 import { simulate, type ResearchBar } from "./simulate.js";
@@ -182,4 +183,16 @@ describe("baseline models (ASCEND-05)", () => {
     expect(r.verdict).toBe("INSUFFICIENT_EVIDENCE");
     expect(r.finalArtefacts).toBeNull();
   });
+});
+
+describe("integrated study (SINGULARITY)", () => {
+  it("never reads a holdout unless the caller can record it, and concludes NO TRADE on noise", () => {
+    const bars = series(2500, 16, () => 0);
+    const study = runIntelligenceStudy({ bars, barMs: H, costBpsPerSide: 10, periodsPerYear: 8760, codeVersion: "t" });
+    for (const h of study.hypotheses) {
+      expect(h.gated.trials.some((t) => t.window === "HOLDOUT")).toBe(false);
+      expect(h.base.trials.some((t) => t.window === "HOLDOUT")).toBe(false);
+    }
+    expect(study.conclusion).toBe("NO TRADE — NO VALIDATED POSITIVE NET EDGE");
+  }, 120_000);
 });

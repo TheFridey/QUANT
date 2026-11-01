@@ -67,6 +67,7 @@ export function runIntelligenceStudy(input: {
   codeVersion: string;
   programmeTrialCount?: number;
   costIsProxy?: boolean;
+  /** Omitted means no holdout may be read: a caller that cannot record the access must not consume it. */
   holdoutAvailable?: (strategyId: string) => boolean;
   benchmark?: readonly ResearchBar[];
 }): IntelligenceStudy {
@@ -84,7 +85,7 @@ export function runIntelligenceStudy(input: {
     const gatedSpec = regimeGatedSpec(baseSpec, REGIME_GATES[h.gate]!, byT);
     // The base is re-evaluated for comparison only; its holdout is never touched here.
     const base = validateStrategy({ ...common, spec: baseSpec, holdoutAvailable: false });
-    const gated = validateStrategy({ ...common, spec: gatedSpec, holdoutAvailable: input.holdoutAvailable?.(gatedSpec.id) ?? true });
+    const gated = validateStrategy({ ...common, spec: gatedSpec, holdoutAvailable: input.holdoutAvailable?.(gatedSpec.id) ?? false });
     return { hypothesis: h.hypothesis, base, gated };
   });
 
