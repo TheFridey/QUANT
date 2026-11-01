@@ -21,3 +21,6 @@ export * from "./execution-contract.js";
 export * from "./http-transport.js";
 export * from "./alpaca-practice-venue.js";
 export * from "./broker-reconcile.js";
+export * from "./history/integrity.js";
+export * from "./history/sources.js";
+export * from "./history/backfill.js";
