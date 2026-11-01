@@ -1053,3 +1053,108 @@ model ReconciliationRun {
 
   @@index([accountId, scope, startedAt])
 }
+
+/// ASCEND-01: one versioned historical series (source × instrument × interval). Research data only;
+/// never read by the trading loop.
+model HistoricalDataset {
+  id             String    @id @default(cuid())
+  sourceId       String
+  instrumentKey  String
+  /// e.g. SOLANA_POOL, EQUITY_ETF, FX_PAIR
+  instrumentKind String
+  /// Research cohort: LIQUID_MAJOR | ESTABLISHED_SOLANA | SPECULATIVE_SOLANA | INACTIVE | BROAD_ETF | MAJOR_FX
+  cohort         String
+  interval       String
+  licence        Json
+  /// Content hash of all accepted bars; recomputed after each import. Null until the first import.
+  versionHash    String?
+  barCount       Int       @default(0)
+  firstOpenTime  DateTime?
+  lastOpenTime   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  bars HistoricalBar[]
+  jobs HistoricalBackfillJob[]
+
+  @@unique([sourceId, instrumentKey, interval])
+  @@index([cohort])
+}
+
+/// Normalised OHLCV bar. `availableAt` (bar close) is the earliest time a decision may use it.
+model HistoricalBar {
+  datasetId   String
+  openTime    DateTime
+  availableAt DateTime
+  open        Decimal  @db.Decimal(38, 18)
+  high        Decimal  @db.Decimal(38, 18)
+  low         Decimal  @db.Decimal(38, 18)
+  close       Decimal  @db.Decimal(38, 18)
+  volume      Decimal? @db.Decimal(38, 8)
+  extra       Json?
+  hash        String
+  collectedAt DateTime
+
+  dataset HistoricalDataset @relation(fields: [datasetId], references: [id], onDelete: Restrict)
+
+  @@id([datasetId, openTime])
+  @@index([datasetId, availableAt])
+}
+
+/// A provider later returned different values for an already-stored bar. The original is kept.
+model HistoricalBarRevision {
+  id           String   @id @default(cuid())
+  datasetId    String
+  openTime     DateTime
+  previousHash String
+  newHash      String
+  newValues    Json
+  detectedAt   DateTime @default(now())
+
+  @@index([datasetId, openTime])
+}
+
+/// Rejected provider rows, with the integrity reason. Never silently dropped.
+model HistoricalBarRejection {
+  id         String   @id @default(cuid())
+  datasetId  String
+  openTime   DateTime
+  reason     String
+  recordedAt DateTime @default(now())
+
+  @@index([datasetId, reason])
+}
+
+/// Immutable record of each provider response: request (no secrets), payload hash, optional payload.
+model HistoricalRawBatch {
+  id          String   @id @default(cuid())
+  jobId       String
+  sourceId    String
+  request     String
+  fetchedAt   DateTime
+  payloadHash String
+  rowCount    Int
+  payload     Json?
+
+  @@index([jobId, fetchedAt])
+}
+
+model HistoricalBackfillJob {
+  id                String    @id @default(cuid())
+  datasetId         String
+  windowStart       DateTime
+  windowEnd         DateTime
+  cursor            String?
+  status            String
+  attempts          Int       @default(0)
+  rowsImported      Int       @default(0)
+  rowsRejected      Int       @default(0)
+  revisionsDetected Int       @default(0)
+  lastError         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  dataset HistoricalDataset @relation(fields: [datasetId], references: [id], onDelete: Restrict)
+
+  @@index([status])
+}
