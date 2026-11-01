@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MemoryBackfillStore, runBackfill, type BackfillJobState } from "./backfill.js";
 import { barsVisibleAt, coverageStats, datasetVersionHash, normaliseBars } from "./integrity.js";
-import { AlpacaBarsSource, GeckoTerminalPoolSource, type HistoricalBarSource, type SourcePage } from "./sources.js";
+import { AlpacaBarsSource, fetchGeckoTerminalPoolReserve, GeckoTerminalPoolSource, type HistoricalBarSource, type SourcePage } from "./sources.js";
 
 const H = 3_600_000;
 const T0 = Date.UTC(2026, 9, 1, 0, 0, 0);
@@ -116,6 +116,16 @@ describe("GeckoTerminalPoolSource (documented response shape)", () => {
     const source = new GeckoTerminalPoolSource({ fetchImpl: (async () => new Response("", { status: 429, headers: { "retry-after": "7" } })) as unknown as typeof fetch });
     const r = await source.fetchPage({ instrumentKey: POOL, interval: "1h", startMs: 0, endMs: 1, cursor: null });
     expect(r).toMatchObject({ ok: false, code: "RATE_LIMITED", retryAfterMs: 7000 });
+  });
+});
+
+describe("fetchGeckoTerminalPoolReserve", () => {
+  it("reads reserve_in_usd and refuses a missing or non-positive reserve", async () => {
+    const ok = await fetchGeckoTerminalPoolReserve(POOL, { fetchImpl: (async () => jsonResponse({ data: { attributes: { reserve_in_usd: "20067813.98", pool_created_at: "2022-04-28T09:46:08Z" } } })) as unknown as typeof fetch, now: () => 5 });
+    expect(ok).toEqual({ ok: true, data: { reserveUsd: 20067813.98, fetchedAt: 5, poolCreatedAt: "2022-04-28T09:46:08Z" } });
+    const zero = await fetchGeckoTerminalPoolReserve(POOL, { fetchImpl: (async () => jsonResponse({ data: { attributes: { reserve_in_usd: "0" } } })) as unknown as typeof fetch });
+    expect(zero.ok).toBe(false);
+    expect((await fetchGeckoTerminalPoolReserve("bad pool")).ok).toBe(false);
   });
 });
 
