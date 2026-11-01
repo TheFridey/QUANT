@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mean } from "../stats.js";
 import { deflatedSharpe, MIN_TRADES, perBarSharpe, performanceStats, probabilisticSharpe, probabilityOfBacktestOverfitting, type PerformanceStats } from "./metrics.js";
 import { simulate, type ResearchBar, type SimResult } from "./simulate.js";
-import { expandGrid, type ParamValue, type StrategySpec } from "./strategies.js";
+import { expandGrid, type ParamGrid, type ParamValue, type StrategySpec } from "./strategies.js";
 
 /**
  * ASCEND-03 validation protocol for one strategy family on one dataset:
@@ -68,6 +68,8 @@ export type ValidationReport = {
   trials: TrialRecord[];
   trialCount: number;
   selectedParamsByFold: Array<Record<string, ParamValue>>;
+  /** How the grid was fitted to this dataset's length (null when validation did not run). */
+  gridScale: GridScale | null;
   oos: PerformanceStats | null;
   oosGross: { totalReturn: number; expectancy: number | null } | null;
   oosControls: { buyAndHoldSharpe: number | null; randomSharpe: number | null; cashSharpe: number | null };
@@ -77,6 +79,33 @@ export type ValidationReport = {
   holdout: { params: Record<string, ParamValue>; stats: PerformanceStats } | null;
   evidence: "VERIFIED_HISTORICAL" | "VERIFIED_OUT_OF_SAMPLE" | "INSUFFICIENT_EVIDENCE" | "RESEARCH_ONLY";
 };
+
+export type GridScale = { factor: number; budgetBars: number; maxLookbackBars: number; grid: ParamGrid };
+
+/**
+ * Pre-declared, performance-blind rule that fits a grid to a dataset: the longest look-back may use at most
+ * half of one walk-forward segment, so every fold keeps at least half its test window after the embargo.
+ * When it would not, every horizon parameter is scaled by the same factor (rounded, ≥ 2 bars, de-duplicated).
+ * Thresholds are never scaled and the factor never exceeds 1. The result is recorded with the report.
+ */
+export function fitGridToData(spec: StrategySpec, totalBars: number, cfg: Pick<ValidationConfig, "folds" | "holdoutFraction">): GridScale {
+  const holdoutStart = Math.floor(totalBars * (1 - cfg.holdoutFraction));
+  const budgetBars = Math.floor(Math.floor(holdoutStart / (cfg.folds + 1)) / 2);
+  const lookbackOf = (grid: ParamGrid) => Math.max(...expandGrid(grid).map((params) => spec.build!(params).lookback));
+  const original = lookbackOf(spec.grid);
+  if (original <= budgetBars || spec.horizonParams.length === 0) return { factor: 1, budgetBars, maxLookbackBars: original, grid: spec.grid };
+  let factor = budgetBars / original;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const grid: ParamGrid = { ...spec.grid };
+    for (const key of spec.horizonParams) {
+      if (grid[key]) grid[key] = [...new Set(grid[key]!.map((v) => Math.max(2, Math.round(v * factor))))];
+    }
+    const lookback = lookbackOf(grid);
+    if (lookback <= budgetBars) return { factor, budgetBars, maxLookbackBars: lookback, grid };
+    factor *= 0.95;
+  }
+  return { factor, budgetBars, maxLookbackBars: original, grid: spec.grid };
+}
 
 export function datasetVersionOf(bars: readonly ResearchBar[]): string {
   const h = createHash("sha256");
@@ -152,7 +181,7 @@ export function validateStrategy(input: {
     codeVersion: input.codeVersion,
     config: cfg,
   };
-  const empty = { trials: [], trialCount: 0, selectedParamsByFold: [], oos: null, oosGross: null, oosControls: { buyAndHoldSharpe: null, randomSharpe: null, cashSharpe: null }, psr: null, dsr: null, pbo: null, holdout: null };
+  const empty = { trials: [], trialCount: 0, selectedParamsByFold: [], gridScale: null, oos: null, oosGross: null, oosControls: { buyAndHoldSharpe: null, randomSharpe: null, cashSharpe: null }, psr: null, dsr: null, pbo: null, holdout: null };
   if (!spec.supported || !spec.build) {
     return { ...base, ...empty, verdict: "RESEARCH_ONLY", reasons: [spec.unsupportedReason ?? "unsupported"], evidence: "RESEARCH_ONLY" };
   }
@@ -160,7 +189,8 @@ export function validateStrategy(input: {
     return { ...base, ...empty, verdict: "REJECTED_DATA", reasons: [`${bars.length} bars < minimum ${cfg.minBars}`], evidence: "INSUFFICIENT_EVIDENCE" };
   }
 
-  const grid = expandGrid(spec.grid);
+  const gridScale = fitGridToData(spec, bars.length, cfg);
+  const grid = expandGrid(gridScale.grid);
   // Embargo at least the longest look-back in the grid, so no test decision reads a window that overlaps
   // the bars the selection was fitted on.
   const maxLookback = Math.max(...grid.map((params) => spec.build!(params).lookback));
@@ -174,6 +204,7 @@ export function validateStrategy(input: {
       verdict: "INSUFFICIENT_EVIDENCE",
       reasons: [`walk-forward needs more bars: ${usable.length}/${cfg.folds} folds have ≥ 50 test bars after a ${maxLookback}-bar embargo (${bars.length} bars, holdout from ${holdoutStart})`],
       evidence: "INSUFFICIENT_EVIDENCE",
+      gridScale,
     };
   }
   const trials: TrialRecord[] = [];
@@ -283,6 +314,7 @@ export function validateStrategy(input: {
     trials,
     trialCount: trials.filter((t) => t.window !== "HOLDOUT").length,
     selectedParamsByFold: selected,
+    gridScale,
     oos,
     oosGross: { totalReturn: grossStats.totalReturn, expectancy: grossStats.expectancy },
     oosControls,

@@ -34,6 +34,11 @@ export type StrategySpec = {
   riskRequirements: string;
   /** Parameter grid explored on training data only. Every point is a recorded trial. */
   grid: ParamGrid;
+  /**
+   * Grid parameters measured in bars (look-backs, holding periods). Only these may be scaled down to fit a
+   * shorter dataset; thresholds never are.
+   */
+  horizonParams: string[];
   supported: boolean;
   unsupportedReason: string | null;
   build: ((params: Record<string, ParamValue>) => ResearchStrategy) | null;
@@ -59,7 +64,7 @@ const COMMON = {
 export const STRATEGY_LIBRARY: StrategySpec[] = [
   {
     id: "tsmom",
-    version: "1.0.0",
+    version: "1.1.0",
     family: "TREND",
     hypothesis: "An asset's own trailing return over L bars predicts the sign of its next-bar return",
     rationale: "Under-reaction and slow information diffusion create return persistence",
@@ -67,6 +72,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "Any instrument with ≥ 2L bars",
     dataDependencies: ["close"],
     ...COMMON,
+    horizonParams: ["lookback"],
     grid: { lookback: [24, 72, 168, 336] },
     supported: true,
     unsupportedReason: null,
@@ -77,7 +83,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
   },
   {
     id: "ma_trend",
-    version: "1.0.0",
+    version: "1.1.0",
     family: "TREND",
     hypothesis: "Price above its slow moving average, with the fast average above the slow, marks a persistent uptrend",
     rationale: "Moving-average filters reduce whipsaw relative to raw momentum",
@@ -85,6 +91,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "Any instrument with ≥ slow bars",
     dataDependencies: ["close"],
     ...COMMON,
+    horizonParams: ["fast", "slow"],
     grid: { fast: [12, 24, 48], slow: [96, 168, 336] },
     supported: true,
     unsupportedReason: null,
@@ -97,7 +104,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
   },
   {
     id: "donchian_breakout",
-    version: "1.0.0",
+    version: "1.1.0",
     family: "BREAKOUT",
     hypothesis: "A close above the prior N-bar high starts a move that continues until the prior M-bar low is broken",
     rationale: "Breakouts from ranges mark new information; the exit channel bounds the loss of a false breakout",
@@ -105,6 +112,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "Any instrument with ≥ N bars",
     dataDependencies: ["high", "low", "close"],
     ...COMMON,
+    horizonParams: ["entry", "exit"],
     grid: { entry: [24, 72, 168], exit: [12, 48] },
     supported: true,
     unsupportedReason: null,
@@ -119,7 +127,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
   },
   {
     id: "vol_normalised_trend",
-    version: "1.0.0",
+    version: "1.1.0",
     family: "TREND",
     hypothesis: "Trailing return scaled by its own volatility (a t-statistic) above a threshold predicts continuation",
     rationale: "Normalising by volatility makes the signal comparable across calm and turbulent periods",
@@ -127,6 +135,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "Any instrument with ≥ L bars",
     dataDependencies: ["close"],
     ...COMMON,
+    horizonParams: ["lookback"],
     grid: { lookback: [72, 168, 336], threshold: [0.5, 1, 2] },
     supported: true,
     unsupportedReason: null,
@@ -140,7 +149,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
   },
   {
     id: "zscore_reversion",
-    version: "1.0.0",
+    version: "1.1.0",
     family: "MEAN_REVERSION",
     hypothesis: "A close more than k standard deviations below its N-bar mean reverts towards the mean",
     rationale: "Short-term over-reaction and liquidity-provision premia",
@@ -148,6 +157,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "Ranging or liquid instruments with ≥ N bars",
     dataDependencies: ["close"],
     ...COMMON,
+    horizonParams: ["window", "maxBars"],
     grid: { window: [24, 72, 168], entryZ: [1.5, 2, 2.5], maxBars: [12, 48] },
     supported: true,
     unsupportedReason: null,
@@ -163,7 +173,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
   },
   {
     id: "bollinger_reversion",
-    version: "1.0.0",
+    version: "1.1.0",
     family: "MEAN_REVERSION",
     hypothesis: "Closes below the lower Bollinger band inside a non-trending window revert to the middle band",
     rationale: "Range-conditioned reversion: only fade moves when the slow trend is flat",
@@ -171,6 +181,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "Instruments with ≥ 4N bars",
     dataDependencies: ["close"],
     ...COMMON,
+    horizonParams: ["window", "trendWindow"],
     grid: { window: [24, 72], k: [2, 2.5], trendWindow: [168] },
     supported: true,
     unsupportedReason: null,
@@ -187,7 +198,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
   },
   {
     id: "vol_compression_breakout",
-    version: "1.0.0",
+    version: "1.1.0",
     family: "BREAKOUT",
     hypothesis: "After realised volatility falls to a low percentile of its history, an upside range break continues",
     rationale: "Volatility clusters; compression precedes expansion",
@@ -195,6 +206,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "Instruments with ≥ history bars",
     dataDependencies: ["high", "low", "close"],
     ...COMMON,
+    horizonParams: ["volWindow", "history", "hold"],
     grid: { volWindow: [24, 48], history: [336], pct: [0.2, 0.3], hold: [24, 72] },
     supported: true,
     unsupportedReason: null,
@@ -213,7 +225,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
   },
   {
     id: "regime_trend_or_cash",
-    version: "1.0.0",
+    version: "1.1.0",
     family: "REGIME_CONDITIONED",
     hypothesis: "Holding only when a slow trend is up and realised volatility is below its median improves risk-adjusted returns versus always holding",
     rationale: "Defensive cash in high-volatility downtrends avoids the worst drawdowns",
@@ -221,6 +233,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "Instruments with ≥ 2 × slow bars",
     dataDependencies: ["close"],
     ...COMMON,
+    horizonParams: ["slow", "volWindow"],
     grid: { slow: [168, 336], volWindow: [72] },
     supported: true,
     unsupportedReason: null,
@@ -247,6 +260,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "All",
     dataDependencies: [],
     ...COMMON,
+    horizonParams: [],
     grid: {},
     supported: true,
     unsupportedReason: null,
@@ -262,6 +276,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "All",
     dataDependencies: ["close"],
     ...COMMON,
+    horizonParams: [],
     grid: {},
     supported: true,
     unsupportedReason: null,
@@ -277,6 +292,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "All",
     dataDependencies: [],
     ...COMMON,
+    horizonParams: [],
     grid: { pEnter: [0.02, 0.1], pExit: [0.05, 0.2] },
     supported: true,
     unsupportedReason: null,
@@ -296,6 +312,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "A cross-section of ≥ 10 comparable instruments on a common calendar",
     dataDependencies: ["close for a cross-section"],
     ...COMMON,
+    horizonParams: [],
     grid: {},
     supported: false,
     unsupportedReason: "The warehouse holds 2 instruments with > 1 month of history; a ranking needs a broad cross-section",
@@ -311,6 +328,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "Pools with transaction-level history",
     dataDependencies: ["buy/sell counts", "trade sizes"],
     ...COMMON,
+    horizonParams: [],
     grid: {},
     supported: false,
     unsupportedReason: "Historical bars carry no buy/sell split; live MarketObservation txn counts exist only since 30 Oct 2026",
@@ -326,6 +344,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "Two cointegrated instruments",
     dataDependencies: ["two aligned close series"],
     ...COMMON,
+    horizonParams: [],
     grid: {},
     supported: false,
     unsupportedReason: "Requires shorting one leg, which QUANT cannot do; no long-only version is a pairs trade",
@@ -341,6 +360,7 @@ export const STRATEGY_LIBRARY: StrategySpec[] = [
     eligibility: "Speculative Solana pools with launch-to-death history",
     dataDependencies: ["5m bars from launch", "pool creation time"],
     ...COMMON,
+    horizonParams: [],
     grid: {},
     supported: false,
     unsupportedReason: "4 speculative pools with 21–515 bars each: far below any usable sample; needs a larger launch cohort",
