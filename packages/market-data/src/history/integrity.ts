@@ -42,6 +42,20 @@ export type NormaliseResult = {
   gaps: BarGap[];
 };
 
+/**
+ * How a source stamps bar opens. UTC_GRID: multiples of the interval in UTC (DEX candles, intraday bars).
+ * NEW_YORK_DAY: daily equity bars open at 00:00 America/New_York, which is 04:00Z or 05:00Z by DST.
+ */
+export type BarAlignment = "UTC_GRID" | "NEW_YORK_DAY";
+
+const NEW_YORK_TIME = new Intl.DateTimeFormat("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+
+function isAligned(openTime: number, intervalMs: number, alignment: BarAlignment): boolean {
+  if (!Number.isInteger(openTime)) return false;
+  if (alignment === "UTC_GRID") return openTime % intervalMs === 0;
+  return intervalMs === 86_400_000 && NEW_YORK_TIME.format(new Date(openTime)) === "00:00:00";
+}
+
 function num(v: number | string | null): number | null {
   if (v === null || v === "") return null;
   const n = typeof v === "number" ? v : Number(v);
@@ -53,14 +67,15 @@ function str(n: number): string {
   return n.toFixed(12).replace(/\.?0+$/, "") || "0";
 }
 
-export function normaliseBars(raw: RawBar[], options: { intervalMs: number; collectedAt: number }): NormaliseResult {
+export function normaliseBars(raw: RawBar[], options: { intervalMs: number; collectedAt: number; alignment?: BarAlignment }): NormaliseResult {
   const { intervalMs, collectedAt } = options;
+  const alignment = options.alignment ?? "UTC_GRID";
   const rejected: BarRejection[] = [];
   const byOpen = new Map<number, HistoricalBar>();
   let duplicatesDropped = 0;
   for (const r of raw) {
-    if (!Number.isInteger(r.openTime) || r.openTime % intervalMs !== 0) {
-      // Bars must align to the interval grid in UTC; a misaligned bar signals a timezone or unit error.
+    if (!isAligned(r.openTime, intervalMs, alignment)) {
+      // Bars must align to the source's declared grid; a misaligned bar signals a timezone or unit error.
       rejected.push({ openTime: r.openTime, reason: "MISALIGNED" });
       continue;
     }
@@ -108,8 +123,10 @@ export function findGaps(bars: HistoricalBar[], intervalMs: number): BarGap[] {
   const gaps: BarGap[] = [];
   for (let i = 1; i < bars.length; i += 1) {
     const step = bars[i]!.openTime - bars[i - 1]!.openTime;
-    if (step > intervalMs) {
-      gaps.push({ fromOpenTime: bars[i - 1]!.openTime + intervalMs, toOpenTime: bars[i]!.openTime - intervalMs, missingBars: step / intervalMs - 1 });
+    // Rounded, so a 23 h or 25 h DST step between New York days is not a gap.
+    const missingBars = Math.round(step / intervalMs) - 1;
+    if (missingBars >= 1) {
+      gaps.push({ fromOpenTime: bars[i - 1]!.openTime + intervalMs, toOpenTime: bars[i]!.openTime - intervalMs, missingBars });
     }
   }
   return gaps;
@@ -150,7 +167,7 @@ export function coverageStats(bars: HistoricalBar[], intervalMs: number): Covera
   const sorted = [...bars].sort((a, b) => a.openTime - b.openTime);
   const first = sorted[0]!.openTime;
   const last = sorted[sorted.length - 1]!.openTime;
-  const expected = (last - first) / intervalMs + 1;
+  const expected = Math.round((last - first) / intervalMs) + 1;
   const gaps = findGaps(sorted, intervalMs);
   return {
     bars: sorted.length,

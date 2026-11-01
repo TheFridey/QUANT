@@ -61,6 +61,20 @@ describe("normaliseBars (point-in-time integrity)", () => {
     expect(datasetVersionHash(a)).not.toBe(datasetVersionHash(c));
   });
 
+  it("accepts New York-midnight daily bars when the source declares that alignment, and only then", () => {
+    // Alpaca daily bars open at 00:00 America/New_York: 04:00Z in summer (EDT), 05:00Z in winter (EST).
+    const summer = { openTime: Date.UTC(2026, 6, 1, 4), open: 1, high: 1, low: 1, close: 1, volume: 1 };
+    const winter = { openTime: Date.UTC(2026, 0, 5, 5), open: 1, high: 1, low: 1, close: 1, volume: 1 };
+    const wrong = { openTime: Date.UTC(2026, 0, 6, 4), open: 1, high: 1, low: 1, close: 1, volume: 1 };
+    const opts = { intervalMs: 86_400_000, collectedAt: Date.UTC(2027, 0, 1) };
+    expect(normaliseBars([summer, winter], opts).rejected.map((r) => r.reason)).toEqual(["MISALIGNED", "MISALIGNED"]);
+    const ny = normaliseBars([summer, winter, wrong], { ...opts, alignment: "NEW_YORK_DAY" });
+    expect(ny.bars.map((b) => b.openTime)).toEqual([winter.openTime, summer.openTime]);
+    expect(ny.rejected).toEqual([{ openTime: wrong.openTime, reason: "MISALIGNED" }]);
+    // A bar is still only visible a full day after its open.
+    expect(ny.bars[0]!.availableAt).toBe(winter.openTime + 86_400_000);
+  });
+
   it("computes coverage", () => {
     const { bars } = normaliseBars([raw(0), raw(1), raw(4)], { intervalMs: H, collectedAt: T0 + 100 * H });
     expect(coverageStats(bars, H)).toMatchObject({ bars: 3, expectedBars: 5, gaps: 1, missingBars: 2 });
