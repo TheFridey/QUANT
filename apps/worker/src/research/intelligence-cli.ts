@@ -136,6 +136,7 @@ async function main() {
       barMs: INTERVAL_MS[dataset.interval as HistoryInterval] ?? inferBarMs(bars),
       costBpsPerSide: cost.bps,
       periodsPerYear: dataset.instrumentKind === "EQUITY_ETF" ? periods.equity : periods.crypto,
+      calendar: dataset.instrumentKind === "EQUITY_ETF" ? "WEEKDAYS" : "CONTINUOUS",
       codeVersion,
       programmeTrialCount: await programmeTrialCount(prisma),
       costIsProxy: true,

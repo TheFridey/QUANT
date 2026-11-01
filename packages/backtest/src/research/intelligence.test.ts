@@ -66,13 +66,24 @@ describe("regime engine (ASCEND-04)", () => {
     expect(s.slice(700, 720).some((x) => x.behaviour.changePoint)).toBe(true);
   });
 
+  it("does not treat weekends as gaps on a weekday calendar (daily equities)", () => {
+    const D = 86_400_000;
+    // Weekday-only daily bars at 04:00 UTC (New York midnight), as Alpaca stamps them. 2026-01-05 is a Monday.
+    const days = series(300, 17, () => 0.002, () => 0.004).map((b, i) => ({ ...b, t: Date.UTC(2026, 0, 5, 4) + (Math.floor(i / 5) * 7 + (i % 5)) * D }));
+    const continuous = classifyRegimes(days, { barMs: D });
+    const weekdays = classifyRegimes(days, { barMs: D, calendar: "WEEKDAYS" });
+    expect(continuous.at(-1)!.trend.state).toBe("UNKNOWN");
+    expect(weekdays.at(-1)!.coverage).toBeGreaterThan(0.95);
+    expect(weekdays.at(-1)!.trend.state).not.toBe("UNKNOWN");
+  });
+
   it("uses a benchmark bar only after it has closed", () => {
     const bars = series(400, 7, () => 0.001);
     // Daily benchmark bars: the bar opening at t closes 24h later and is unknown until then.
     const bench = series(30, 8, () => 0.01, () => 0.002).map((b, i) => ({ ...b, t: i * 24 * H }));
     const s = classifyRegimes(bars, { benchmark: bench });
     expect(s[10]!.broad.state).toBe("UNKNOWN");
-    expect(s.every((x) => x.modelVersion === "regime-det-1.0.0")).toBe(true);
+    expect(s.every((x) => x.modelVersion === "regime-det-1.1.0")).toBe(true);
     const m = trendTransitions(s);
     expect(m.counts.flat().reduce((a, b) => a + b, 0)).toBe(m.total);
   });
