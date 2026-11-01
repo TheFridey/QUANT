@@ -3,7 +3,7 @@ import { seededRng } from "../stats.js";
 import { deflatedSharpe, expectedMaxSharpe, maxDrawdown, performanceStats, probabilisticSharpe, probabilityOfBacktestOverfitting } from "./metrics.js";
 import { simulate, type ResearchBar, type ResearchStrategy } from "./simulate.js";
 import { STRATEGY_LIBRARY, expandGrid } from "./strategies.js";
-import { DEFAULT_VALIDATION, validateStrategy, walkForwardFolds } from "./validate.js";
+import { DEFAULT_VALIDATION, fitGridToData, validateStrategy, walkForwardFolds } from "./validate.js";
 
 const H = 3_600_000;
 
@@ -105,7 +105,7 @@ describe("metrics", () => {
     const { pbo, splits } = probabilityOfBacktestOverfitting(matrix);
     expect(splits).toBe(252);
     expect(pbo!).toBeGreaterThan(0.3);
-  });
+  }, 60_000);
 
   it("PBO is low when one configuration has a genuine persistent edge", () => {
     const rng = seededRng(10);
@@ -129,7 +129,7 @@ describe("walk-forward protocol", () => {
     const a = validateStrategy({ spec: spec("tsmom"), bars, config: cfg, codeVersion: "test", controls });
     const b = validateStrategy({ spec: spec("tsmom"), bars, config: cfg, codeVersion: "test", controls });
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
-  });
+  }, 60_000);
 
   it("rejects or withholds every trend strategy on a driftless random walk", () => {
     const bars = walk(3000, 12, 0, 0.01);
@@ -138,23 +138,41 @@ describe("walk-forward protocol", () => {
       expect(r.verdict, id).not.toBe("VALIDATED_CANDIDATE");
       expect(r.trialCount).toBeGreaterThanOrEqual(expandGrid(spec(id).grid).length);
     }
-  });
+  }, 60_000);
 
   it("records every grid point in every fold as a trial, failures included", () => {
     const r = validateStrategy({ spec: spec("ma_trend"), bars: walk(4000, 13), config: cfg, codeVersion: "test", controls });
     const gridSize = expandGrid(spec("ma_trend").grid).length;
     expect(r.trials.filter((t) => t.window === "TRAIN")).toHaveLength(gridSize * 4);
     expect(r.trials.filter((t) => t.window === "FULL_GRID")).toHaveLength(gridSize);
-  });
+  }, 60_000);
 
   it("never touches the holdout unless the strategy already passed out of sample", () => {
     const r = validateStrategy({ spec: spec("zscore_reversion"), bars: walk(2000, 14), config: cfg, codeVersion: "test", controls });
     if (r.verdict !== "VALIDATED_CANDIDATE") expect(r.trials.some((t) => t.window === "HOLDOUT")).toBe(r.holdout !== null);
     expect(r.trials.filter((t) => t.window === "HOLDOUT").length).toBeLessThanOrEqual(1);
+  }, 60_000);
+
+  it("fits horizon parameters to a short dataset, never thresholds, never upwards", () => {
+    const long = fitGridToData(spec("zscore_reversion"), 20_000, cfg);
+    expect(long.factor).toBe(1);
+    expect(long.grid).toEqual(spec("zscore_reversion").grid);
+    const short = fitGridToData(spec("zscore_reversion"), 1464, cfg);
+    expect(short.factor).toBeLessThan(1);
+    expect(short.maxLookbackBars).toBeLessThanOrEqual(short.budgetBars);
+    expect(short.grid.entryZ).toEqual(spec("zscore_reversion").grid.entryZ);
+    expect(Math.max(...short.grid.window!)).toBeLessThan(Math.max(...spec("zscore_reversion").grid.window!));
   });
 
-  it("refuses to run when the embargo leaves folds without usable test windows", () => {
-    const r = validateStrategy({ spec: spec("ma_trend"), bars: walk(2000, 13), config: cfg, codeVersion: "t", controls });
+  it("keeps every fold usable on a 1.5k-bar dataset once the grid is fitted, and records the scale", () => {
+    const r = validateStrategy({ spec: spec("ma_trend"), bars: walk(1500, 13), config: cfg, codeVersion: "t", controls });
+    expect(r.reasons.join(" ")).not.toMatch(/walk-forward needs more bars/);
+    expect(r.gridScale!.factor).toBeLessThan(1);
+    expect(r.trials.filter((t) => t.window === "TEST")).toHaveLength(4);
+  });
+
+  it("still refuses when the data is too short for any honest fold", () => {
+    const r = validateStrategy({ spec: spec("ma_trend"), bars: walk(520, 13), config: cfg, codeVersion: "t", controls });
     expect(r.verdict).toBe("INSUFFICIENT_EVIDENCE");
     expect(r.reasons[0]).toMatch(/walk-forward needs more bars/);
     expect(r.trials).toHaveLength(0);

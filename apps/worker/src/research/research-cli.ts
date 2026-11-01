@@ -1,5 +1,6 @@
 import "../load-env.js";
 import { DEFAULT_VALIDATION, predictRoundTripCost, STRATEGY_LIBRARY, validateStrategy, type ResearchBar, type ValidationReport } from "@odin/backtest";
+import { fetchGeckoTerminalPoolReserve } from "@odin/market-data";
 import { DEFAULT_STRATEGY } from "@odin/shared";
 import { Prisma, PrismaClient } from "@odin/shared/db";
 
@@ -32,11 +33,23 @@ async function costPerSide(prisma: PrismaClient, dataset: { instrumentKind: stri
     orderBy: { receivedAt: "desc" },
     select: { liquidityUsd: true, receivedAt: true },
   });
-  if (!obs?.liquidityUsd) throw new Error(`no observed liquidity for ${dataset.instrumentKey}; refusing to assume a cost`);
-  const liquidity = Number(obs.liquidityUsd);
+  let liquidity: number;
+  let source: string;
+  if (obs?.liquidityUsd) {
+    liquidity = Number(obs.liquidityUsd);
+    source = `latest QUANT observation ${obs.receivedAt.toISOString()}`;
+  } else if (dataset.sourceId === "geckoterminal") {
+    // QUANT never observed this pool: use the pool's own current reserves, labelled, never a guess.
+    const reserve = await fetchGeckoTerminalPoolReserve(dataset.instrumentKey);
+    if (!reserve.ok) throw new Error(`no observed liquidity for ${dataset.instrumentKey} and GeckoTerminal reserve unavailable (${reserve.error}); refusing to assume a cost`);
+    liquidity = reserve.data.reserveUsd;
+    source = `GeckoTerminal reserve_in_usd at ${new Date(reserve.data.fetchedAt).toISOString()}`;
+  } else {
+    throw new Error(`no observed liquidity for ${dataset.instrumentKey}; refusing to assume a cost`);
+  }
   const p = predictRoundTripCost({ instrumentId: dataset.instrumentKey, notionalUsd: 500, liquidityUsd: liquidity, feeBps, spreadBpsEstimate, stepVolatilityBps: null, latencySteps: 0 });
   // Liquidity history is not stored, so the latest observation stands in for the whole window: labelled.
-  return { bps: p.conservativeBps / 2, basis: `DEX $500 at latest observed liquidity $${Math.round(liquidity)} (${obs.receivedAt.toISOString()}), conservative ${p.conservativeBps.toFixed(1)} bps round trip; liquidity history not stored` };
+  return { bps: p.conservativeBps / 2, basis: `DEX $500 at liquidity $${Math.round(liquidity)} (${source}), conservative ${p.conservativeBps.toFixed(1)} bps round trip; present-day liquidity stands in for the whole window (no liquidity history)` };
 }
 
 function summary(r: ValidationReport, costBasis: string) {
@@ -44,6 +57,7 @@ function summary(r: ValidationReport, costBasis: string) {
     costBasis,
     trialCount: r.trialCount,
     selectedParamsByFold: r.selectedParamsByFold,
+    gridScale: r.gridScale,
     oos: r.oos && {
       bars: r.oos.bars, trades: r.oos.trades, totalReturn: r.oos.totalReturn, sharpe: r.oos.sharpe, sortino: r.oos.sortino, maxDrawdown: r.oos.maxDrawdown,
       winRate: r.oos.winRate, profitFactor: r.oos.profitFactor, expectancy: r.oos.expectancy, exposure: r.oos.exposure, turnover: r.oos.turnover,
@@ -136,6 +150,7 @@ async function main() {
         dsr: report.dsr?.dsr === null || !report.dsr ? null : +report.dsr.dsr.toFixed(3),
         pbo: report.pbo?.pbo === null || !report.pbo ? null : +report.pbo.pbo.toFixed(2),
         trials: report.trialCount,
+        gridScale: report.gridScale ? +report.gridScale.factor.toFixed(3) : null,
         reasons: report.reasons.join("; "),
       });
     }

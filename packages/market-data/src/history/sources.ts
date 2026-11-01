@@ -114,6 +114,28 @@ export class GeckoTerminalPoolSource implements HistoricalBarSource {
   }
 }
 
+export type PoolReserve = { reserveUsd: number; fetchedAt: number; poolCreatedAt: string | null };
+
+/**
+ * Current whole-pool reserves in USD for a Solana pool (GeckoTerminal `reserve_in_usd`, the same meaning
+ * as DexScreener `liquidityUsd`). A present-day value: callers must label it as such, never as history.
+ */
+export async function fetchGeckoTerminalPoolReserve(
+  pool: string,
+  options: { fetchImpl?: typeof fetch; baseUrl?: string; network?: string; now?: () => number } = {},
+): Promise<{ ok: true; data: PoolReserve } | { ok: false; error: string }> {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(pool)) return { ok: false, error: "pool address is not base58" };
+  const base = options.baseUrl ?? "https://api.geckoterminal.com/api/v2";
+  if (!assertAllowlistedHttpsUrl(base, GECKO_HOSTS).ok) return { ok: false, error: "geckoterminal base URL not allowlisted" };
+  const response = await (options.fetchImpl ?? fetch)(new URL(`${base}/networks/${options.network ?? "solana"}/pools/${pool}`), { headers: { accept: "application/json" }, redirect: "error" });
+  if (!response.ok) return { ok: false, error: `geckoterminal http_${response.status}` };
+  const payload = (await response.json()) as { data?: { attributes?: { reserve_in_usd?: unknown; pool_created_at?: unknown } } };
+  const reserve = Number(payload?.data?.attributes?.reserve_in_usd);
+  if (!Number.isFinite(reserve) || reserve <= 0) return { ok: false, error: "geckoterminal pool has no positive reserve_in_usd" };
+  const created = payload.data?.attributes?.pool_created_at;
+  return { ok: true, data: { reserveUsd: reserve, fetchedAt: (options.now ?? Date.now)(), poolCreatedAt: typeof created === "string" ? created : null } };
+}
+
 const ALPACA_TIMEFRAME: Partial<Record<HistoryInterval, string>> = {
   "1m": "1Min",
   "5m": "5Min",
