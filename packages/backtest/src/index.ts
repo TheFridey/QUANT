@@ -11,3 +11,8 @@ export * from "./research/simulate.js";
 export * from "./research/metrics.js";
 export * from "./research/strategies.js";
 export * from "./research/validate.js";
+export * from "./research/regime.js";
+export * from "./research/regime-analysis.js";
+export * from "./research/features.js";
+export * from "./research/ml.js";
+export * from "./research/intelligence.js";
