@@ -20,6 +20,7 @@ import {
   type Mark,
   type SnapshotQueryPhase,
 } from "@odin/analytics";
+import { costForecastReport, forecastRecordFromAutopsy } from "@odin/backtest";
 import { BirdeyeClient } from "@odin/market-data";
 import {
   inventoryAlpacaCredentials,
@@ -928,6 +929,36 @@ export class TerminalService {
     }
     autopsies.reverse();
     return { accountId, stopLossPct, summary: summariseAutopsies(autopsies), trades: autopsies };
+  }
+
+  /**
+   * ASCEND-06: predicted versus observed execution cost for the most recent closed round trips. Research
+   * and advisory only. Predictions use entry-time liquidity and the current feeBps/spreadBpsEstimate (the
+   * config in force at each trade is not reconstructed); decision-to-fill delay is not recorded.
+   */
+  async executionCostReport(limitText: string) {
+    const autopsy = await this.tradeAutopsy(limitText);
+    const engineRow = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
+    const config = this.readConfig(engineRow?.config);
+    const feeBps = Number(config?.feeBps ?? DEFAULT_STRATEGY.feeBps);
+    const spreadBpsEstimate = Number(config?.spreadBpsEstimate ?? DEFAULT_STRATEGY.spreadBpsEstimate);
+    const records = autopsy.trades
+      .map((trip) => forecastRecordFromAutopsy(trip, { feeBps, spreadBpsEstimate }))
+      .filter((row): row is NonNullable<typeof row> => row !== null);
+    return {
+      evidence: "VERIFIED_HISTORICAL",
+      mode: "ADVISORY",
+      accountId: autopsy.accountId,
+      tripsConsidered: autopsy.trades.length,
+      tripsPredicted: records.length,
+      assumptions: [
+        `Predictions use current feeBps ${feeBps} and spreadBpsEstimate ${spreadBpsEstimate}`,
+        "Entry-time liquidity from the decision observation; trips without it are excluded",
+        "Paper fills are simulated by the same impact model, so error reflects liquidity change between decision and fill, not real-venue execution",
+      ],
+      report: costForecastReport(records),
+      records,
+    };
   }
 
   /** The account the terminal is showing: the active environment's paper account (same as the snapshot). */
