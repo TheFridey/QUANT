@@ -114,6 +114,13 @@ export async function tunePaperRiskForManualBuys(page: Page): Promise<void> {
       takeProfitPct: "200",
       exitM5ChangePct: "-50",
       breakevenActivatePct: null,
+      // Same race on the entry side: with security PASS on the deterministic feed, the engine's own
+      // momentum/mean-revert instances can open the test pair between cleanup and the "before"
+      // snapshot, and the manual BUY is then (correctly) refused as already held. An unreachable
+      // 100% M5 threshold keeps automatic entries out; operator tickets do not use it. The anomaly
+      // ceiling must stay >= the entry threshold, so it moves to the same (unreachable) bound.
+      entryM5ChangePct: "100",
+      maxEntryM5ChangePct: "100",
     },
   });
 }
