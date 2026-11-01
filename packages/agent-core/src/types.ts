@@ -116,6 +116,8 @@ export type PlanInput = {
   startingBalanceUsd: string;
   /** Equity at the Europe/London day start; the daily loss limit is measured against it (audit L3). */
   dayStartEquityUsd?: string | null;
+  /** Worst daily P&L seen this London day; latches the daily loss limit until the next day (ASCEND-00 F1). */
+  worstDailyPnlUsd?: string | null;
   positions: PositionView[];
   pairs: CyclePair[];
   marks: Record<string, Mark | undefined>;

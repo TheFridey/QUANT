@@ -25,6 +25,11 @@ export type RiskContext = {
    * fall back to startingBalanceUsd.
    */
   dayStartEquityUsd?: string | null;
+  /**
+   * Worst daily P&L seen this London day (session-low equity − start-of-day equity). Once it reaches
+   * the limit, entries stay blocked until the next London day even if equity recovers (ASCEND-00 F1).
+   */
+  worstDailyPnlUsd?: string | null;
   maxDailyLossPct: string;
   valuation: ValuationState;
   equityUsd?: string | null;
@@ -80,6 +85,9 @@ export function evaluateRisk(input: RiskContext): RiskGate {
     if (input.dailyPnlUsd === null) return gate("REJECT", ["DAILY_PNL_UNAVAILABLE"], 0);
     const limit = dailyLossLimitUsd(input);
     if (d(input.dailyPnlUsd).lte(limit.neg())) return gate("REJECT", ["DAILY_LOSS_LIMIT"], 1);
+    if (input.worstDailyPnlUsd != null && d(input.worstDailyPnlUsd).lte(limit.neg())) {
+      return gate("REJECT", ["DAILY_LOSS_LIMIT"], 1);
+    }
     if (input.openPositions >= input.maxPositions) return gate("REJECT", ["MAX_POSITIONS"], 1);
 
     const drawdown = totalDrawdownGate(input);
@@ -93,6 +101,51 @@ export function evaluateRisk(input: RiskContext): RiskGate {
   if (input.freshness === "DELAYED") reasons.push("DATA_DELAYED_EXIT_ALLOWED");
   reasons.push("RISK_OK");
   return gate("PASS", reasons, 1);
+}
+
+/**
+ * Loss still allowed today before the daily limit: limit + dailyPnl, floored at zero. Null when daily
+ * P&L is unknown (entries are then rejected by DAILY_PNL_UNAVAILABLE). Entry sizing caps worst-case
+ * stop-out loss to this so one admitted trade cannot carry the account through the limit (ASCEND-00 F2).
+ */
+export function dailyLossHeadroomUsd(input: {
+  dailyPnlUsd: string | null;
+  worstDailyPnlUsd?: string | null;
+  startingBalanceUsd: string;
+  dayStartEquityUsd?: string | null;
+  maxDailyLossPct: string;
+}): string | null {
+  if (input.dailyPnlUsd === null) return null;
+  const limit = dailyLossLimitUsd(input);
+  if (input.worstDailyPnlUsd != null && d(input.worstDailyPnlUsd).lte(limit.neg())) return "0.00000000";
+  const headroom = limit.plus(d(input.dailyPnlUsd));
+  return headroom.lte(0) ? "0.00000000" : headroom.toDecimalPlaces(8, Decimal.ROUND_DOWN).toFixed(8);
+}
+
+/**
+ * Loss already committed by open positions if each stops out: the fall from the mark to the stop
+ * (stopLossPct below average cost, never negative) plus exit costs (fee + maxExitImpactBps) on the
+ * marked notional. A position without a mark is valued at cost. Daily headroom is reduced by this, so
+ * several entries cannot each use the same headroom (ASCEND-00 F2 review).
+ */
+export function openStopRiskUsd(input: {
+  positions: ReadonlyArray<{ baseQty: string; avgCostUsd: string; markUsd: string | null }>;
+  stopLossPct: string;
+  feeBps: string;
+  maxExitImpactBps: string;
+}): string {
+  const stopFraction = d(input.stopLossPct).div(100);
+  const exitFraction = d(input.feeBps).plus(d(input.maxExitImpactBps)).div(10000);
+  let total = new Decimal(0);
+  for (const position of input.positions) {
+    const qty = d(position.baseQty);
+    if (qty.lte(0)) continue;
+    const mark = position.markUsd != null && d(position.markUsd).gt(0) ? d(position.markUsd) : d(position.avgCostUsd);
+    const stopPrice = d(position.avgCostUsd).mul(new Decimal(1).minus(stopFraction));
+    const toStop = Decimal.max(mark.minus(stopPrice), 0).mul(qty);
+    total = total.plus(toStop).plus(mark.mul(qty).mul(exitFraction));
+  }
+  return total.toDecimalPlaces(8, Decimal.ROUND_UP).toFixed(8);
 }
 
 /** Independent circuit breaker: trip on daily loss or HWM drawdown breach. */
@@ -110,16 +163,17 @@ export function evaluateCircuitBreaker(input: {
   dailyPnlUsd: string | null;
   startingBalanceUsd: string;
   dayStartEquityUsd?: string | null;
+  worstDailyPnlUsd?: string | null;
   maxDailyLossPct: string;
   equityUsd: string | null;
   highWaterMarkUsd: string | null;
   maxTotalDrawdownPct: string;
 }): { open: boolean; reasonCodes: ReasonCode[] } {
   const reasons: ReasonCode[] = [];
-  if (input.dailyPnlUsd !== null) {
-    const dailyLimit = dailyLossLimitUsd(input);
-    if (d(input.dailyPnlUsd).lte(dailyLimit.neg())) reasons.push("DAILY_LOSS_LIMIT");
-  }
+  const dailyLimit = dailyLossLimitUsd(input);
+  const breachedNow = input.dailyPnlUsd !== null && d(input.dailyPnlUsd).lte(dailyLimit.neg());
+  const breachedToday = input.worstDailyPnlUsd != null && d(input.worstDailyPnlUsd).lte(dailyLimit.neg());
+  if (breachedNow || breachedToday) reasons.push("DAILY_LOSS_LIMIT");
   if (input.equityUsd !== null && input.highWaterMarkUsd !== null && d(input.highWaterMarkUsd).gt(0)) {
     const dd = d(input.highWaterMarkUsd).minus(d(input.equityUsd)).div(d(input.highWaterMarkUsd)).mul(100);
     if (dd.gte(input.maxTotalDrawdownPct)) reasons.push("TOTAL_DRAWDOWN_LIMIT");

@@ -15,6 +15,14 @@ export function maxEntryNotional(input: {
   maxAggregateExposurePct?: string;
   aggregateExposureUsd?: string;
   maxPriceImpactBps?: string;
+  /**
+   * Loss still allowed today before the daily limit (ASCEND-00 F2). When set, the notional is capped
+   * so that a stop-out at stopLossPct, plus entry costs (fee + maxSlippageBps) and exit costs
+   * (fee + maxExitImpactBps, the worst exit the fill policy accepts), stays within it. A price gap
+   * through the stop can still exceed this; the same-day loss latch covers what follows.
+   */
+  dailyLossHeadroomUsd?: string | null;
+  maxExitImpactBps?: string;
 }): string {
   const budget = d(input.equityUsd).mul(d(input.maxPositionPctEquity)).div(100);
   const participation = d(input.liquidityUsd).mul(d(input.maxParticipationPctLiquidity)).div(100);
@@ -30,6 +38,16 @@ export function maxEntryNotional(input: {
       const notionalFromRisk = qtyFromRisk.mul(d(input.midPriceUsd));
       cap = Decimal.min(cap, notionalFromRisk);
     }
+  }
+
+  if (input.dailyLossHeadroomUsd != null && input.stopLossPct) {
+    const exitBps = input.maxExitImpactBps ?? input.maxSlippageBps;
+    const lossPerNotional = d(input.stopLossPct)
+      .div(100)
+      .plus(d(input.feeBps).plus(d(input.maxSlippageBps)).div(10000))
+      .plus(d(input.feeBps).plus(d(exitBps)).div(10000));
+    if (d(input.dailyLossHeadroomUsd).lte(0)) return usd(new Decimal(0));
+    cap = Decimal.min(cap, d(input.dailyLossHeadroomUsd).div(lossPerNotional));
   }
 
   if (input.maxAggregateExposurePct && input.aggregateExposureUsd !== undefined) {

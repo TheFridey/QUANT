@@ -1,5 +1,5 @@
 import { valuePortfolio } from "@odin/analytics";
-import { evaluateCircuitBreaker, evaluateRisk, evaluateRiskHierarchy } from "@odin/risk-engine";
+import { dailyLossHeadroomUsd, evaluateCircuitBreaker, evaluateRisk, evaluateRiskHierarchy, openStopRiskUsd } from "@odin/risk-engine";
 import {
   clientOrderIdFor,
   d,
@@ -102,6 +102,7 @@ export function planCycle(input: PlanInput): {
     dailyPnlUsd: dailyPnl,
     startingBalanceUsd: input.startingBalanceUsd,
     dayStartEquityUsd: input.dayStartEquityUsd ?? null,
+    worstDailyPnlUsd: input.worstDailyPnlUsd ?? null,
     maxDailyLossPct: input.config.maxDailyLossPct,
     equityUsd: valuedSeed.equityUsd,
     highWaterMarkUsd: input.highWaterMarkUsd ?? valuedSeed.equityUsd,
@@ -158,6 +159,7 @@ export function planCycle(input: PlanInput): {
       dailyPnlUsd: dailyPnl,
       startingBalanceUsd: input.startingBalanceUsd,
       dayStartEquityUsd: input.dayStartEquityUsd ?? null,
+      worstDailyPnlUsd: input.worstDailyPnlUsd ?? null,
       maxDailyLossPct: input.config.maxDailyLossPct,
       valuation: valued.valuation,
       equityUsd: valued.equityUsd,
@@ -169,6 +171,36 @@ export function planCycle(input: PlanInput): {
       circuitBreakerOpen: breaker.open,
     });
     return { risk, valued, openPositions };
+  };
+
+  // Loss headroom left today: in-cycle daily P&L (includes losses realised earlier in this cycle) less
+  // the stop-out risk of every open position in the simulated book, entries admitted this cycle included.
+  const headroom = () => {
+    // The simulated book also carries the entry costs of entries admitted this cycle (unrealised), which
+    // the realised-only in-cycle dailyPnl does not; use whichever reading is lower.
+    const bookEquity = valuePortfolio({ cashUsd: book.cashUsd, positions: book.positions, marks: input.marks }).equityUsd;
+    const bookPnl = bookEquity !== null && input.dayStartEquityUsd ? d(bookEquity).minus(d(input.dayStartEquityUsd)) : null;
+    const pnl = dailyPnl !== null && bookPnl !== null && bookPnl.lt(dailyPnl) ? bookPnl.toFixed(8) : dailyPnl;
+    const base = dailyLossHeadroomUsd({
+      dailyPnlUsd: pnl,
+      worstDailyPnlUsd: input.worstDailyPnlUsd ?? null,
+      startingBalanceUsd: input.startingBalanceUsd,
+      dayStartEquityUsd: input.dayStartEquityUsd ?? null,
+      maxDailyLossPct: input.config.maxDailyLossPct,
+    });
+    if (base === null) return null;
+    const committed = openStopRiskUsd({
+      positions: book.positions.map((position) => ({
+        baseQty: position.baseQty,
+        avgCostUsd: position.avgCostUsd,
+        markUsd: input.marks[position.pairAddress]?.priceUsd ?? null,
+      })),
+      stopLossPct: input.config.stopLossPct,
+      feeBps: input.config.feeBps,
+      maxExitImpactBps: input.config.maxExitImpactBps,
+    });
+    const left = d(base).minus(d(committed));
+    return left.lte(0) ? "0.00000000" : left.toFixed(8);
   };
 
   const accountCap = (pair: CyclePair, equityUsd: string | null) =>
@@ -187,6 +219,8 @@ export function planCycle(input: PlanInput): {
           maxAggregateExposurePct: input.config.maxAggregateExposurePct,
           aggregateExposureUsd: aggregateExposure,
           maxPriceImpactBps: input.config.maxPriceImpactBps,
+          dailyLossHeadroomUsd: headroom(),
+          maxExitImpactBps: input.config.maxExitImpactBps,
         })
       : null;
 
@@ -288,7 +322,7 @@ export function planCycle(input: PlanInput): {
     }
 
     const identity = globalIdentity(input, pair.pairAddress, side, intent);
-    const sized = sizeOrder(pair, book, input, side, intent, valued.equityUsd, aggregateExposure, identity);
+    const sized = sizeOrder(pair, book, input, side, intent, valued.equityUsd, aggregateExposure, identity, headroom());
     decisions.push({
       ...sized.decision,
       inputSource: sized.decision.inputSource ?? "portfolio:sizing",
@@ -701,6 +735,7 @@ function sizeOrder(
   equityUsd: string | null,
   aggregateExposureUsd: string,
   identity: Identity,
+  dailyHeadroomUsd: string | null,
 ): { decision: DecisionDraft; qty: string | null } {
   const started = Date.now();
   if (side === "SELL") {
@@ -791,6 +826,8 @@ function sizeOrder(
     maxAggregateExposurePct: input.config.maxAggregateExposurePct,
     aggregateExposureUsd,
     maxPriceImpactBps: input.config.maxPriceImpactBps,
+    dailyLossHeadroomUsd: dailyHeadroomUsd,
+    maxExitImpactBps: input.config.maxExitImpactBps,
   });
   let notional = cap;
   if (intent === "OPERATOR" && input.operator?.side === "BUY") {

@@ -108,3 +108,44 @@ describe("session equity / HWM midnight roll", () => {
     expect(later.sessionStartedAt.toISOString()).toBe("2026-12-02T00:00:00.000Z");
   });
 });
+
+describe("session-low latch (ASCEND-00 F1)", () => {
+  const base = {
+    sessionStartedAt: new Date("2026-10-31T00:00:00.000Z"),
+    sessionStartEquityUsd: "10000.00000000",
+    highWaterMarkUsd: "10000.00000000",
+    startingBalanceUsd: "10000",
+  };
+
+  it("keeps the day's worst P&L after equity recovers", () => {
+    const dip = rollSessionEquity({ ...base, now: new Date("2026-10-31T16:00:01.000Z"), currentEquityUsd: "9679.11", sessionLowEquityUsd: "9734.94" });
+    expect(dip.sessionLowEquityUsd).toBe("9679.11000000");
+    expect(dip.worstDailyPnlUsd).toBe("-320.89000000");
+    const recovered = rollSessionEquity({ ...base, now: new Date("2026-10-31T18:00:00.000Z"), currentEquityUsd: "9710", sessionLowEquityUsd: dip.sessionLowEquityUsd });
+    expect(recovered.dailyPnlUsd).toBe("-290.00000000");
+    expect(recovered.sessionLowEquityUsd).toBe("9679.11000000");
+    expect(recovered.worstDailyPnlUsd).toBe("-320.89000000");
+  });
+
+  it("keeps the old low while marks are missing at the boundary, then resets on the London roll", () => {
+    const missing = rollSessionEquity({ ...base, now: new Date("2026-11-01T00:00:20.000Z"), currentEquityUsd: null, sessionLowEquityUsd: "9679.11" });
+    expect(missing.rolled).toBe(false);
+    expect(missing.worstDailyPnlUsd).toBe("-320.89000000");
+    const rolled = rollSessionEquity({ ...base, now: new Date("2026-11-01T00:00:40.000Z"), currentEquityUsd: "9679.11", sessionLowEquityUsd: "9679.11" });
+    expect(rolled.rolled).toBe(true);
+    expect(rolled.sessionLowEquityUsd).toBe("9679.11000000");
+    expect(rolled.worstDailyPnlUsd).toBe("0.00000000");
+  });
+
+  it("does not ratchet the low from equity resting on untrusted (stale, demo) marks", () => {
+    const stale = rollSessionEquity({ ...base, now: new Date("2026-10-31T12:00:00.000Z"), currentEquityUsd: "9000", sessionLowEquityUsd: "9950", equityTrusted: false });
+    expect(stale.sessionLowEquityUsd).toBe("9950");
+    expect(stale.worstDailyPnlUsd).toBe("-50.00000000");
+  });
+
+  it("starts the low from current equity when none was persisted", () => {
+    const first = rollSessionEquity({ ...base, now: new Date("2026-10-31T12:00:00.000Z"), currentEquityUsd: "9950", sessionLowEquityUsd: null });
+    expect(first.sessionLowEquityUsd).toBe("9950.00000000");
+    expect(first.worstDailyPnlUsd).toBe("-50.00000000");
+  });
+});

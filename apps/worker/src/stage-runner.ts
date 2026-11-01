@@ -769,6 +769,8 @@ export class StageRunner {
       sessionStartEquityUsd: account.sessionStartEquityUsd?.toString() ?? null,
       currentEquityUsd: valuation.equityUsd,
       highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,
+      sessionLowEquityUsd: account.sessionLowEquityUsd?.toString() ?? null,
+      equityTrusted: valuation.valuation === "LIVE" || valuation.valuation === "CASH_ONLY",
       startingBalanceUsd: account.startingBalanceUsd.toString(),
     });
     if (
@@ -781,8 +783,24 @@ export class StageRunner {
           sessionStartedAt: sessionRoll.sessionStartedAt,
           sessionStartEquityUsd: sessionRoll.sessionStartEquityUsd,
           highWaterMarkUsd: sessionRoll.highWaterMarkUsd,
+          // A roll resets the low; within a day it only moves down, via the atomic write below.
+          ...(sessionRoll.rolled ? { sessionLowEquityUsd: sessionRoll.sessionLowEquityUsd } : {}),
         },
       });
+    }
+    if (
+      !sessionRoll.rolled &&
+      sessionRoll.sessionLowEquityUsd !== null &&
+      !sameDecimal(sessionRoll.sessionLowEquityUsd, account.sessionLowEquityUsd?.toString() ?? null)
+    ) {
+      // LEAST in SQL so a concurrent writer holding an older, higher low can never raise it (latch loss),
+      // scoped to this session so a writer that read before another process rolled the day cannot carry
+      // yesterday's low into today. The column is timestamp without time zone, so compare a zone-free UTC text.
+      await db.$executeRaw`
+        UPDATE "PaperAccount"
+        SET "sessionLowEquityUsd" = LEAST(COALESCE("sessionLowEquityUsd", ${sessionRoll.sessionLowEquityUsd}::numeric), ${sessionRoll.sessionLowEquityUsd}::numeric)
+        WHERE id = ${account.id}
+          AND "sessionStartedAt" = ${sessionRoll.sessionStartedAt.toISOString().slice(0, -1)}::timestamp(3)`;
     }
     const dailyPnlUsd =
       valuation.valuation !== "CASH_ONLY" && valuation.valuation !== "LIVE"
@@ -935,6 +953,7 @@ export class StageRunner {
       cashUsd: account.cashUsd.toString(),
       startingBalanceUsd: account.startingBalanceUsd.toString(),
       dayStartEquityUsd: sessionRoll.sessionStartEquityUsd,
+      worstDailyPnlUsd: sessionRoll.worstDailyPnlUsd,
       positions: positionViews,
       pairs,
       marks,
@@ -2301,6 +2320,11 @@ function toCyclePair(
   };
 }
 
+
+function sameDecimal(left: string | null, right: string | null): boolean {
+  if (left === null || right === null) return left === right;
+  return d(left).eq(d(right));
+}
 
 function DecimalMax(left: ReturnType<typeof d>, right: ReturnType<typeof d>) {
   return left.gte(right) ? left : right;

@@ -1,6 +1,6 @@
 import { DEFAULT_STRATEGY } from "@odin/shared";
 import { describe, expect, it } from "vitest";
-import { dailyLossLimitUsd, evaluateCircuitBreaker, evaluateRisk } from "./evaluate.js";
+import { dailyLossHeadroomUsd, dailyLossLimitUsd, evaluateCircuitBreaker, evaluateRisk, openStopRiskUsd } from "./evaluate.js";
 
 const base = {
   engineStatus: "RUNNING" as const,
@@ -118,5 +118,77 @@ describe("circuit breaker", () => {
     });
     expect(breaker.reasonCodes).toContain("DAILY_LOSS_LIMIT");
     expect(dailyLossLimitUsd({ startingBalanceUsd: "100", dayStartEquityUsd: null, maxDailyLossPct: "3" }).toFixed(2)).toBe("3.00");
+  });
+});
+
+describe("same-day daily-loss latch (ASCEND-00 F1)", () => {
+  // Start of day $10,000, limit 3% = $300. The day's worst was -$320.89; equity has since recovered to -$290.
+  const day = { ...base, startingBalanceUsd: "10000", dayStartEquityUsd: "10000", equityUsd: "9710", highWaterMarkUsd: "10000" };
+
+  it("keeps entries blocked after a recovery above the limit the same day", () => {
+    expect(evaluateRisk({ ...day, dailyPnlUsd: "-290", worstDailyPnlUsd: "-320.89" }).reasonCodes).toEqual(["DAILY_LOSS_LIMIT"]);
+    expect(evaluateRisk({ ...day, dailyPnlUsd: "-290", worstDailyPnlUsd: "-300" }).decision).toBe("REJECT");
+    expect(evaluateRisk({ ...day, dailyPnlUsd: "-290", worstDailyPnlUsd: "-299.99" }).decision).toBe("PASS");
+    expect(evaluateRisk({ ...day, dailyPnlUsd: "-290", worstDailyPnlUsd: null }).decision).toBe("PASS");
+  });
+
+  it("never blocks exits", () => {
+    const exit = evaluateRisk({ ...day, side: "SELL", intent: "EXIT", dailyPnlUsd: "-290", worstDailyPnlUsd: "-320.89" });
+    expect(exit.decision).toBe("PASS");
+  });
+
+  it("keeps the circuit breaker open on the latched loss", () => {
+    const breaker = evaluateCircuitBreaker({
+      dailyPnlUsd: "-290",
+      worstDailyPnlUsd: "-320.89",
+      startingBalanceUsd: "10000",
+      dayStartEquityUsd: "10000",
+      maxDailyLossPct: "3",
+      equityUsd: "9710",
+      highWaterMarkUsd: "10000",
+      maxTotalDrawdownPct: "10",
+    });
+    expect(breaker).toEqual({ open: true, reasonCodes: ["CIRCUIT_BREAKER", "DAILY_LOSS_LIMIT"] });
+  });
+});
+
+describe("daily-loss headroom (ASCEND-00 F2)", () => {
+  const limits = { startingBalanceUsd: "10000", dayStartEquityUsd: "10000", maxDailyLossPct: "3" };
+
+  it("is the loss left before the limit, never negative", () => {
+    expect(dailyLossHeadroomUsd({ ...limits, dailyPnlUsd: "-265.06" })).toBe("34.94000000");
+    expect(dailyLossHeadroomUsd({ ...limits, dailyPnlUsd: "50" })).toBe("350.00000000");
+    expect(dailyLossHeadroomUsd({ ...limits, dailyPnlUsd: "-320.89" })).toBe("0.00000000");
+  });
+
+  it("is zero once the day has latched, and unknown when daily P&L is unknown", () => {
+    expect(dailyLossHeadroomUsd({ ...limits, dailyPnlUsd: "-290", worstDailyPnlUsd: "-320.89" })).toBe("0.00000000");
+    expect(dailyLossHeadroomUsd({ ...limits, dailyPnlUsd: null })).toBeNull();
+  });
+});
+
+describe("open stop-out risk (ASCEND-00 F2 review)", () => {
+  const costs = { stopLossPct: "3", feeBps: "30", maxExitImpactBps: "1000" };
+
+  it("counts the fall to the stop plus worst exit costs per open position", () => {
+    // At cost: $30 to the stop + $103 exit costs on $1,000.
+    expect(openStopRiskUsd({ ...costs, positions: [{ baseQty: "10", avgCostUsd: "100", markUsd: "100" }] })).toBe("133.00000000");
+    // Marked down to 98 (stop at 97): $10 left to the stop + $100.94 exit costs.
+    expect(openStopRiskUsd({ ...costs, positions: [{ baseQty: "10", avgCostUsd: "100", markUsd: "98" }] })).toBe("110.94000000");
+    // Below the stop: only exit costs remain.
+    expect(openStopRiskUsd({ ...costs, positions: [{ baseQty: "10", avgCostUsd: "100", markUsd: "90" }] })).toBe("92.70000000");
+  });
+
+  it("values an unmarked position at cost, skips flat ones, and sums across positions", () => {
+    expect(
+      openStopRiskUsd({
+        ...costs,
+        positions: [
+          { baseQty: "10", avgCostUsd: "100", markUsd: null },
+          { baseQty: "0", avgCostUsd: "50", markUsd: "50" },
+          { baseQty: "10", avgCostUsd: "100", markUsd: "90" },
+        ],
+      }),
+    ).toBe("225.70000000");
   });
 });

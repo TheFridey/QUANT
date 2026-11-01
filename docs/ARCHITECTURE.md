@@ -102,7 +102,7 @@ Operator tickets skip the momentum rule and are labeled `OPERATOR_OVERRIDE`. The
 
 <!-- limits:end -->
 
-The daily loss limit is `maxDailyLossPct` of **start-of-day equity**. The trading day rolls at **Europe/London midnight** (BST/GMT aware). A day never rolls while equity is unknown; daily P&L then reads unavailable and entries are blocked until marks return.
+The daily loss limit is `maxDailyLossPct` of **start-of-day equity**. The trading day rolls at **Europe/London midnight** (BST/GMT aware). A day never rolls while equity is unknown; daily P&L then reads unavailable and entries are blocked until marks return. A breach latches: `PaperAccount.sessionLowEquityUsd` keeps the day's lowest equity, and once (low − start of day) reaches the limit, entries stay blocked until the next London day even if equity recovers. Each entry is also sized so that a stop-out plus worst entry and exit costs fits the loss headroom left today, after subtracting the stop-out risk of positions already open (ASCEND-00 F1/F2). The session low moves only on `LIVE`/`CASH_ONLY` valuations. Exits are never blocked by either rule.
 
 An invalid stored config is never healed or rewritten. The worker raises a CRITICAL `CONFIG_INVALID` alert naming the failing fields, pauses entries, and keeps settling, exiting and protecting on `DEFAULT_STRATEGY` values until the operator corrects it. `scripts/report-invalid-configs.mjs` lists affected rows read-only.
 

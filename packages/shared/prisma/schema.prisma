@@ -34,6 +34,8 @@ model PaperAccount {
   highWaterMarkUsd      Decimal?       @db.Decimal(24, 8)
   sessionStartEquityUsd Decimal?       @db.Decimal(24, 8)
   sessionStartedAt      DateTime?
+  /// Lowest known equity this Europe/London day; latches the daily loss limit (ASCEND-00 F1)
+  sessionLowEquityUsd   Decimal?       @db.Decimal(24, 8)
   /// FIXTURE | REPLAY | MARKET_DATA_PAPER | EXTERNAL_DEMO — isolation boundary
   tradingEnvironment    String         @default("MARKET_DATA_PAPER")
   createdAt             DateTime       @default(now())
