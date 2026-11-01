@@ -135,13 +135,16 @@ export function expectedMaxSharpe(trials: number, variance: number): number {
 
 /**
  * Deflated Sharpe Ratio: PSR against the Sharpe expected from the best of `trialSharpes.length` trials.
- * `trialSharpes` are per-bar Sharpes of every configuration tried, failures included.
+ * `trialSharpes` are per-bar Sharpes of every configuration tried, failures included. `trialCount`, when
+ * larger, replaces the number of trials (programme-wide selection: every trial ever run, not only this run's),
+ * keeping this run's dispersion. It can only raise the benchmark.
  */
-export function deflatedSharpe(input: { sharpe: number; n: number; skew: number; kurtosis: number; trialSharpes: number[] }): { dsr: number | null; benchmark: number; trials: number } {
+export function deflatedSharpe(input: { sharpe: number; n: number; skew: number; kurtosis: number; trialSharpes: number[]; trialCount?: number }): { dsr: number | null; benchmark: number; trials: number } {
   const finite = input.trialSharpes.filter((x) => Number.isFinite(x));
   const v = finite.length >= 2 ? (stdev(finite) as number) ** 2 : 0;
-  const benchmark = expectedMaxSharpe(finite.length, v);
-  return { dsr: probabilisticSharpe({ sharpe: input.sharpe, benchmark, n: input.n, skew: input.skew, kurtosis: input.kurtosis }), benchmark, trials: finite.length };
+  const trials = Math.max(finite.length, Math.floor(input.trialCount ?? 0));
+  const benchmark = expectedMaxSharpe(trials, v);
+  return { dsr: probabilisticSharpe({ sharpe: input.sharpe, benchmark, n: input.n, skew: input.skew, kurtosis: input.kurtosis }), benchmark, trials };
 }
 
 function combinations(n: number, k: number): number[][] {

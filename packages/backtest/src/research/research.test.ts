@@ -199,4 +199,20 @@ describe("walk-forward protocol", () => {
     expect(r.oos!.totalReturn).toBeLessThanOrEqual(0);
     expect(r.verdict).toBe("REJECTED_COSTS");
   });
+  it("deflates DSR by the programme's trial count when given, and never loosens it", () => {
+    const bars = walk(3000, 18, 0.0003, 0.008);
+    const local = validateStrategy({ spec: spec("ma_trend"), bars, config: cfg, codeVersion: "t", controls });
+    const programme = validateStrategy({ spec: spec("ma_trend"), bars, config: cfg, codeVersion: "t", controls, programmeTrialCount: 1594 });
+    expect(local.dsrProgramme).toBeNull();
+    expect(programme.dsrProgramme!.trials).toBe(1594 + programme.trials.length);
+    expect(programme.dsrProgramme!.benchmark).toBeGreaterThanOrEqual(programme.dsr!.benchmark);
+    if (programme.dsrProgramme!.dsr !== null && programme.dsr!.dsr !== null) expect(programme.dsrProgramme!.dsr).toBeLessThanOrEqual(programme.dsr!.dsr);
+  }, 60_000);
+
+  it("reports OOS net return at 2x and 3x cost, monotonically worse", () => {
+    const r = validateStrategy({ spec: spec("tsmom"), bars: walk(3000, 19, 0.0003, 0.008), config: cfg, codeVersion: "t", controls });
+    expect(r.costSensitivity.map((c) => c.multiplier)).toEqual([2, 3]);
+    expect(r.costSensitivity[0]!.netReturn).toBeLessThanOrEqual(r.oos!.totalReturn);
+    expect(r.costSensitivity[1]!.netReturn).toBeLessThanOrEqual(r.costSensitivity[0]!.netReturn);
+  }, 60_000);
 });
