@@ -4,9 +4,53 @@ import {
   type ExternalExecution,
 } from "@odin/market-data";
 import { applyExternalFill, releasePendingExitReservation } from "@odin/trading-engine";
-import { assertPaperOrSandboxOnly, d, newId } from "@odin/shared";
+import { assertPaperOrSandboxOnly, d, newId, startOfLondonDay, usd } from "@odin/shared";
 import type { PrismaClient } from "@odin/shared/db";
-import { releaseInTx, type ReservationBudget } from "@odin/risk-engine";
+import { evaluateCircuitBreaker, releaseInTx, type ReservationBudget } from "@odin/risk-engine";
+import { strategyConfigOrExitOnly } from "./strategy-config.js";
+
+/**
+ * ASCEND-00 F3: a SANDBOX BUY admitted before a daily-loss breach (or before a halt) must not reach
+ * the venue afterwards. Checked once per outbox run, only for BUYs never submitted (PRE_SUBMIT); an
+ * UNKNOWN order may already be at the broker, so it is left to sync. Uses the persisted same-day
+ * session low (F1) and the latest trusted equity snapshot of this London day.
+ */
+export async function sandboxEntryBlock(
+  prisma: PrismaClient,
+  input: { accountId: string; now: Date },
+): Promise<string | null> {
+  const engine = await prisma.engineControl.findUnique({ where: { id: "primary" } });
+  if (!engine || engine.status !== "RUNNING") return "ENGINE_HALTED";
+  const { config } = strategyConfigOrExitOnly(engine.config ?? {});
+  if (config.pauseNewEntries === true) return "PAUSE_NEW_ENTRIES";
+  const account = await prisma.paperAccount.findUnique({ where: { id: input.accountId } });
+  if (!account?.sessionStartEquityUsd || !account.sessionStartedAt) return "DAILY_PNL_UNAVAILABLE";
+  // A stored session from an earlier London day has not rolled yet: daily P&L is unknown, as in the planner.
+  if (startOfLondonDay(account.sessionStartedAt).getTime() !== startOfLondonDay(input.now).getTime()) {
+    return "DAILY_PNL_UNAVAILABLE";
+  }
+  const start = account.sessionStartEquityUsd.toString();
+  const snapshot = await prisma.equitySnapshot.findFirst({
+    where: {
+      accountId: input.accountId,
+      createdAt: { gte: account.sessionStartedAt },
+      valuation: { in: ["LIVE", "CASH_ONLY"] },
+      equityUsd: { not: null },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  const breaker = evaluateCircuitBreaker({
+    dailyPnlUsd: snapshot?.equityUsd ? usd(d(snapshot.equityUsd.toString()).minus(d(start))) : null,
+    worstDailyPnlUsd: account.sessionLowEquityUsd ? usd(d(account.sessionLowEquityUsd.toString()).minus(d(start))) : null,
+    startingBalanceUsd: account.startingBalanceUsd.toString(),
+    dayStartEquityUsd: start,
+    maxDailyLossPct: config.maxDailyLossPct,
+    equityUsd: snapshot?.equityUsd?.toString() ?? null,
+    highWaterMarkUsd: account.highWaterMarkUsd?.toString() ?? null,
+    maxTotalDrawdownPct: config.maxTotalDrawdownPct,
+  });
+  return breaker.open ? "CIRCUIT_BREAKER" : null;
+}
 
 /**
  * SANDBOX outbox processor (Stage Q).
@@ -58,7 +102,33 @@ export async function processSandboxOutbox(
   let unknown = 0;
   let skipped = 0;
 
+  let entryBlock: string | null | undefined;
   for (const order of due) {
+    if (order.side === "BUY" && order.submissionState === "PRE_SUBMIT") {
+      entryBlock ??= await sandboxEntryBlock(prisma, { accountId: input.accountId, now });
+      if (entryBlock) {
+        await prisma.order.update({
+          where: { id: order.id },
+          data: {
+            status: "CANCELLED",
+            rejectReason: entryBlock,
+            submissionState: "TERMINAL",
+            reasonCodes: [...order.reasonCodes, entryBlock],
+            nextSyncAt: null,
+          },
+        });
+        if (input.reservationBudget) {
+          await releaseInTx(
+            prisma,
+            { accountId: input.accountId, mode: "SANDBOX", clientOrderId: order.clientOrderId },
+            input.reservationBudget,
+            now,
+          );
+        }
+        skipped += 1;
+        continue;
+      }
+    }
     if (readiness !== "READY" || !venue) {
       await prisma.order.update({
         where: { id: order.id },
