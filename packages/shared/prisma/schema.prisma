@@ -379,6 +379,9 @@ model Order {
   /// Position lot (Position.lifecycleId) a SELL was booked against; null for BUYs and legacy rows (PCR-1).
   /// Settle cancels a stamped SELL whose lot is no longer the pair's open lot (EXIT_LIFECYCLE_MISMATCH).
   positionLifecycleId String?
+  /// Position.cumBoughtQty when a SELL was booked (PCR-1). At settle the SELL may sell at most
+  /// qty − (cumBoughtQty(now) − this): the booked units still held. Null for BUYs and legacy rows.
+  positionBoughtQtyAtBooking Decimal? @db.Decimal(38, 8)
   /// Who owns the economic consequence: STRATEGY | OPERATOR | PROTECTION | ACCOUNT_FLATTEN | NET_CLOSE | LEGACY.
   ownerScope      String    @default("LEGACY")
   /// External venue order id (SANDBOX). Null for local PAPER.
@@ -451,6 +454,9 @@ model Position {
   realizedPnlUsd Decimal  @db.Decimal(24, 8)
   /// Current open-lot id; minted on 0→open, cleared on flat. Scopes protection + open meta (R01).
   lifecycleId    String?
+  /// Monotonic: total quantity ever bought on this row (every BUY fill adds its qty; never decreases or
+  /// resets, even across lots). Pending exits stamp it at booking; see packages/shared/src/position-lot.ts (PCR-1).
+  cumBoughtQty   Decimal  @default(0) @db.Decimal(38, 8)
   /// Primary opening instance when a single owner; multi-strategy uses StrategyAllocation (§8).
   strategyInstanceId String?
   updatedAt      DateTime @updatedAt

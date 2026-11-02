@@ -1,6 +1,6 @@
 // Audit F2: one executor phase, moved out of StageRunner.executor without behaviour change.
 import { releaseInTx } from "@odin/risk-engine";
-import { d, type ExecutionContext } from "@odin/shared";
+import { d, exitFence, type ExecutionContext } from "@odin/shared";
 import type { Prisma } from "@odin/shared/db";
 import { releasePendingExitReservation, settlePendingOrder } from "@odin/trading-engine";
 import { strategyConfigOrExitOnly } from "../strategy-config.js";
@@ -61,17 +61,36 @@ export async function settlePendingPaperOrders(
     // ASCEND-00 F5: a pending SELL whose position another exit already closed (typically protection
     // firing in the same cycle as a planner NET_CLOSE) has nothing left to sell. Cancel it explicitly and
     // release its reservations, rather than letting the store reject it as SELL_EXCEEDS_POSITION.
+    // PCR-1: a SELL may sell only units held when it was booked, never units bought since (for example by
+    // a pending BUY that settled first in this loop: orders settle in submittedAt order). The decision is the
+    // pure exitFence (packages/shared/src/position-lot.ts), read and applied under this transaction's
+    // account lock. Flat pairs cancel every SELL (F5); flatten exits are not capped; unstamped rows keep
+    // today's behaviour.
     if (row.side === "SELL") {
       const position = await tx.position.findFirst({
         where: { accountId: ctx.accountId, pairAddress: row.pairAddress },
       });
-      if (!position || d(position.baseQty.toString()).lte(0)) {
+      const decision = exitFence(
+        {
+          qty: row.qty.toString(),
+          ownerScope: row.ownerScope,
+          intent: row.intent,
+          stamp: {
+            lotId: row.positionLifecycleId,
+            boughtQtyAtBooking: row.positionBoughtQtyAtBooking?.toString() ?? null,
+          },
+        },
+        position
+          ? { qty: position.baseQty.toString(), lotId: position.lifecycleId, cumBoughtQty: position.cumBoughtQty.toString() }
+          : null,
+      );
+      if (decision.action === "CANCEL") {
         await tx.order.update({
           where: { id: row.id },
           data: {
             status: "CANCELLED",
-            rejectReason: "EXIT_SUPERSEDED",
-            reasonCodes: [...row.reasonCodes, "EXIT_SUPERSEDED"],
+            rejectReason: decision.reason,
+            reasonCodes: [...row.reasonCodes, decision.reason],
           },
         });
         await releasePendingExitReservation(tx, row);
@@ -83,27 +102,14 @@ export async function settlePendingPaperOrders(
         );
         continue;
       }
-      // PCR-1: a SELL booked against an earlier lot must not reduce a lot opened since, for example by a
-      // pending BUY that settled first in this loop (orders settle in submittedAt order). Flatten exits are
-      // exempt: they mean "be flat now". Unstamped (legacy) rows keep today's behaviour.
-      const flattenExit = row.ownerScope === "ACCOUNT_FLATTEN" || row.intent === "FLATTEN";
-      if (row.positionLifecycleId && !flattenExit && position.lifecycleId !== row.positionLifecycleId) {
+      if (decision.action === "CAP") {
+        // Shrink the order to the surviving booked units; release the reserved exit qty it no longer needs.
+        const excess = d(row.qty.toString()).minus(d(decision.qty)).toFixed(8);
         await tx.order.update({
           where: { id: row.id },
-          data: {
-            status: "CANCELLED",
-            rejectReason: "EXIT_LIFECYCLE_MISMATCH",
-            reasonCodes: [...row.reasonCodes, "EXIT_LIFECYCLE_MISMATCH"],
-          },
+          data: { qty: decision.qty, reasonCodes: [...row.reasonCodes, decision.reason] },
         });
-        await releasePendingExitReservation(tx, row);
-        await releaseInTx(
-          tx,
-          { accountId: ctx.accountId, mode: "PAPER", clientOrderId: row.clientOrderId },
-          settleBudget,
-          now,
-        );
-        continue;
+        await releasePendingExitReservation(tx, { ...row, qty: excess });
       }
     }
     const settled = await settlePendingOrder(tx, {
