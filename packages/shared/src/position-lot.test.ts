@@ -198,6 +198,10 @@ describe("PCR-1 v3: STRATEGY exits are fenced per owner", () => {
     expect(exitFence(pairOnly, pos("2", "3"), { qty: "1", cumBoughtQty: "9" })).toEqual({ action: "PROCEED", qty: "1.00000000" });
   });
 
+  it("an over-attributed owner allocation never sells more than the pair holds (re-review LOW)", () => {
+    expect(exitFence(strategySell("3", "3"), pos("1", "5"), { qty: "3", cumBoughtQty: "3" })).toEqual({ action: "CAP", qty: "1.00000000", reason: "EXIT_CAPPED_TO_POSITION" });
+  });
+
   it("flatten is capped at the quantity held instead of being rejected", () => {
     expect(exitFence(sell("3", "3", "lot_A", "ACCOUNT_FLATTEN", "FLATTEN"), pos("1", "3"))).toEqual({ action: "CAP", qty: "1.00000000", reason: "EXIT_CAPPED_TO_POSITION" });
   });

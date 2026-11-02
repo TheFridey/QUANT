@@ -133,7 +133,12 @@ export function exitFence(
   const ownerStamp = order.stamp.allocationBoughtQtyAtBooking ?? null;
   if (order.ownerScope === "STRATEGY" && ownerStamp !== null) {
     if (!allocation || !d(allocation.qty).gt(0)) return { action: "CANCEL", reason: "EXIT_LIFECYCLE_MISMATCH" };
-    return fenceByCounter(allocation.qty, allocation.cumBoughtQty, ownerStamp, orderQty);
+    const owner = fenceByCounter(allocation.qty, allocation.cumBoughtQty, ownerStamp, orderQty);
+    // Never more than the pair holds (an over-attributed allocation would otherwise be rejected later).
+    if (owner.action !== "CANCEL" && d(owner.qty).gt(d(position.qty))) {
+      return { action: "CAP", qty: d(position.qty).toFixed(8), reason: "EXIT_CAPPED_TO_POSITION" };
+    }
+    return owner;
   }
   // Pair-level exits (NET_CLOSE, PROTECTION, OPERATOR, LEGACY): first-in first-out across the pair.
   if (order.stamp.boughtQtyAtBooking === null) return { action: "PROCEED", qty: orderQty.toFixed(8) };

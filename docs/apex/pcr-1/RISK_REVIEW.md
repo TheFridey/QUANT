@@ -1,5 +1,24 @@
 # PCR-1 independent risk reviews
 
+## Review 3 (v3, head `f18f2c8`)
+
+Verdicts:
+- **non-protected half: APPROVE WITH NOTES**
+- **protected patch: APPROVE WITH NOTES**. Apply only after the operator unlock. Then run the full suite with every PCR-1 test passing, including the booking stamp. Add the post-unlock tests in ANALYSIS §4, plus CAP followed by a fill or a reject. Do a final review on the applied diff.
+
+The reviewer confirmed:
+- The v2 MEDIUM is resolved: the multi-owner scenario is now a unit test and an integration test, and the per-owner property test passes.
+- The allocation counter has exactly one increment site (grep). `repairAllocationDrift` bumps only the UNATTRIBUTED row's counter, which is harmless.
+- Remainder inheritance is correct for pending and immediate parents.
+- The settle allocation read happens under the account lock.
+
+The reviewer ran `git apply --check` and 22/22 unit tests. It did not run the integration tests because the database was busy. I re-ran them afterwards (see the ledger).
+
+| Severity | Finding | Disposition |
+| --- | --- | --- |
+| LOW | The per-owner branch did not cap at the position quantity, so an over-attributed allocation would be rejected `SELL_EXCEEDS_POSITION` (baseline behaviour, not a regression) | **Fixed.** Capped at the pair quantity (`EXIT_CAPPED_TO_POSITION`); unit test |
+| LOW | With `paperLatencyMs = 0`, an immediate SELL's exit-policy remainder is pending and stamped after an earlier same-plan BUY | Documented (ANALYSIS §6). Closing it needs stamps from the plan's book snapshot, which is a planner change and out of scope |
+
 ## Review 2 (v2, head `a550c23`)
 
 The reviewer worked in a separate context and modified nothing. It ran:
