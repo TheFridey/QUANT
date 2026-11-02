@@ -1,6 +1,11 @@
 -- PCR-1 (APEX): fence pending exits to the position lot they were booked against.
--- Additive and nullable: existing rows stay NULL and keep today's settle behaviour; code that does not
--- know the column ignores it, so this migration is safe to apply before the code that uses it.
+-- Additive, nullable, no default: a metadata-only change on PostgreSQL 16 (no table rewrite).
+-- Existing rows stay NULL and keep today's settle behaviour.
+--
+-- DEPLOY ORDER: apply this migration BEFORE starting a build whose Prisma client knows the column.
+-- A new client reads "positionLifecycleId" on every Order query and fails against the old schema.
+-- Rollback: redeploy the previous build; never drop this column while a new build may still run.
+--
+-- No index: nothing queries by this column (settle reads it from the row it already holds). If one is
+-- needed later, add it in its own migration with CREATE INDEX CONCURRENTLY to avoid blocking Order writes.
 ALTER TABLE "Order" ADD COLUMN "positionLifecycleId" TEXT;
-
-CREATE INDEX "Order_positionLifecycleId_idx" ON "Order"("positionLifecycleId");

@@ -73,10 +73,11 @@ describe.skipIf(!enabled)("PCR-1: pending exits are fenced to their position lot
   }
 
   /** `lot` simulates the stamp PCR-1 adds at booking time (Order.positionLifecycleId). */
-  async function pending(input: { clientOrderId: string; side: "BUY" | "SELL"; intent: string; ownerScope: string; submittedAt: Date; observationId: string; lot?: string | null; qty?: string }) {
+  async function pending(input: { clientOrderId: string; side: "BUY" | "SELL"; intent: string; ownerScope: string; submittedAt: Date; observationId: string; lot?: string | null; qty?: string; eligibleAt?: Date; strategyInstanceId?: string }) {
     return prisma.order.create({
       data: {
         ...(input.lot !== undefined ? { positionLifecycleId: input.lot } : {}),
+        ...(input.strategyInstanceId ? { strategyInstanceId: input.strategyInstanceId } : {}),
         clientOrderId: input.clientOrderId,
         cycleId: "cyc_pcr1",
         accountId: "primary",
@@ -91,8 +92,8 @@ describe.skipIf(!enabled)("PCR-1: pending exits are fenced to their position lot
         reasonCodes: ["ORDER_PENDING"],
         ownerScope: input.ownerScope,
         submittedAt: input.submittedAt,
-        eligibleAt: input.submittedAt,
-        expiresAt: new Date(input.submittedAt.getTime() + 60_000),
+        eligibleAt: input.eligibleAt ?? input.submittedAt,
+        expiresAt: new Date((input.eligibleAt ?? input.submittedAt).getTime() + 60_000),
       },
     });
   }
@@ -172,6 +173,45 @@ describe.skipIf(!enabled)("PCR-1: pending exits are fenced to their position lot
     await settle(now);
 
     expect((await prisma.order.findUniqueOrThrow({ where: { clientOrderId: "pcr1_legacy" } })).status).toBe("FILLED");
+  });
+
+  it("an OPERATOR reduce for a closed lot is fenced even before it is eligible", async () => {
+    const now = new Date();
+    const decision = await observation(new Date(now.getTime() - 12_000), "cyc_pcr1_decision");
+    await observation(new Date(now.getTime() - 1_000), "cyc_pcr1");
+    await prisma.position.create({ data: { accountId: "primary", pairAddress, baseSymbol: "SOL", baseQty: "1", avgCostUsd: "100", realizedPnlUsd: "0", lifecycleId: "lot_L2" } });
+    await prisma.paperAccount.update({ where: { id: "primary" }, data: { cashUsd: { decrement: 100 } } });
+    await pending({ clientOrderId: "pcr1_operator", side: "SELL", intent: "OPERATOR", ownerScope: "OPERATOR", submittedAt: new Date(now.getTime() - 8_000), eligibleAt: new Date(now.getTime() + 30_000), observationId: decision.id, lot: "lot_L1" });
+
+    await settle(now);
+
+    const op = await prisma.order.findUniqueOrThrow({ where: { clientOrderId: "pcr1_operator" } });
+    expect(op.status).toBe("CANCELLED");
+    expect(op.rejectReason).toBe("EXIT_LIFECYCLE_MISMATCH");
+    expect((await prisma.position.findFirstOrThrow({ where: { accountId: "primary", pairAddress } })).baseQty.toString()).toBe("1");
+    expect(await prisma.fill.count()).toBe(0);
+  });
+
+  it("a fenced STRATEGY exit releases its reserved exit quantity, clamped at zero", async () => {
+    const now = new Date();
+    const decision = await observation(new Date(now.getTime() - 12_000), "cyc_pcr1_decision");
+    await observation(new Date(now.getTime() - 1_000), "cyc_pcr1");
+    await prisma.position.create({ data: { accountId: "primary", pairAddress, baseSymbol: "SOL", baseQty: "1", avgCostUsd: "100", realizedPnlUsd: "0", lifecycleId: "lot_L2" } });
+    await prisma.paperAccount.update({ where: { id: "primary" }, data: { cashUsd: { decrement: 100 } } });
+    await prisma.strategyAllocation.create({
+      data: { accountId: "primary", strategyInstanceId: "inst_x", instrumentId: pairAddress, pairAddress, lifecycleId: "lot_L1", qty: "0", avgCostUsd: "0", reservedExitQty: "0.4" },
+    });
+    await pending({ clientOrderId: "pcr1_strategy", side: "SELL", intent: "EXIT", ownerScope: "STRATEGY", strategyInstanceId: "inst_x", submittedAt: new Date(now.getTime() - 8_000), observationId: decision.id, lot: "lot_L1" });
+
+    await settle(now);
+
+    const sell = await prisma.order.findUniqueOrThrow({ where: { clientOrderId: "pcr1_strategy" } });
+    expect(sell.status).toBe("CANCELLED");
+    expect(sell.rejectReason).toBe("EXIT_LIFECYCLE_MISMATCH");
+    const allocation = await prisma.strategyAllocation.findFirstOrThrow({ where: { strategyInstanceId: "inst_x" } });
+    // The order reserved 1; only 0.4 was still held (a pro-rata close released the rest). Release clamps at 0.
+    expect(allocation.reservedExitQty.toString()).toBe("0");
+    expect((await prisma.position.findFirstOrThrow({ where: { accountId: "primary", pairAddress } })).baseQty.toString()).toBe("1");
   });
 
   it("booking stamps a pending SELL with the open lot, and a BUY with none", async () => {

@@ -30,12 +30,14 @@ Out of scope: SANDBOX orders already at the broker (`applyExternalFill`). A brok
 
 | Part | File | Protected? | State on the branch |
 | --- | --- | --- | --- |
-| Nullable `Order.positionLifecycleId` + index | `packages/shared/prisma/schema.prisma`, migration `20261102120000_order_position_lifecycle` | No; **production migration needs approval** | Implemented |
+| Nullable `Order.positionLifecycleId` (no index: nothing queries by it) | `packages/shared/prisma/schema.prisma`, migration `20261102120000_order_position_lifecycle` | No; **production migration needs approval** | Implemented |
 | Reason code `EXIT_LIFECYCLE_MISMATCH` | `packages/shared/src/reasons.ts` | No | Implemented |
 | Fence: cancel a stamped SELL whose lot is not the pair's open lot, releasing reservations exactly as F5 does; flatten exits exempt; unstamped rows unchanged | `apps/worker/src/executor/settle.ts` | No | Implemented |
 | Stamp the lot on every pending SELL and on exit remainders | `packages/trading-engine/src/store.ts` | **Yes** | Patch only: [`store-stamping.patch`](store-stamping.patch). `git apply --check` passes against `c3b23e9`; not applied |
 
-The two halves are safe in either order. The fence is a no-op until rows are stamped (null → today's behaviour). The column is ignored by code that does not know it. Deploying the migration and fence without the stamping changes nothing in behaviour.
+The two *code* halves are safe in either order: the fence is a no-op until rows are stamped (null → today's behaviour), so deploying the fence without the stamping changes nothing in behaviour.
+
+**The migration must go first.** A build whose Prisma client knows `positionLifecycleId` selects it on every `Order` read. Against a schema without the column, the whole executor would fail, including exits (risk review, MEDIUM). Old builds ignore the column, so migrate, then deploy. On rollback, redeploy the previous build and keep the column.
 
 ### Design choices
 
@@ -63,17 +65,23 @@ The two halves are safe in either order. The fence is a no-op until rows are sta
 | Control: SELL for the still-open lot fills | pass | pass | expected pass |
 | Flatten exit fills whichever lot is open | pass | pass | expected pass |
 | Legacy unstamped SELL keeps today's behaviour | pass | pass | expected pass |
+| OPERATOR reduce for a closed lot is fenced even before it is eligible | n/a | pass | expected pass |
+| Fenced STRATEGY exit releases its reserved exit qty, clamped at zero | n/a | pass | expected pass |
 | Booking stamps a pending SELL with the open lot, and a BUY with none | n/a | **fails** (needs `store.ts`) | expected pass; **not executed** (requires the unlock) |
 
-Branch-wide, executed: `pnpm test` gives 826 passed, 1 failed (the stamping test above), 25 skipped (bubblewrap). `pnpm typecheck` and `pnpm lint` are clean. Existing settle F5 unit tests pass.
+"Before fix" for the first row was executed against `c3b23e9` (the reproduction in §1). The fence tests seed stamped rows; they prove the fence logic, not reachability, which §1 shows separately.
 
-Still to add with the unlock: a store-level test that a partial exit's remainder carries the parent's lot (`store.exit-policy.integration.test.ts`, protected package).
+Branch-wide, executed: `pnpm test` gives 828 passed, 1 failed (the stamping test above), 25 skipped (bubblewrap). `pnpm typecheck` and `pnpm lint` are clean. Existing settle F5 unit tests pass.
+
+Still to add with the unlock (from the risk review):
+- a store-level test that a partial exit's remainder carries the parent's lot (`store.exit-policy.integration.test.ts`, protected package);
+- an end-to-end executor test: admit, then `evaluateProtections`, then the next settle, building the sequence without seeded rows.
 
 ## 4. Rollout (after approval)
 
 1. Unlock; apply `store-stamping.patch`; run the full suite (all 5 PCR-1 tests must pass) and the quant-safety review.
 2. PR with CI green.
-3. Deploy: back up, apply the additive migration, rebuild packages and worker, restart the worker. Rollback: the previous build; the nullable column can stay.
+3. Deploy, in this order: back up; **apply the migration first** (metadata-only on PostgreSQL 16, no rewrite and no index build); then rebuild packages and worker, and restart the worker. Rollback: redeploy the previous build; keep the column.
 4. Watch `EXIT_LIFECYCLE_MISMATCH` cancellations (expected rare) beside `EXIT_SUPERSEDED`.
 
 ## 5. Independent risk review

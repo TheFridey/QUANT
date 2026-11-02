@@ -408,7 +408,6 @@ model Order {
   @@index([accountId, createdAt])
   @@index([accountId, submissionState])
   @@index([intentId])
-  @@index([positionLifecycleId])
   @@index([brokerOrderId])
 }
 
