@@ -28,58 +28,58 @@ model EngineControl {
 }
 
 model PaperAccount {
-  id                    String        @id @default("primary")
-  cashUsd               Decimal       @db.Decimal(24, 8)
-  startingBalanceUsd    Decimal       @db.Decimal(24, 8)
-  highWaterMarkUsd      Decimal?      @db.Decimal(24, 8)
-  sessionStartEquityUsd Decimal?      @db.Decimal(24, 8)
+  id                    String         @id @default("primary")
+  cashUsd               Decimal        @db.Decimal(24, 8)
+  startingBalanceUsd    Decimal        @db.Decimal(24, 8)
+  highWaterMarkUsd      Decimal?       @db.Decimal(24, 8)
+  sessionStartEquityUsd Decimal?       @db.Decimal(24, 8)
   sessionStartedAt      DateTime?
   /// Lowest known equity this Europe/London day; latches the daily loss limit (ASCEND-00 F1)
-  sessionLowEquityUsd   Decimal?      @db.Decimal(24, 8)
+  sessionLowEquityUsd   Decimal?       @db.Decimal(24, 8)
   /// FIXTURE | REPLAY | MARKET_DATA_PAPER | EXTERNAL_DEMO — isolation boundary
-  tradingEnvironment    String        @default("MARKET_DATA_PAPER")
-  createdAt             DateTime      @default(now())
-  updatedAt             DateTime      @updatedAt
+  tradingEnvironment    String         @default("MARKET_DATA_PAPER")
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
   positions             Position[]
   orders                Order[]
   ledger                LedgerEntry[]
 }
 
 model MarketObservation {
-  id                 String    @id @default(cuid())
-  ingestJobId        String
-  source             String
-  chainId            String
-  pairAddress        String
-  dexId              String
-  url                String?
-  baseAddress        String
-  baseSymbol         String
-  baseName           String
-  quoteAddress       String
-  quoteSymbol        String
-  priceUsd           Decimal?  @db.Decimal(24, 8)
-  liquidityUsd       Decimal?  @db.Decimal(24, 8)
-  volume24hUsd       Decimal?  @db.Decimal(24, 8)
-  volume5mUsd        Decimal?  @db.Decimal(24, 8)
-  priceChangeM5      Decimal?  @db.Decimal(16, 6)
-  priceChangeH1      Decimal?  @db.Decimal(16, 6)
-  priceChangeH24     Decimal?  @db.Decimal(16, 6)
-  txnsM5Buys         Int?
-  txnsM5Sells        Int?
-  pairCreatedAt      DateTime?
-  fdvUsd             Decimal?  @db.Decimal(24, 8)
-  marketCapUsd       Decimal?  @db.Decimal(24, 8)
-  freshness          String
+  id             String    @id @default(cuid())
+  ingestJobId    String
+  source         String
+  chainId        String
+  pairAddress    String
+  dexId          String
+  url            String?
+  baseAddress    String
+  baseSymbol     String
+  baseName       String
+  quoteAddress   String
+  quoteSymbol    String
+  priceUsd       Decimal?  @db.Decimal(24, 8)
+  liquidityUsd   Decimal?  @db.Decimal(24, 8)
+  volume24hUsd   Decimal?  @db.Decimal(24, 8)
+  volume5mUsd    Decimal?  @db.Decimal(24, 8)
+  priceChangeM5  Decimal?  @db.Decimal(16, 6)
+  priceChangeH1  Decimal?  @db.Decimal(16, 6)
+  priceChangeH24 Decimal?  @db.Decimal(16, 6)
+  txnsM5Buys     Int?
+  txnsM5Sells    Int?
+  pairCreatedAt  DateTime?
+  fdvUsd         Decimal?  @db.Decimal(24, 8)
+  marketCapUsd   Decimal?  @db.Decimal(24, 8)
+  freshness      String
   /// LIVE_FEED | DELAYED_FEED | FIXTURE_SEQUENCE | REPLAY_STORE | PROVIDER_DEMO | SANDBOX_BROKER
-  dataOrigin         String?
+  dataOrigin     String?
   /// Owning trading environment for isolation (never mix fixture into paper metrics).
   tradingEnvironment String?
   /// Provider event time when known; else null (do not invent).
-  eventTime          DateTime?
-  receivedAt         DateTime
-  raw                Json
-  createdAt          DateTime  @default(now())
+  eventTime      DateTime?
+  receivedAt     DateTime
+  raw            Json
+  createdAt      DateTime  @default(now())
 
   @@unique([ingestJobId, pairAddress])
   @@index([pairAddress, receivedAt])
@@ -89,22 +89,22 @@ model MarketObservation {
 }
 
 model WatchlistEntry {
-  id            String   @id @default(cuid())
-  pairAddress   String
-  baseAddress   String
-  baseSymbol    String
-  quoteAddress  String
-  quoteSymbol   String
-  dexId         String
-  source        String
-  score         Decimal  @db.Decimal(16, 6)
-  rank          Int
-  reasonCodes   String[]
+  id           String   @id @default(cuid())
+  pairAddress  String
+  baseAddress  String
+  baseSymbol   String
+  quoteAddress String
+  quoteSymbol  String
+  dexId        String
+  source       String
+  score        Decimal  @db.Decimal(16, 6)
+  rank         Int
+  reasonCodes  String[]
   observationId String?
-  cycleId       String?
-  observedAt    DateTime
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  cycleId      String?
+  observedAt   DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@unique([pairAddress])
   @@index([score, rank])
@@ -112,25 +112,25 @@ model WatchlistEntry {
 }
 
 model SecurityAssessment {
-  id                          String    @id @default(cuid())
-  tokenAddress                String
-  category                    String
-  confidence                  Decimal   @db.Decimal(8, 6)
-  reasonCodes                 String[]
-  mintAuthority               String
-  freezeAuthority             String
-  transferRestricted          Boolean?
-  holderConcentrationTop10Pct Decimal?  @db.Decimal(16, 6)
-  suspiciousDeployer          Boolean?
-  liquidityFragile            Boolean?
-  largeWalletMove             Boolean?
-  fraudIndicators             String[]
-  source                      String
-  stale                       Boolean   @default(false)
-  fields                      Json
-  fetchedAt                   DateTime?
-  createdAt                   DateTime  @default(now())
-  updatedAt                   DateTime  @updatedAt
+  id                         String   @id @default(cuid())
+  tokenAddress               String
+  category                   String
+  confidence                 Decimal  @db.Decimal(8, 6)
+  reasonCodes                String[]
+  mintAuthority              String
+  freezeAuthority            String
+  transferRestricted         Boolean?
+  holderConcentrationTop10Pct Decimal? @db.Decimal(16, 6)
+  suspiciousDeployer         Boolean?
+  liquidityFragile           Boolean?
+  largeWalletMove            Boolean?
+  fraudIndicators            String[]
+  source                     String
+  stale                      Boolean  @default(false)
+  fields                     Json
+  fetchedAt                  DateTime?
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
 
   @@unique([tokenAddress])
   @@index([category, updatedAt])
@@ -158,17 +158,17 @@ model EquitySnapshot {
 }
 
 model ResearchProposal {
-  id             String    @id @default(cuid())
-  status         String
-  parameterPatch Json
-  rationale      String
-  walkForward    Json?
-  metrics        Json?
-  promoted       Boolean   @default(false)
-  modelVersion   String?
-  createdAt      DateTime  @default(now())
-  evaluatedAt    DateTime?
-  approvedAt     DateTime?
+  id              String   @id @default(cuid())
+  status          String
+  parameterPatch  Json
+  rationale       String
+  walkForward     Json?
+  metrics         Json?
+  promoted        Boolean  @default(false)
+  modelVersion    String?
+  createdAt       DateTime @default(now())
+  evaluatedAt     DateTime?
+  approvedAt      DateTime?
 
   @@index([status, createdAt])
 }
@@ -191,7 +191,7 @@ model StrategyVersion {
 }
 
 model BacktestRun {
-  id                String              @id @default(cuid())
+  id                String               @id @default(cuid())
   strategyVersionId String?
   status            String
   label             String?
@@ -206,11 +206,11 @@ model BacktestRun {
   reportHtml        String?
   error             String?
   /// PRE_SANDBOX_FIX for rows created before the streaming fd-3 sandbox (audit C1/C2); never promotion evidence.
-  sandboxEra        String              @default("STREAMING_FD3")
+  sandboxEra        String               @default("STREAMING_FD3")
   startedAt         DateTime
   finishedAt        DateTime?
-  createdAt         DateTime            @default(now())
-  strategyVersion   StrategyVersion?    @relation(fields: [strategyVersionId], references: [id])
+  createdAt         DateTime             @default(now())
+  strategyVersion   StrategyVersion?     @relation(fields: [strategyVersionId], references: [id])
   trades            BacktestTrade[]
   experiments       ExperimentMetrics[]
   oracleReviews     OracleReview[]
@@ -292,27 +292,27 @@ model OracleReview {
 }
 
 model CycleRun {
-  id                 String    @id
-  trigger            String
-  status             String
-  stage              String
-  dataState          String
-  error              String?
-  operator           Json?
-  observationCount   Int       @default(0)
-  orderCount         Int       @default(0)
-  startedAt          DateTime
-  finishedAt         DateTime?
+  id               String    @id
+  trigger          String
+  status           String
+  stage            String
+  dataState        String
+  error            String?
+  operator         Json?
+  observationCount Int       @default(0)
+  orderCount       Int       @default(0)
+  startedAt        DateTime
+  finishedAt       DateTime?
   /// Durable pinned ExecutionContext at cycle creation (D01) — stages must not re-resolve live config.
-  accountId          String?
-  tradingEnvironment String?
-  dataMode           String?
-  configRevision     String?
-  strategyRevision   String?
-  riskRevision       String?
-  pinnedContext      Json?
+  accountId           String?
+  tradingEnvironment  String?
+  dataMode            String?
+  configRevision      String?
+  strategyRevision    String?
+  riskRevision        String?
+  pinnedContext       Json?
   /// Executor phase durations in ms (settle, plan, reconcile, admit, protect, transaction) — audit H3.
-  executorTimings    Json?
+  executorTimings     Json?
 
   @@index([status, startedAt])
   @@index([startedAt])
@@ -350,52 +350,52 @@ model AgentDecision {
 }
 
 model Order {
-  id                    String       @id @default(cuid())
-  clientOrderId         String       @unique
-  cycleId               String
-  accountId             String
-  pairAddress           String
-  baseSymbol            String
-  side                  String
-  intent                String
-  status                String
-  qty                   Decimal      @db.Decimal(24, 8)
-  filledQty             Decimal      @default(0) @db.Decimal(24, 8)
-  reasonCodes           String[]
-  rejectReason          String?
+  id              String    @id @default(cuid())
+  clientOrderId   String    @unique
+  cycleId         String
+  accountId       String
+  pairAddress     String
+  baseSymbol      String
+  side            String
+  intent          String
+  status          String
+  qty             Decimal   @db.Decimal(24, 8)
+  filledQty       Decimal   @default(0) @db.Decimal(24, 8)
+  reasonCodes     String[]
+  rejectReason    String?
   /// Observation that informed the admission decision (may predate eligibility).
-  observationId         String?
+  observationId   String?
   decisionObservationId String?
   /// Observation used for the economic fill (at/after eligibility).
-  fillObservationId     String?
-  executionMode         String       @default("PAPER")
-  venue                 String       @default("PAPER")
-  instrumentId          String?
-  strategyVersion       String?
+  fillObservationId String?
+  executionMode   String    @default("PAPER")
+  venue           String    @default("PAPER")
+  instrumentId    String?
+  strategyVersion String?
   /// Durable concurrent StrategyInstance owner (§5/§8) — not only a version stamp.
-  strategyInstanceId    String?
+  strategyInstanceId String?
   /// Canonical TradeIntent that produced this order (null for legacy rows).
-  intentId              String?
+  intentId        String?
   /// Who owns the economic consequence: STRATEGY | OPERATOR | PROTECTION | ACCOUNT_FLATTEN | NET_CLOSE | LEGACY.
-  ownerScope            String       @default("LEGACY")
+  ownerScope      String    @default("LEGACY")
   /// External venue order id (SANDBOX). Null for local PAPER.
-  brokerOrderId         String?
+  brokerOrderId   String?
   /// LOCAL | PRE_SUBMIT | SUBMITTING | ACKED | UNKNOWN | TERMINAL — durable submission outbox state.
-  submissionState       String       @default("LOCAL")
-  submitAttempts        Int          @default(0)
-  nextSyncAt            DateTime?
-  lastBrokerSyncAt      DateTime?
-  lastBrokerStatus      String?
-  lastSubmitError       String?
+  submissionState String    @default("LOCAL")
+  submitAttempts  Int       @default(0)
+  nextSyncAt      DateTime?
+  lastBrokerSyncAt DateTime?
+  lastBrokerStatus String?
+  lastSubmitError String?
   /// NONE | REQUESTED | PENDING | CONFIRMED | REJECTED | FILLED_DURING_CANCEL | UNKNOWN
-  cancelState           String       @default("NONE")
-  cancelRequestedAt     DateTime?
-  submittedAt           DateTime     @default(now())
-  eligibleAt            DateTime?
-  expiresAt             DateTime?
-  createdAt             DateTime     @default(now())
-  account               PaperAccount @relation(fields: [accountId], references: [id])
-  fills                 Fill[]
+  cancelState     String    @default("NONE")
+  cancelRequestedAt DateTime?
+  submittedAt     DateTime  @default(now())
+  eligibleAt      DateTime?
+  expiresAt       DateTime?
+  createdAt       DateTime  @default(now())
+  account         PaperAccount @relation(fields: [accountId], references: [id])
+  fills           Fill[]
 
   @@index([createdAt])
   @@index([cycleId])
@@ -409,49 +409,49 @@ model Order {
 }
 
 model Fill {
-  id                 String    @id @default(cuid())
-  orderId            String
+  id            String   @id @default(cuid())
+  orderId       String
   /// Local simulation observation. Null for broker executions (never fabricated).
-  observationId      String?
+  observationId String?
   /// LOCAL_SIM | BROKER
-  source             String    @default("LOCAL_SIM")
+  source        String   @default("LOCAL_SIM")
   /// Broker execution/activity id — dedupe key with orderId.
-  brokerExecutionId  String?
-  executedAt         DateTime?
-  currency           String    @default("USD")
+  brokerExecutionId String?
+  executedAt    DateTime?
+  currency      String   @default("USD")
   /// True when fee is known (local model or broker-reported). False = fee unknown, feeUsd stored as 0 and labelled.
-  feeKnown           Boolean   @default(true)
-  pairAddress        String
-  side               String
-  qty                Decimal   @db.Decimal(24, 8)
-  priceUsd           Decimal   @db.Decimal(24, 8)
-  notionalUsd        Decimal   @db.Decimal(24, 8)
-  feeUsd             Decimal   @db.Decimal(24, 8)
-  slippageBps        Decimal   @db.Decimal(16, 6)
-  liquidityUsd       Decimal   @db.Decimal(24, 8)
+  feeKnown      Boolean  @default(true)
+  pairAddress   String
+  side          String
+  qty           Decimal  @db.Decimal(24, 8)
+  priceUsd      Decimal  @db.Decimal(24, 8)
+  notionalUsd   Decimal  @db.Decimal(24, 8)
+  feeUsd        Decimal  @db.Decimal(24, 8)
+  slippageBps   Decimal  @db.Decimal(16, 6)
+  liquidityUsd  Decimal  @db.Decimal(24, 8)
   strategyInstanceId String?
-  createdAt          DateTime  @default(now())
-  order              Order     @relation(fields: [orderId], references: [id])
+  createdAt     DateTime @default(now())
+  order         Order    @relation(fields: [orderId], references: [id])
 
-  @@unique([orderId, brokerExecutionId])
   @@index([pairAddress, createdAt])
   @@index([strategyInstanceId])
+  @@unique([orderId, brokerExecutionId])
 }
 
 model Position {
-  id                 String       @id @default(cuid())
-  accountId          String
-  pairAddress        String
-  baseSymbol         String
-  baseQty            Decimal      @db.Decimal(24, 8)
-  avgCostUsd         Decimal      @db.Decimal(24, 8)
-  realizedPnlUsd     Decimal      @db.Decimal(24, 8)
+  id             String   @id @default(cuid())
+  accountId      String
+  pairAddress    String
+  baseSymbol     String
+  baseQty        Decimal  @db.Decimal(24, 8)
+  avgCostUsd     Decimal  @db.Decimal(24, 8)
+  realizedPnlUsd Decimal  @db.Decimal(24, 8)
   /// Current open-lot id; minted on 0→open, cleared on flat. Scopes protection + open meta (R01).
-  lifecycleId        String?
+  lifecycleId    String?
   /// Primary opening instance when a single owner; multi-strategy uses StrategyAllocation (§8).
   strategyInstanceId String?
-  updatedAt          DateTime     @updatedAt
-  account            PaperAccount @relation(fields: [accountId], references: [id])
+  updatedAt      DateTime @updatedAt
+  account        PaperAccount @relation(fields: [accountId], references: [id])
 
   @@unique([accountId, pairAddress])
   @@index([accountId, lifecycleId])
@@ -459,15 +459,15 @@ model Position {
 }
 
 model LedgerEntry {
-  id          String       @id @default(cuid())
+  id          String   @id @default(cuid())
   accountId   String
   type        String
-  amountUsd   Decimal      @db.Decimal(24, 8)
+  amountUsd   Decimal  @db.Decimal(24, 8)
   affectsCash Boolean
   orderId     String?
   fillId      String?
   note        String
-  createdAt   DateTime     @default(now())
+  createdAt   DateTime @default(now())
   account     PaperAccount @relation(fields: [accountId], references: [id])
 
   @@index([accountId, createdAt])
@@ -476,24 +476,24 @@ model LedgerEntry {
 
 /// Multi-market instrument registry (Solana pairs + equity indices, etc.).
 model Instrument {
-  id                    String            @id
-  symbol                String
-  displayName           String
-  venue                 String
-  assetClass            String
-  base                  String
-  quote                 String
-  tickSize              String
-  lotSize               String
-  session               String
-  providerId            String
-  providerSymbol        String
-  executionCapabilities String[]
-  enabledByDefault      Boolean           @default(false)
-  notes                 String?
-  createdAt             DateTime          @default(now())
-  updatedAt             DateTime          @updatedAt
-  selections            MarketSelection[]
+  id                     String   @id
+  symbol                 String
+  displayName            String
+  venue                  String
+  assetClass             String
+  base                   String
+  quote                  String
+  tickSize               String
+  lotSize                String
+  session                String
+  providerId             String
+  providerSymbol         String
+  executionCapabilities  String[]
+  enabledByDefault       Boolean  @default(false)
+  notes                  String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  selections             MarketSelection[]
 
   @@index([assetClass, venue])
   @@index([providerId])
@@ -566,26 +566,26 @@ model LifecycleAudit {
 }
 
 model ExperimentReport {
-  id               String    @id @default(cuid())
-  hypothesisId     String
+  id              String   @id @default(cuid())
+  hypothesisId    String
   strategyModuleId String
-  strategyVersion  String
-  payload          Json
-  contentHash      String
-  signature        String
-  approvalStatus   String    @default("PENDING")
-  approvedBy       String?
-  approvedAt       DateTime?
+  strategyVersion String
+  payload         Json
+  contentHash     String
+  signature       String
+  approvalStatus  String   @default("PENDING")
+  approvedBy      String?
+  approvedAt      DateTime?
   /// COMPLETE | INCOMPLETE | LEGACY_INCOMPLETE — evidence columns are immutable (DB trigger).
-  provenance       String    @default("LEGACY_INCOMPLETE")
-  sourceHash       String?
-  artifactHash     String?
-  configHash       String?
-  datasetHash      String?
-  backtestRunId    String?
+  provenance      String   @default("LEGACY_INCOMPLETE")
+  sourceHash      String?
+  artifactHash    String?
+  configHash      String?
+  datasetHash     String?
+  backtestRunId   String?
   /// PRE_SANDBOX_FIX for rows created before the streaming fd-3 sandbox (audit C1/C2); never promotion evidence.
-  sandboxEra       String    @default("STREAMING_FD3")
-  createdAt        DateTime  @default(now())
+  sandboxEra      String   @default("STREAMING_FD3")
+  createdAt       DateTime @default(now())
 
   @@index([hypothesisId, createdAt])
   @@index([contentHash])
@@ -725,60 +725,60 @@ model ModelUsageLog {
 }
 
 model ResearchQueueItem {
-  id            String   @id @default(cuid())
-  kind          String
-  priority      Int
-  hypothesisId  String?
-  strategyId    String?
-  status        String
-  reason        String
-  budgetUsd     Decimal  @db.Decimal(16, 8)
-  fingerprint   String   @default("")
-  retries       Int      @default(0)
-  capability    String   @default("RECOMMEND_EXPERIMENT")
-  provenance    String   @default("DETERMINISTIC_SUPERVISOR")
-  aiDiscovery   Boolean  @default(false)
-  failureStreak Int      @default(0)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String   @id @default(cuid())
+  kind         String
+  priority     Int
+  hypothesisId String?
+  strategyId   String?
+  status       String
+  reason       String
+  budgetUsd    Decimal  @db.Decimal(16, 8)
+  fingerprint  String   @default("")
+  retries      Int      @default(0)
+  capability   String   @default("RECOMMEND_EXPERIMENT")
+  provenance   String   @default("DETERMINISTIC_SUPERVISOR")
+  aiDiscovery  Boolean  @default(false)
+  failureStreak Int     @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([status, priority])
   @@index([createdAt])
 }
 
 model AutonomyControl {
-  id                        String   @id @default("primary")
-  level                     Int      @default(1)
-  realMoneyExecutionEnabled Boolean  @default(false)
-  allowUnreviewedCodeDeploy Boolean  @default(false)
-  allowRiskLimitMutation    Boolean  @default(false)
-  maxResearchIterations     Int      @default(8)
-  maxResearchBudgetUsd      Decimal  @default(5) @db.Decimal(16, 8)
-  timeoutMs                 Int      @default(120000)
-  updatedAt                 DateTime @updatedAt
-  updatedBy                 String?
+  id                         String   @id @default("primary")
+  level                      Int      @default(1)
+  realMoneyExecutionEnabled  Boolean  @default(false)
+  allowUnreviewedCodeDeploy  Boolean  @default(false)
+  allowRiskLimitMutation     Boolean  @default(false)
+  maxResearchIterations      Int      @default(8)
+  maxResearchBudgetUsd       Decimal  @db.Decimal(16, 8) @default(5)
+  timeoutMs                  Int      @default(120000)
+  updatedAt                  DateTime @updatedAt
+  updatedBy                  String?
 }
 
 model RiskReservation {
-  id                   String                 @id @default(cuid())
-  accountId            String
-  mode                 String                 @default("PAPER")
-  clientOrderId        String
-  status               String
-  cashUsd              Decimal                @db.Decimal(24, 8)
-  exposureUsd          Decimal                @db.Decimal(24, 8)
-  slots                Int
-  riskUsd              Decimal                @db.Decimal(24, 8)
-  remainingCashUsd     Decimal                @default(0) @db.Decimal(24, 8)
-  remainingExposureUsd Decimal                @default(0) @db.Decimal(24, 8)
-  remainingRiskUsd     Decimal                @default(0) @db.Decimal(24, 8)
-  remainingSlots       Int                    @default(0)
+  id                     String   @id @default(cuid())
+  accountId              String
+  mode                   String   @default("PAPER")
+  clientOrderId          String
+  status                 String
+  cashUsd                Decimal  @db.Decimal(24, 8)
+  exposureUsd            Decimal  @db.Decimal(24, 8)
+  slots                  Int
+  riskUsd                Decimal  @db.Decimal(24, 8)
+  remainingCashUsd       Decimal  @db.Decimal(24, 8) @default(0)
+  remainingExposureUsd   Decimal  @db.Decimal(24, 8) @default(0)
+  remainingRiskUsd       Decimal  @db.Decimal(24, 8) @default(0)
+  remainingSlots         Int      @default(0)
   /// Instance capacity owner — instance pending commitment = sum of HELD remainingCashUsd.
-  strategyInstanceId   String?
-  intentId             String?
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
-  events               RiskReservationEvent[]
+  strategyInstanceId     String?
+  intentId               String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  events                 RiskReservationEvent[]
 
   @@unique([accountId, mode, clientOrderId])
   @@index([accountId, status])
@@ -786,14 +786,14 @@ model RiskReservation {
 }
 
 model RiskReservationEvent {
-  id            String          @id @default(cuid())
+  id            String   @id @default(cuid())
   reservationId String
   accountId     String
   mode          String
   clientOrderId String
   type          String
   payload       Json
-  createdAt     DateTime        @default(now())
+  createdAt     DateTime @default(now())
   reservation   RiskReservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
 
   @@index([accountId, createdAt])
@@ -810,8 +810,8 @@ model ProtectionOrder {
   kind                     String
   origin                   String
   direction                String   @default("LONG")
-  protectedQty             Decimal  @default(0) @db.Decimal(24, 8)
-  remainingQty             Decimal  @default(0) @db.Decimal(24, 8)
+  protectedQty             Decimal  @db.Decimal(24, 8) @default(0)
+  remainingQty             Decimal  @db.Decimal(24, 8) @default(0)
   triggerPriceUsd          Decimal? @db.Decimal(24, 8)
   /// Last confirmed (acked) trigger — retained when amendment fails.
   confirmedTriggerPriceUsd Decimal? @db.Decimal(24, 8)
@@ -835,22 +835,22 @@ model ProtectionOrder {
 }
 
 model ProtectionIntent {
-  id           String    @id @default(cuid())
-  accountId    String
-  ocoGroupId   String
-  legId        String
-  status       String
-  reason       String
+  id          String    @id @default(cuid())
+  accountId   String
+  ocoGroupId  String
+  legId       String
+  status      String
+  reason      String
   /// EXIT_RETRY | AMEND_RETRY | CANCEL_RETRY | RECONCILE_UNKNOWN (D07)
-  kind         String    @default("EXIT_RETRY")
+  kind        String    @default("EXIT_RETRY")
   /// Immutable lifecycle fence — retries must not close a reopened lot (D07).
-  lifecycleId  String?
+  lifecycleId String?
   instrumentId String?
-  attempts     Int       @default(0)
-  retryAfter   DateTime?
-  resolvedAt   DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  attempts    Int       @default(0)
+  retryAfter  DateTime?
+  resolvedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([status, retryAfter])
   @@index([ocoGroupId])
@@ -859,22 +859,22 @@ model ProtectionIntent {
 }
 
 model StrategyInstance {
-  id            String   @id @default(cuid())
-  name          String
-  version       String
-  accountId     String
-  instrumentIds String[]
-  timeframe     String   @default("M5")
-  params        Json
-  budgetUsd     Decimal  @db.Decimal(24, 8)
-  health        String   @default("HEALTHY")
-  status        String   @default("ACTIVE")
+  id              String   @id @default(cuid())
+  name            String
+  version         String
+  accountId       String
+  instrumentIds   String[]
+  timeframe       String   @default("M5")
+  params          Json
+  budgetUsd       Decimal  @db.Decimal(24, 8)
+  health          String   @default("HEALTHY")
+  status          String   @default("ACTIVE")
   /// Explicit module binding (builtin ref). Never derived from display name (§7).
-  moduleRef     String?
-  artifactHash  String?
-  sourceHash    String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  moduleRef       String?
+  artifactHash    String?
+  sourceHash      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@index([accountId, status])
   @@index([status, updatedAt])
@@ -883,28 +883,28 @@ model StrategyInstance {
 
 /// Internal strategy allocation — separate from venue net position (§8).
 model StrategyAllocation {
-  id                  String   @id @default(cuid())
-  accountId           String
-  strategyInstanceId  String
-  instrumentId        String
-  pairAddress         String
-  lifecycleId         String?
-  qty                 Decimal  @db.Decimal(24, 8)
-  avgCostUsd          Decimal  @db.Decimal(24, 8)
-  realizedPnlUsd      Decimal  @default(0) @db.Decimal(24, 8)
-  committedCapitalUsd Decimal  @default(0) @db.Decimal(24, 8)
+  id                 String   @id @default(cuid())
+  accountId          String
+  strategyInstanceId String
+  instrumentId       String
+  pairAddress        String
+  lifecycleId        String?
+  qty                Decimal  @db.Decimal(24, 8)
+  avgCostUsd         Decimal  @db.Decimal(24, 8)
+  realizedPnlUsd     Decimal  @db.Decimal(24, 8) @default(0)
+  committedCapitalUsd Decimal @db.Decimal(24, 8) @default(0)
   /// Derived display mirror of HELD RiskReservation remainders for this instance+pair. Authority is RiskReservation.
-  pendingCapitalUsd   Decimal  @default(0) @db.Decimal(24, 8)
+  pendingCapitalUsd  Decimal  @db.Decimal(24, 8) @default(0)
   /// Quantity committed to in-flight exit orders (prevents concurrent oversell).
-  reservedExitQty     Decimal  @default(0) @db.Decimal(24, 8)
+  reservedExitQty    Decimal  @db.Decimal(24, 8) @default(0)
   /// Cumulative fees attributed to this allocation.
-  feesUsd             Decimal  @default(0) @db.Decimal(24, 8)
+  feesUsd            Decimal  @db.Decimal(24, 8) @default(0)
   /// STRATEGY | UNATTRIBUTED | LEGACY
-  ownership           String   @default("STRATEGY")
+  ownership          String   @default("STRATEGY")
   /// False when cost basis is unknown (unattributed/legacy remainder) — never reported as strategy performance.
-  costBasisKnown      Boolean  @default(true)
-  updatedAt           DateTime @updatedAt
-  createdAt           DateTime @default(now())
+  costBasisKnown     Boolean  @default(true)
+  updatedAt          DateTime @updatedAt
+  createdAt          DateTime @default(now())
 
   @@unique([accountId, strategyInstanceId, pairAddress])
   @@index([accountId, pairAddress])
@@ -1008,27 +1008,27 @@ model TradeIntent {
 
 /// Durable operator-visible recovery / discrepancy record (Stages 8, 11, 19).
 model RecoveryCase {
-  id                 String    @id @default(cuid())
+  id            String    @id @default(cuid())
   /// Idempotent dedupe — repeated detection updates the same case.
-  dedupeKey          String    @unique
-  accountId          String
+  dedupeKey     String    @unique
+  accountId     String
   /// ALLOCATION_SETTLEMENT | ALLOCATION_DRIFT | UNKNOWN_SUBMISSION | BROKER_DRIFT | FILL_INCOMPLETE | PROTECTION_GAP | CANCEL_UNKNOWN
-  kind               String
-  severity           String    @default("ERROR")
-  pairAddress        String?
+  kind          String
+  severity      String    @default("ERROR")
+  pairAddress   String?
   strategyInstanceId String?
-  orderId            String?
-  fillId             String?
-  clientOrderId      String?
-  detail             Json
+  orderId       String?
+  fillId        String?
+  clientOrderId String?
+  detail        Json
   /// OPEN | RESOLVED
-  status             String    @default("OPEN")
-  resolution         String?
-  attempts           Int       @default(0)
-  nextAttemptAt      DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
-  resolvedAt         DateTime?
+  status        String    @default("OPEN")
+  resolution    String?
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  resolvedAt    DateTime?
 
   @@index([accountId, status, createdAt])
   @@index([kind, status])
@@ -1140,19 +1140,19 @@ model HistoricalRawBatch {
 }
 
 model HistoricalBackfillJob {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   datasetId         String
   windowStart       DateTime
   windowEnd         DateTime
   cursor            String?
   status            String
-  attempts          Int      @default(0)
-  rowsImported      Int      @default(0)
-  rowsRejected      Int      @default(0)
-  revisionsDetected Int      @default(0)
+  attempts          Int       @default(0)
+  rowsImported      Int       @default(0)
+  rowsRejected      Int       @default(0)
+  revisionsDetected Int       @default(0)
   lastError         String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   dataset HistoricalDataset @relation(fields: [datasetId], references: [id], onDelete: Restrict)
 
