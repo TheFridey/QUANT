@@ -212,6 +212,9 @@ importers:
       '@odin/backtest':
         specifier: workspace:*
         version: link:../../packages/backtest
+      '@odin/evolution':
+        specifier: workspace:*
+        version: link:../../packages/evolution
       '@odin/market-data':
         specifier: workspace:*
         version: link:../../packages/market-data

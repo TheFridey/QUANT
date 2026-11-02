@@ -18,3 +18,5 @@ export * from "./outcomes.js";
 export * from "./lineage.js";
 export * from "./provenance.js";
 export { probeIsolation, type RunnerConfiguration } from "./sandbox-runner.js";
+export * from "./research-loop-states.js";
+export * from "./research-loop.js";
