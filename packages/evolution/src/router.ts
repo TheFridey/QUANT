@@ -9,7 +9,7 @@ import {
   type ModelProvider,
 } from "@odin/agent-core";
 import { d, MODEL_TIERS, type ModelTier } from "@odin/shared";
-import { FileBudgetStore, MemoryBudgetStore, type BudgetStore } from "./budget-store.js";
+import { BudgetStoreUnreadableError, FileBudgetStore, MemoryBudgetStore, type BudgetStore } from "./budget-store.js";
 
 export type ProviderKind = "openai-compatible" | "anthropic-compatible" | "hermes-compatible" | "mock";
 
@@ -52,8 +52,10 @@ export type UsageRecord = {
 
 export type BudgetState = {
   capUsd: string;
-  spentUsd: string;
+  /** Null when the spend record cannot be read; the remaining budget is then zero (fail closed). */
+  spentUsd: string | null;
   remainingUsd: string;
+  unavailableReason?: string;
 };
 
 export type EndpointHealth = {
@@ -276,6 +278,11 @@ export class ModelRouter {
       mode?: RouterMode;
       budgetStore?: BudgetStore;
       budgetPath?: string;
+      /**
+       * Called (and awaited) after every model call, before the next one, so spend is recorded durably as
+       * it happens rather than at the end of a run. If it throws, the call fails and no further call is made.
+       */
+      onUsage?: (usage: UsageRecord) => Promise<void>;
     } = {},
   ) {
     this.mode = options.mode ?? "live";
@@ -294,7 +301,14 @@ export class ModelRouter {
 
   budget(): BudgetState {
     const cap = d(String(this.options.budgetCapUsd ?? "5"));
-    const spent = d(this.budgetStore.read().spentUsd);
+    let spentUsd: string;
+    try {
+      spentUsd = this.budgetStore.read().spentUsd;
+    } catch (error) {
+      if (!(error instanceof BudgetStoreUnreadableError)) throw error;
+      return { capUsd: cap.toFixed(4), spentUsd: null, remainingUsd: "0.00000000", unavailableReason: error.message };
+    }
+    const spent = d(spentUsd);
     const remaining = spent.gte(cap) ? d("0") : cap.minus(spent);
     return {
       capUsd: cap.toFixed(4),
@@ -426,6 +440,7 @@ export class ModelRouter {
           error: result.ok ? undefined : result.error,
         };
         this.usage.push(usage);
+        if (this.options.onUsage) await this.options.onUsage(usage);
         if (result.ok) return { ...result, usage };
         attempt += 1;
       } while (attempt < 2 && !result.ok && (result.code === "TIMEOUT" || result.code === "UPSTREAM"));
