@@ -6,7 +6,9 @@ import {
 } from "@nestjs/common";
 import {
   DEFAULT_ASSIGNMENTS,
+  MemoryBudgetStore,
   ModelRouter,
+  researchBudgetWindowStart,
   assertKnownTier,
   RESEARCH_OUTCOMES,
   assessObservationIntegrity,
@@ -65,7 +67,25 @@ import { z } from "zod";
 export class EvolutionService {
   private readonly indexProvider = new IndexMarketProvider({ useDelayedApi: false });
 
+  /** Serialises model-spending pipeline runs in this process so two requests cannot both spend the same headroom. */
+  private pipelineChain: Promise<unknown> = Promise.resolve();
+
   constructor(private readonly prisma: PrismaClient) {}
+
+  /**
+   * Research model spend is cumulative per UTC day, read from the durable `ModelUsageLog`.
+   * A router built per request with an empty in-memory store would let every request spend the
+   * whole cap again (APEX D-01).
+   */
+  async researchBudgetWindow(now: Date = new Date()) {
+    const windowStart = researchBudgetWindowStart(now);
+    const aggregate = await this.prisma.modelUsageLog.aggregate({
+      _sum: { costUsdEst: true },
+      where: { createdAt: { gte: windowStart } },
+    });
+    const spentUsd = aggregate._sum.costUsdEst ? aggregate._sum.costUsdEst.toFixed(8) : "0.00000000";
+    return { window: "UTC_DAY" as const, windowStart: windowStart.toISOString(), spentUsd };
+  }
 
   async ensureSeeds() {
     for (const instrument of SEED_INSTRUMENTS) {
@@ -118,6 +138,7 @@ export class EvolutionService {
       update: {
         realMoneyExecutionEnabled: false,
         allowUnreviewedCodeDeploy: false,
+        allowRiskLimitMutation: false,
       },
     });
   }
@@ -184,7 +205,14 @@ export class EvolutionService {
   }
 
   async modelOps() {
-    const router = new ModelRouter({ env: process.env, mode: "live" });
+    const autonomyRow = await this.prisma.autonomyControl.findUnique({ where: { id: "primary" } });
+    const window = await this.researchBudgetWindow();
+    const router = new ModelRouter({
+      env: process.env,
+      mode: "live",
+      budgetCapUsd: autonomyRow?.maxResearchBudgetUsd.toString() ?? DEFAULT_AUTONOMY.maxResearchBudgetUsd,
+      budgetStore: new MemoryBudgetStore(window.spentUsd),
+    });
     const usage = await this.prisma.modelUsageLog.findMany({
       orderBy: { createdAt: "desc" },
       take: 100,
@@ -194,7 +222,7 @@ export class EvolutionService {
       endpoints: router.health(),
       assignments: DEFAULT_ASSIGNMENTS,
       separatedReviewer: router.assertSeparatedReviewer(),
-      budget: router.budget(),
+      budget: { ...router.budget(), window: window.window, windowStart: window.windowStart },
       liveCallsEnabled: router.health().some((row) => row.availability === "CONFIGURED"),
       usage: usage.map((row) => ({
         id: row.id,
@@ -247,6 +275,12 @@ export class EvolutionService {
   }
 
   async runPipeline(body: unknown, actor: string) {
+    const run = this.pipelineChain.then(() => this.runPipelineSerialised(body, actor));
+    this.pipelineChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async runPipelineSerialised(body: unknown, actor: string) {
     const parsed = z
       .object({
         hypothesisId: z.string().min(1),
@@ -276,8 +310,12 @@ export class EvolutionService {
         ? []
         : await this.prisma.marketObservation.findMany({ orderBy: { receivedAt: "asc" }, take: 400 });
 
-    const router = new ModelRouter({ budgetCapUsd: Number(autonomy.maxResearchBudgetUsd) });
-    const result = await runResearchPipeline({
+    const window = await this.researchBudgetWindow();
+    const router = new ModelRouter({
+      budgetCapUsd: autonomy.maxResearchBudgetUsd,
+      budgetStore: new MemoryBudgetStore(window.spentUsd),
+    });
+    const pipeline = runResearchPipeline({
       hypothesis: {
         id: hypothesis.id,
         title: hypothesis.title,
@@ -316,27 +354,8 @@ export class EvolutionService {
         provenance: `MarketObservation:${row.id}`,
       })),
     });
-
-    for (const usage of router.usage) {
-      await this.prisma.modelUsageLog.create({
-        data: {
-          id: newId("mul"),
-          agentOrTask: usage.agentOrTask,
-          endpointId: usage.endpointId,
-          provider: usage.provider,
-          model: usage.model,
-          tier: usage.tier,
-          ok: usage.ok,
-          latencyMs: usage.latencyMs,
-          promptTokensEst: usage.promptTokensEst,
-          completionTokensEst: usage.completionTokensEst,
-          costUsdEst: usage.costUsdEst,
-          costKind: usage.costKind,
-          provenance: usage.provenance,
-          error: usage.error ?? null,
-        },
-      });
-    }
+    // Spend is recorded even when the pipeline throws, so a failed run still counts against the budget.
+    const result = await pipeline.finally(() => this.persistModelUsage(router.usage));
 
     for (const transition of result.transitions) {
       await this.prisma.lifecycleAudit.create({
@@ -403,6 +422,29 @@ export class EvolutionService {
       acceptance: result.acceptance,
       nextExperimentProposed: result.nextExperimentProposed,
     };
+  }
+
+  private async persistModelUsage(usageRows: ModelRouter["usage"]) {
+    for (const usage of usageRows) {
+      await this.prisma.modelUsageLog.create({
+        data: {
+          id: newId("mul"),
+          agentOrTask: usage.agentOrTask,
+          endpointId: usage.endpointId,
+          provider: usage.provider,
+          model: usage.model,
+          tier: usage.tier,
+          ok: usage.ok,
+          latencyMs: usage.latencyMs,
+          promptTokensEst: usage.promptTokensEst,
+          completionTokensEst: usage.completionTokensEst,
+          costUsdEst: usage.costUsdEst,
+          costKind: usage.costKind,
+          provenance: usage.provenance,
+          error: usage.error ?? null,
+        },
+      });
+    }
   }
 
   async listLifecycle(strategyId?: string) {
@@ -645,7 +687,8 @@ export class EvolutionService {
       level: row.level,
       realMoneyExecutionEnabled: false,
       allowUnreviewedCodeDeploy: false,
-      allowRiskLimitMutation: row.allowRiskLimitMutation,
+      // Forced off in policy parsing whatever the stored row says; shown as the effective value.
+      allowRiskLimitMutation: false,
       maxResearchIterations: row.maxResearchIterations,
       maxResearchBudgetUsd: row.maxResearchBudgetUsd.toString(),
       timeoutMs: row.timeoutMs,
@@ -659,7 +702,8 @@ export class EvolutionService {
     const parsed = z
       .object({
         level: z.number().int().min(0).max(3),
-        allowRiskLimitMutation: z.boolean().optional(),
+        // Research autonomy never mutates risk limits; `true` is refused rather than stored (APEX D-03).
+        allowRiskLimitMutation: z.literal(false).optional(),
         maxResearchIterations: z.number().int().min(1).max(100).optional(),
         maxResearchBudgetUsd: z.string().regex(/^\d+(\.\d{1,4})?$/).optional(),
         timeoutMs: z.number().int().min(1000).max(3_600_000).optional(),
@@ -672,7 +716,7 @@ export class EvolutionService {
         level: parsed.level,
         realMoneyExecutionEnabled: false,
         allowUnreviewedCodeDeploy: false,
-        allowRiskLimitMutation: parsed.allowRiskLimitMutation ?? false,
+        allowRiskLimitMutation: false,
         maxResearchIterations: parsed.maxResearchIterations,
         maxResearchBudgetUsd: parsed.maxResearchBudgetUsd,
         timeoutMs: parsed.timeoutMs,
