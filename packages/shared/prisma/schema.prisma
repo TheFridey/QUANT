@@ -376,6 +376,9 @@ model Order {
   strategyInstanceId String?
   /// Canonical TradeIntent that produced this order (null for legacy rows).
   intentId        String?
+  /// Position lot (Position.lifecycleId) a SELL was booked against; null for BUYs and legacy rows (PCR-1).
+  /// Settle cancels a stamped SELL whose lot is no longer the pair's open lot (EXIT_LIFECYCLE_MISMATCH).
+  positionLifecycleId String?
   /// Who owns the economic consequence: STRATEGY | OPERATOR | PROTECTION | ACCOUNT_FLATTEN | NET_CLOSE | LEGACY.
   ownerScope      String    @default("LEGACY")
   /// External venue order id (SANDBOX). Null for local PAPER.
@@ -405,6 +408,7 @@ model Order {
   @@index([accountId, createdAt])
   @@index([accountId, submissionState])
   @@index([intentId])
+  @@index([positionLifecycleId])
   @@index([brokerOrderId])
 }
 

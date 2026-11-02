@@ -83,6 +83,28 @@ export async function settlePendingPaperOrders(
         );
         continue;
       }
+      // PCR-1: a SELL booked against an earlier lot must not reduce a lot opened since, for example by a
+      // pending BUY that settled first in this loop (orders settle in submittedAt order). Flatten exits are
+      // exempt: they mean "be flat now". Unstamped (legacy) rows keep today's behaviour.
+      const flattenExit = row.ownerScope === "ACCOUNT_FLATTEN" || row.intent === "FLATTEN";
+      if (row.positionLifecycleId && !flattenExit && position.lifecycleId !== row.positionLifecycleId) {
+        await tx.order.update({
+          where: { id: row.id },
+          data: {
+            status: "CANCELLED",
+            rejectReason: "EXIT_LIFECYCLE_MISMATCH",
+            reasonCodes: [...row.reasonCodes, "EXIT_LIFECYCLE_MISMATCH"],
+          },
+        });
+        await releasePendingExitReservation(tx, row);
+        await releaseInTx(
+          tx,
+          { accountId: ctx.accountId, mode: "PAPER", clientOrderId: row.clientOrderId },
+          settleBudget,
+          now,
+        );
+        continue;
+      }
     }
     const settled = await settlePendingOrder(tx, {
       accountId: ctx.accountId,
