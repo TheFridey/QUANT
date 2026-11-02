@@ -122,7 +122,7 @@ Integration tests (`apps/worker/src/executor/lifecycle-fence.integration.test.ts
 
 Migration order (`packages/shared/src/pcr1-migration.test.ts` plus two executed experiments):
 - **Static test.** The migration contains only `ADD COLUMN` statements: nullable, or `NOT NULL DEFAULT 0`. No drop, rename, retype, rewrite or index.
-- **Old code on the new schema.** The full `c3b23e9` suite against the migrated database gave 153 files and **822 passed**, 25 skipped, identical to the baseline. **Migrating first is safe** for the running build.
+- **Old code on the new schema.** The full `c3b23e9` suite against the migrated database gave 153 files and **822 passed**, 25 skipped, identical to the baseline. **Migrating first is safe** for the running build. Re-run against the **v3** migration (five columns, including `StrategyAllocation.cumBoughtQty`) gave the same result: 822 passed, 25 skipped.
 - **New code on the old schema.** All 13 PCR-1 integration tests fail with "The column `cumBoughtQty` does not exist". **The code must not run before the migration.**
 
 The protected patch (`store-stamping.patch`) passes `git apply --check` on `c3b23e9` and on current `main`. It is not applied, and the patched build has not been executed; that happens after the unlock.
