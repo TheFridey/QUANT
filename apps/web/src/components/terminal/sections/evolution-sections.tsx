@@ -449,9 +449,9 @@ export function AutonomySection() {
                 <dd className="mono">{String(policy.allowUnreviewedCodeDeploy)}</dd>
               </div>
               <div className="flex justify-between gap-3">
-                <dt className="text-muted">Research budget</dt>
+                <dt className="text-muted">Research model budget</dt>
                 <dd className="mono">
-                  ${policy.maxResearchBudgetUsd} / {policy.maxResearchIterations} iters
+                  ${policy.maxResearchBudgetUsd} per UTC day · {policy.maxResearchIterations} iters per run
                 </dd>
               </div>
             </dl>

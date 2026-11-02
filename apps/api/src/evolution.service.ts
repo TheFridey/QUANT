@@ -67,7 +67,12 @@ import { z } from "zod";
 export class EvolutionService {
   private readonly indexProvider = new IndexMarketProvider({ useDelayedApi: false });
 
-  /** Serialises model-spending pipeline runs in this process so two requests cannot both spend the same headroom. */
+  /**
+   * Serialises model-spending pipeline runs in this process so two requests cannot both spend the same
+   * headroom. This assumes ONE API process spends research budget (true today: only the API calls
+   * runResearchPipeline). A second API replica or a worker-side pipeline would need a database lock or a
+   * reservation ledger first (APEX review M-2; recorded in docs/apex).
+   */
   private pipelineChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly prisma: PrismaClient) {}
@@ -314,6 +319,8 @@ export class EvolutionService {
     const router = new ModelRouter({
       budgetCapUsd: autonomy.maxResearchBudgetUsd,
       budgetStore: new MemoryBudgetStore(window.spentUsd),
+      // Each call's spend is written before the next call, so a crash mid-run cannot hide spend (review M-1).
+      onUsage: (usage) => this.persistModelUsage(usage),
     });
     const pipeline = runResearchPipeline({
       hypothesis: {
@@ -354,8 +361,7 @@ export class EvolutionService {
         provenance: `MarketObservation:${row.id}`,
       })),
     });
-    // Spend is recorded even when the pipeline throws, so a failed run still counts against the budget.
-    const result = await pipeline.finally(() => this.persistModelUsage(router.usage));
+    const result = await pipeline;
 
     for (const transition of result.transitions) {
       await this.prisma.lifecycleAudit.create({
@@ -424,27 +430,25 @@ export class EvolutionService {
     };
   }
 
-  private async persistModelUsage(usageRows: ModelRouter["usage"]) {
-    for (const usage of usageRows) {
-      await this.prisma.modelUsageLog.create({
-        data: {
-          id: newId("mul"),
-          agentOrTask: usage.agentOrTask,
-          endpointId: usage.endpointId,
-          provider: usage.provider,
-          model: usage.model,
-          tier: usage.tier,
-          ok: usage.ok,
-          latencyMs: usage.latencyMs,
-          promptTokensEst: usage.promptTokensEst,
-          completionTokensEst: usage.completionTokensEst,
-          costUsdEst: usage.costUsdEst,
-          costKind: usage.costKind,
-          provenance: usage.provenance,
-          error: usage.error ?? null,
-        },
-      });
-    }
+  private async persistModelUsage(usage: ModelRouter["usage"][number]) {
+    await this.prisma.modelUsageLog.create({
+      data: {
+        id: newId("mul"),
+        agentOrTask: usage.agentOrTask,
+        endpointId: usage.endpointId,
+        provider: usage.provider,
+        model: usage.model,
+        tier: usage.tier,
+        ok: usage.ok,
+        latencyMs: usage.latencyMs,
+        promptTokensEst: usage.promptTokensEst,
+        completionTokensEst: usage.completionTokensEst,
+        costUsdEst: usage.costUsdEst,
+        costKind: usage.costKind,
+        provenance: usage.provenance,
+        error: usage.error ?? null,
+      },
+    });
   }
 
   async listLifecycle(strategyId?: string) {

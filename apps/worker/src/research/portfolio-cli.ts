@@ -11,6 +11,7 @@ import {
 import { INTERVAL_MS, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
 import { costPerSide, PERIODS } from "./cost-basis.js";
+import { defaultRebalanceBars, parseArgs } from "./portfolio-args.js";
 
 /**
  * ASCEND-07 portfolio study (research only, read only):
@@ -28,17 +29,8 @@ import { costPerSide, PERIODS } from "./cost-basis.js";
  * aggregation for mixed calendars is not implemented.
  */
 
-function flag(args: string[], name: string, fallback: number): number {
-  const i = args.indexOf(name);
-  if (i < 0) return fallback;
-  const value = Number(args[i + 1]);
-  if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
-  return value;
-}
-
 async function main() {
-  const args = process.argv.slice(2);
-  const datasetIds = args.filter((a, i) => !a.startsWith("--") && !(i > 0 && args[i - 1]!.startsWith("--")));
+  const { datasetIds, flags } = parseArgs(process.argv.slice(2));
   if (datasetIds.length < 2) throw new Error("usage: portfolio-cli <datasetId> <datasetId> [...] [--lookback N] [--rebalance N]");
   const prisma = new PrismaClient();
   try {
@@ -69,15 +61,15 @@ async function main() {
 
     const report = portfolioReport(series, { periodsPerYear });
     const aligned = alignReturns(series);
-    const lookback = flag(args, "--lookback", Math.min(500, Math.max(30, Math.floor(aligned.returns.length / 4))));
-    const rebalanceEvery = flag(args, "--rebalance", calendar === "WEEKDAYS" ? 21 : 24 * 7);
+    const lookback = flags["--lookback"] ?? Math.min(500, Math.max(30, Math.floor(aligned.returns.length / 4)));
+    const rebalanceEvery = flags["--rebalance"] ?? defaultRebalanceBars(barMs, calendar);
     const rules: AllocationRule[] = ["EQUAL_WEIGHT", "INVERSE_VOLATILITY", "EQUAL_RISK_CONTRIBUTION"];
     const pct = (x: number | null) => (x === null ? null : +(x * 100).toFixed(2));
     const backtests =
       aligned.returns.length > lookback + 1
         ? rules.map((rule) => {
             const bt = backtestAllocation(aligned, rule, { lookback, rebalanceEvery, costBpsPerSide: worstCost.bps, shrink: true, periodsPerYear });
-            return { rule, bars: bt.netReturns.length, rebalances: bt.rebalances, skipped: bt.skippedRebalances, netPct: pct(bt.totalReturnNet), grossPct: pct(bt.totalReturnGross), costPct: pct(bt.costPaid), annVolPct: pct(bt.annualisedVolatility), maxDdPct: pct(bt.maxDrawdown), sharpe: bt.sharpe, sufficient: bt.sufficient };
+            return { rule, bars: bt.netReturns.length, rebalances: bt.rebalances, skipped: bt.skippedRebalances, netPct: pct(bt.totalReturnNet), grossPct: pct(bt.totalReturnGross), costDragPct: pct(bt.costDrag), investedFrom: bt.startIndex >= 0 ? new Date(aligned.t[bt.startIndex]!).toISOString() : null, annVolPct: pct(bt.annualisedVolatility), maxDdPct: pct(bt.maxDrawdown), sharpe: bt.sharpe, sufficient: bt.sufficient };
           })
         : "INSUFFICIENT_EVIDENCE: fewer aligned returns than the look-back";
 
@@ -90,7 +82,7 @@ async function main() {
           interval,
           calendar,
           inputs,
-          aligned: { observations: aligned.returns.length, dropped: aligned.droppedTimestamps, from: aligned.t[0] ? new Date(aligned.t[0]).toISOString() : null, to: aligned.t.at(-1) ? new Date(aligned.t.at(-1)!).toISOString() : null },
+          aligned: { observations: aligned.returns.length, dropped: aligned.droppedTimestamps, invalidReturns: aligned.invalidReturns, from: aligned.t[0] ? new Date(aligned.t[0]).toISOString() : null, to: aligned.t.at(-1) ? new Date(aligned.t.at(-1)!).toISOString() : null },
           backtestCost: { bpsPerSide: +worstCost.bps.toFixed(2), basis: `highest per-asset cost applied to all turnover (conservative): ${worstCost.basis}` },
           report: {
             sufficient: report.sufficient,
@@ -104,6 +96,7 @@ async function main() {
               riskShares: a.riskShares?.map((s) => +s.toFixed(3)) ?? null,
               annVolPct: pct(a.annualisedVolatility),
               stressedVolPct: pct(a.stressedVolatility),
+              // returnPct is null (unknown, not 0%) when a held asset's cohort is not in the scenario.
               scenarios: a.scenarios?.map((s) => ({ name: s.name, returnPct: pct(s.portfolioReturn), unshocked: s.unshockedAssets })) ?? null,
             })),
             limitations: report.limitations,

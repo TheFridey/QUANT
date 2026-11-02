@@ -278,6 +278,11 @@ export class ModelRouter {
       mode?: RouterMode;
       budgetStore?: BudgetStore;
       budgetPath?: string;
+      /**
+       * Called (and awaited) after every model call, before the next one, so spend is recorded durably as
+       * it happens rather than at the end of a run. If it throws, the call fails and no further call is made.
+       */
+      onUsage?: (usage: UsageRecord) => Promise<void>;
     } = {},
   ) {
     this.mode = options.mode ?? "live";
@@ -435,6 +440,7 @@ export class ModelRouter {
           error: result.ok ? undefined : result.error,
         };
         this.usage.push(usage);
+        if (this.options.onUsage) await this.options.onUsage(usage);
         if (result.ok) return { ...result, usage };
         attempt += 1;
       } while (attempt < 2 && !result.ok && (result.code === "TIMEOUT" || result.code === "UPSTREAM"));

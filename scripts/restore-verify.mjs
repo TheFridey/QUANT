@@ -3,22 +3,30 @@
  * Isolated restore verification drill (APEX §15.3).
  *
  * Restores a custom-format dump (`pg_dump -Fc`, as written by the VPS `quant-backup.service`) into a NEW
- * scratch database, verifies it, and drops it. It never writes to an existing database:
+ * scratch database, verifies it against the live source (read-only), and drops it. It never writes to an
+ * existing database:
  *
  *   RESTORE_ADMIN_URL=postgresql://user:pass@127.0.0.1:5432/postgres \
  *     node scripts/restore-verify.mjs --dump /srv/quant/backups/quant-YYYYMMDDTHHMMSSZ.dump \
- *       [--source-url postgresql://…/quant] [--keep]
+ *       --source-url postgresql://user:pass@127.0.0.1:5432/quant [--keep]
  *
  * Guards (all fail closed):
- * - the scratch database name is generated (`odin_restore_drill_<utc stamp>`); CREATE DATABASE fails if it exists
- * - the admin URL must point at a maintenance database (postgres/template1), never an application database
- * - `--source-url` is used read-only (row counts only, inside a READ ONLY transaction)
+ * - URLs are parsed into host, port, user, password and database, and passed to psql/pg_restore only as
+ *   libpq environment variables. No URL is passed on a command line, so a query parameter such as
+ *   `?dbname=` cannot redirect the connection, and the password never appears in `ps`. Any query parameter
+ *   other than `sslmode`, and any fragment, is refused.
+ * - the admin URL must name a maintenance database (postgres/template1)
+ * - the scratch database name is generated (`odin_restore_drill_<utc stamp>`); CREATE DATABASE fails if it
+ *   exists, and `current_database()` on the scratch connection must equal that name before pg_restore runs
+ * - the source is opened with `default_transaction_read_only=on` and only counted
  * - the scratch database is dropped afterwards unless `--keep`
  *
- * Verification: pg_restore exits 0; every table's row count; the latest applied Prisma migration; the
- * append-only triggers are present and still reject a DELETE (checked inside a rolled-back transaction);
- * optional comparison with the source (counts can legitimately grow after the dump on a live database, so
- * a restored count above the source's is a failure and below it is reported as drift).
+ * Pass criteria: pg_restore exits 0; a non-empty latest Prisma migration; every user trigger in the source
+ * exists in the restore; each listed append-only table has its named trigger, and a table with rows still
+ * rejects DELETE with the trigger's own error; no table is missing or extra; no restored count exceeds the
+ * source (lower counts are drift, because a live database keeps growing after the dump).
+ *
+ * Use a drill role without superuser where possible: a tampered dump runs SQL with the restoring role.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
@@ -26,10 +34,11 @@ import { pathToFileURL } from "node:url";
 
 export const DRILL_PREFIX = "odin_restore_drill_";
 const MAINTENANCE_DBS = new Set(["postgres", "template1"]);
-/** Tables whose append-only triggers must survive a restore. */
+/** Tables whose append-only or immutable triggers must survive a restore, with the trigger name suffix. */
 export const APPEND_ONLY_TABLES = [
   "CyclePlan",
   "EngineConfigRevision",
+  "ExperimentReport",
   "ForwardPaperResult",
   "HistoricalBar",
   "HistoricalRawBatch",
@@ -41,53 +50,84 @@ export const APPEND_ONLY_TABLES = [
   "StrategyArtifact",
   "StrategyPromotion",
 ];
+const TRIGGER_NAME = /_(append_only|immutable|evidence_immutable)$/;
+const TRIGGER_ERROR = /append-only|EVIDENCE_IMMUTABLE|immutable/i;
 
 export function drillDatabaseName(now = new Date()) {
   return `${DRILL_PREFIX}${now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
 }
 
+/**
+ * Parse a postgres URL into libpq parts. Refuses anything that could change the target outside the path:
+ * query parameters other than sslmode, fragments, and a missing database name.
+ */
+export function parseConnection(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return { error: "not a valid URL" };
+  }
+  if (u.protocol !== "postgresql:" && u.protocol !== "postgres:") return { error: "must be a postgresql:// URL" };
+  if (u.hash) return { error: "fragments are not allowed" };
+  for (const key of u.searchParams.keys()) {
+    if (key !== "sslmode") return { error: `query parameter '${key}' is not allowed (it could redirect the connection)` };
+  }
+  const database = decodeURIComponent(u.pathname.replace(/^\//, ""));
+  if (!database || database.includes("/")) return { error: "must name exactly one database in the path" };
+  return {
+    host: u.hostname || "127.0.0.1",
+    port: u.port || "5432",
+    user: decodeURIComponent(u.username),
+    password: decodeURIComponent(u.password),
+    database,
+    sslmode: u.searchParams.get("sslmode") ?? undefined,
+  };
+}
+
 /** Returns an error string, or null when the arguments are acceptable. */
 export function checkDrillArgs({ adminUrl, dump, sourceUrl, scratchName }) {
   if (!adminUrl) return "Set RESTORE_ADMIN_URL to a maintenance database (postgres or template1)";
-  let admin;
-  try {
-    admin = new URL(adminUrl);
-  } catch {
-    return "RESTORE_ADMIN_URL is not a valid URL";
-  }
-  const adminDb = admin.pathname.replace(/^\//, "");
-  if (!MAINTENANCE_DBS.has(adminDb)) return `RESTORE_ADMIN_URL must name a maintenance database, not '${adminDb}'`;
+  const admin = parseConnection(adminUrl);
+  if (admin.error) return `RESTORE_ADMIN_URL ${admin.error}`;
+  if (!MAINTENANCE_DBS.has(admin.database)) return `RESTORE_ADMIN_URL must name a maintenance database, not '${admin.database}'`;
   if (!/^odin_restore_drill_\d{14}$/.test(scratchName)) return `Scratch database name '${scratchName}' is not a generated drill name`;
-  if (sourceUrl) {
-    try {
-      const sourceDb = new URL(sourceUrl).pathname.replace(/^\//, "");
-      if (sourceDb === scratchName) return "Source and scratch database are the same";
-    } catch {
-      return "--source-url is not a valid URL";
-    }
-  }
+  if (!sourceUrl) return "--source-url is required: without it a missing table cannot be detected";
+  const source = parseConnection(sourceUrl);
+  if (source.error) return `--source-url ${source.error}`;
+  if (source.database === scratchName) return "Source and scratch database are the same";
+  if (MAINTENANCE_DBS.has(source.database)) return "--source-url must name the application database";
   if (!dump) return "--dump <file> is required";
   return null;
 }
 
-function psql(url, sql, extra = []) {
-  return spawnSync("psql", [url, "-v", "ON_ERROR_STOP=1", "-At", ...extra, "-c", sql], { encoding: "utf8" });
+/** libpq environment for a connection; nothing connection-related goes on the command line. */
+export function connectionEnv(conn, database, extra = {}) {
+  const env = { ...process.env, PGHOST: conn.host, PGPORT: conn.port, PGUSER: conn.user, PGPASSWORD: conn.password, PGDATABASE: database, ...extra };
+  delete env.PGSERVICE;
+  delete env.PGSERVICEFILE;
+  if (conn.sslmode) env.PGSSLMODE = conn.sslmode;
+  return env;
 }
 
-function withDb(url, db) {
-  const u = new URL(url);
-  u.pathname = `/${db}`;
-  return u.toString();
+function psql(env, sql) {
+  return spawnSync("psql", ["-X", "-v", "ON_ERROR_STOP=1", "-At", "-c", sql], { encoding: "utf8", env });
 }
 
 const COUNT_SQL = `SELECT string_agg(format('%s=%s', c.relname, (xpath('/row/n/text()', query_to_xml(format('select count(*) as n from public.%I', c.relname), false, true, '')))[1]::text), ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r'`;
+const TRIGGERS_SQL = `SELECT string_agg(c.relname || '.' || t.tgname, ',' ORDER BY 1) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND NOT t.tgisinternal`;
 
-function counts(url, readOnly) {
-  const sql = readOnly ? `BEGIN READ ONLY; ${COUNT_SQL}; COMMIT;` : COUNT_SQL;
-  const r = psql(url, sql);
+function counts(env) {
+  const r = psql(env, COUNT_SQL);
   if (r.status !== 0) throw new Error(`count failed: ${(r.stderr || "").slice(0, 300)}`);
-  const line = r.stdout.split("\n").find((l) => l.includes("="));
-  return Object.fromEntries((line ?? "").split(",").filter(Boolean).map((kv) => { const [k, v] = kv.split("="); return [k, Number(v)]; }));
+  const line = r.stdout.trim();
+  return Object.fromEntries(line.split(",").filter(Boolean).map((kv) => { const [k, v] = kv.split("="); return [k, Number(v)]; }));
+}
+
+function triggers(env) {
+  const r = psql(env, TRIGGERS_SQL);
+  if (r.status !== 0) throw new Error(`trigger listing failed: ${(r.stderr || "").slice(0, 300)}`);
+  return r.stdout.trim().split(",").filter(Boolean);
 }
 
 function main(argv) {
@@ -102,51 +142,68 @@ function main(argv) {
   if (error) return finish({ ok: false, error }, 2);
   if (!existsSync(dump)) return finish({ ok: false, error: `Missing dump ${dump}` }, 2);
 
+  const admin = parseConnection(adminUrl);
+  const source = parseConnection(sourceUrl);
+  const adminEnv = connectionEnv(admin, admin.database);
+  const scratchEnv = connectionEnv(admin, scratchName);
+  const sourceEnv = connectionEnv(source, source.database, { PGOPTIONS: "-c default_transaction_read_only=on" });
+
   const report = { ok: false, dump, dumpBytes: statSync(dump).size, scratchDatabase: scratchName, kept: keep, steps: {} };
   const started = Date.now();
-  const create = psql(adminUrl, `CREATE DATABASE "${scratchName}"`);
+  const create = psql(adminEnv, `CREATE DATABASE "${scratchName}"`);
   if (create.status !== 0) return finish({ ...report, error: `CREATE DATABASE failed: ${(create.stderr || "").slice(0, 300)}` }, 1);
-  const scratchUrl = withDb(adminUrl, scratchName);
   try {
-    const restore = spawnSync("pg_restore", ["--no-owner", "--no-acl", "--exit-on-error", "-d", scratchUrl, dump], { encoding: "utf8" });
+    const where = psql(scratchEnv, "SELECT current_database()");
+    if (where.status !== 0 || where.stdout.trim() !== scratchName) {
+      return finish({ ...report, error: `Scratch connection reached '${where.stdout.trim()}', not ${scratchName}; refusing to restore` }, 1);
+    }
+    const restore = spawnSync("pg_restore", ["--no-owner", "--no-acl", "--exit-on-error", "-d", scratchName, dump], { encoding: "utf8", env: scratchEnv });
     report.steps.restore = { status: restore.status, stderr: (restore.stderr || "").slice(0, 500) };
     report.restoreSeconds = +((Date.now() - started) / 1000).toFixed(1);
     if (restore.status !== 0) return finish({ ...report, error: "pg_restore failed" }, 1);
 
-    const restored = counts(scratchUrl, false);
+    const restored = counts(scratchEnv);
     report.tables = Object.keys(restored).length;
     report.rows = Object.values(restored).reduce((s, n) => s + n, 0);
-    const migration = psql(scratchUrl, `SELECT migration_name FROM "_prisma_migrations" WHERE finished_at IS NOT NULL ORDER BY finished_at DESC, migration_name DESC LIMIT 1`);
-    report.latestMigration = migration.status === 0 ? migration.stdout.trim() : null;
+    const migration = psql(scratchEnv, `SELECT migration_name FROM "_prisma_migrations" WHERE finished_at IS NOT NULL ORDER BY finished_at DESC, migration_name DESC LIMIT 1`);
+    report.latestMigration = migration.status === 0 && migration.stdout.trim() ? migration.stdout.trim() : null;
 
+    const restoredTriggers = triggers(scratchEnv);
     report.appendOnly = APPEND_ONLY_TABLES.map((table) => {
-      const trig = psql(scratchUrl, `SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE c.relname = '${table}' AND NOT t.tgisinternal`);
+      const named = restoredTriggers.filter((t) => t.startsWith(`${table}.`) && TRIGGER_NAME.test(t));
       // Row-level triggers only fire on existing rows, so an empty table cannot show rejection (null).
       const rows = restored[table] ?? 0;
-      const probe = rows > 0 ? psql(scratchUrl, `BEGIN; DELETE FROM "${table}"; ROLLBACK;`) : null;
-      return { table, rows, triggers: Number(trig.stdout.trim() || 0), deleteRejected: probe ? probe.status !== 0 : null };
+      let deleteRejected = null;
+      if (rows > 0) {
+        const probe = psql(scratchEnv, `BEGIN; DELETE FROM "${table}"; ROLLBACK;`);
+        deleteRejected = probe.status !== 0 && TRIGGER_ERROR.test(probe.stderr || "");
+      }
+      return { table, rows, triggers: named, deleteRejected };
     });
 
-    let drift = null;
-    if (sourceUrl) {
-      const source = counts(sourceUrl, true);
-      drift = { missingTables: [], extraTables: [], restoredAboveSource: [], belowSource: [] };
-      for (const t of Object.keys(source)) if (!(t in restored)) drift.missingTables.push(t);
-      for (const t of Object.keys(restored)) if (!(t in source)) drift.extraTables.push(t);
-      for (const [t, n] of Object.entries(restored)) {
-        if (t in source && n > source[t]) drift.restoredAboveSource.push({ table: t, restored: n, source: source[t] });
-        if (t in source && n < source[t]) drift.belowSource.push({ table: t, restored: n, source: source[t] });
-      }
-      report.sourceComparison = drift;
+    const sourceCounts = counts(sourceEnv);
+    const sourceTriggers = triggers(sourceEnv);
+    const drift = {
+      missingTables: Object.keys(sourceCounts).filter((t) => !(t in restored)),
+      extraTables: Object.keys(restored).filter((t) => !(t in sourceCounts)),
+      missingTriggers: sourceTriggers.filter((t) => !restoredTriggers.includes(t)),
+      restoredAboveSource: [],
+      belowSource: [],
+    };
+    for (const [t, n] of Object.entries(restored)) {
+      if (t in sourceCounts && n > sourceCounts[t]) drift.restoredAboveSource.push({ table: t, restored: n, source: sourceCounts[t] });
+      if (t in sourceCounts && n < sourceCounts[t]) drift.belowSource.push({ table: t, restored: n, source: sourceCounts[t] });
     }
-    const triggersOk = report.appendOnly.every((a) => a.triggers > 0 && a.deleteRejected !== false);
-    const driftOk = !drift || (drift.missingTables.length === 0 && drift.extraTables.length === 0 && drift.restoredAboveSource.length === 0);
+    report.sourceComparison = drift;
+
+    const triggersOk = report.appendOnly.every((a) => a.triggers.length > 0 && a.deleteRejected !== false);
+    const driftOk = drift.missingTables.length === 0 && drift.extraTables.length === 0 && drift.missingTriggers.length === 0 && drift.restoredAboveSource.length === 0;
     report.ok = triggersOk && driftOk && report.latestMigration !== null;
     report.totalSeconds = +((Date.now() - started) / 1000).toFixed(1);
     return finish(report, report.ok ? 0 : 1);
   } finally {
     if (!keep) {
-      const drop = psql(adminUrl, `DROP DATABASE IF EXISTS "${scratchName}"`);
+      const drop = psql(adminEnv, `DROP DATABASE IF EXISTS "${scratchName}"`);
       if (drop.status !== 0) console.error(`WARNING: could not drop ${scratchName}: ${(drop.stderr || "").slice(0, 200)}`);
     }
   }

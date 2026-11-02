@@ -112,6 +112,33 @@ describe("router budget fails closed", () => {
     expect(router.usage).toHaveLength(1);
   });
 
+  it("records each call through onUsage before returning, and fails closed when recording fails", async () => {
+    const recorded: string[] = [];
+    const router = new ModelRouter({
+      providers: providers(),
+      mode: "live",
+      env: {},
+      budgetStore: new MemoryBudgetStore("0"),
+      budgetCapUsd: "5",
+      onUsage: async (usage) => {
+        recorded.push(usage.costUsdEst);
+      },
+    });
+    const request = { purpose: "fast_observer", maxTokens: 50, timeoutMs: 500, messages: [{ role: "user" as const, content: "fast_observer" }] };
+    await router.completeJson("FAST_OBSERVER", request, schema);
+    expect(recorded).toHaveLength(1);
+    const failing = new ModelRouter({
+      providers: providers(),
+      mode: "live",
+      env: {},
+      budgetCapUsd: "5",
+      onUsage: async () => {
+        throw new Error("database unavailable");
+      },
+    });
+    await expect(failing.completeJson("FAST_OBSERVER", request, schema)).rejects.toThrow(/database unavailable/);
+  });
+
   it("refuses calls once a seeded spend reaches the cap", async () => {
     const router = new ModelRouter({
       providers: providers(),

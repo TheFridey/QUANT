@@ -15,6 +15,7 @@ import {
   historicalTail,
   inverseVolatility,
   ledoitWolfCovariance,
+  ledoitWolfIdentity,
   portfolioReport,
   portfolioVariance,
   riskContributions,
@@ -133,10 +134,34 @@ describe("covariance and correlation", () => {
     expect(C[2]![2]).toBeNull();
   });
 
+  it("Ledoit–Wolf estimator matches an independent numpy reference", () => {
+    // Reference: numpy implementation of the 2004 formula and the sklearn-style form agree on δ (scratch
+    // script, APEX review); values copied here so a wrong-but-plausible δ fails.
+    const X = Array.from({ length: 40 }, (_, k) => [0, 1, 2].map((i) => Math.sin(k * (i + 1) * 0.7) * 0.01 * (i + 1) + Math.cos(k * 0.3 + i) * 0.005));
+    const est = ledoitWolfIdentity(X)!;
+    expect(est.shrinkage).toBeCloseTo(0.14894172899709784, 12);
+    expect(est.covariance[0]![1]!).toBeCloseTo(8.968879761259893e-6, 15);
+    expect(est.covariance[0]![0]!).toBeCloseTo(9.59295559319993e-5, 15);
+  });
+
+  it("correlation shrinkage keeps every asset's sample variance and refuses a zero-variance asset", () => {
+    const X = factorReturns(60, [0.0005, 0.01, 0.08], 0.3, 13);
+    const S = covarianceMatrix(X, { population: true })!;
+    const est = ledoitWolfCovariance(X)!;
+    est.covariance.forEach((row, i) => expect(row[i]!).toBeCloseTo(S[i]![i]!, 18));
+    // A frozen feed (constant price → zero returns) must be refused, not given the largest weight.
+    const frozen = X.map((row) => [row[0]!, row[1]!, 0]);
+    expect(ledoitWolfCovariance(frozen)).toBeNull();
+    const bt = backtestAllocation({ returns: [...frozen, ...frozen, ...frozen] }, "INVERSE_VOLATILITY", { lookback: 60, rebalanceEvery: 20, costBpsPerSide: 0, shrink: true, periodsPerYear: 252 });
+    expect(bt.rebalances).toBe(0);
+    expect(bt.sufficient).toBe(false);
+    expect(bt.netReturns).toEqual([]);
+  });
+
   it("Ledoit–Wolf: intensity in [0,1], trace preserved, positive definite, more shrinkage on short samples", () => {
     const vols = [0.01, 0.015, 0.02, 0.025, 0.03, 0.012, 0.018, 0.022];
-    const short = ledoitWolfCovariance(factorReturns(40, vols, 0.4, 11))!;
-    const long = ledoitWolfCovariance(factorReturns(4000, vols, 0.4, 11))!;
+    const short = ledoitWolfIdentity(factorReturns(40, vols, 0.4, 11))!;
+    const long = ledoitWolfIdentity(factorReturns(4000, vols, 0.4, 11))!;
     for (const est of [short, long]) {
       expect(est.shrinkage).toBeGreaterThanOrEqual(0);
       expect(est.shrinkage).toBeLessThanOrEqual(1);
@@ -228,6 +253,11 @@ describe("allocation baselines", () => {
 describe("tail risk and stress", () => {
   it("historical VaR/ES are withheld below the minimum sample and ES ≥ VaR", () => {
     expect(historicalTail([0.01, -0.02])).toBeNull();
+    // 90% of 100 observations leaves exactly 10 in the tail (binary rounding must not drop one).
+    const ladder = Array.from({ length: 100 }, (_, i) => (i - 50) / 1000);
+    expect(historicalTail(ladder, 0.9)!.var).toBeCloseTo(0.041, 12);
+    expect(() => historicalTail(ladder, 1)).toThrow();
+    expect(() => historicalTail([...ladder.slice(1), Number.NaN], 0.9)).toThrow();
     const r = factorReturns(1000, [0.02], 1, 51).map((row) => row[0]!);
     const tail = historicalTail(r)!;
     expect(tail.expectedShortfall).toBeGreaterThanOrEqual(tail.var);
@@ -242,11 +272,18 @@ describe("tail risk and stress", () => {
     expect(() => stressCovariance(S, { volMultiplier: 0, correlationFloor: 0.5 })).toThrow();
   });
 
-  it("scenario losses report assets the scenario does not cover", () => {
+  it("scenario losses are unknown (null), not zero, when a held asset's market is not covered", () => {
     const crash = HYPOTHETICAL_SHOCKS.find((s) => s.name === "EQUITY_CRASH")!;
-    const loss = scenarioLoss([0.5, 0.3, 0.2], ["BROAD_ETF", "LIQUID_MAJOR", "FX"], crash);
-    expect(loss.portfolioReturn).toBeCloseTo(0.5 * -0.2 + 0.3 * -0.3, 12);
-    expect(loss.unshockedAssets).toEqual([2]);
+    const covered = scenarioLoss([0.5, 0.3, 0.2], ["BROAD_ETF", "LIQUID_MAJOR", "MAJOR_FX"], crash);
+    expect(covered.portfolioReturn).toBeCloseTo(0.5 * -0.2 + 0.3 * -0.3, 12);
+    expect(covered.unshockedAssets).toEqual([]);
+    const missing = scenarioLoss([0.5, 0.3, 0.2], ["BROAD_ETF", "LIQUID_MAJOR", "COMMODITY"], crash);
+    expect(missing.portfolioReturn).toBeNull();
+    expect(missing.unshockedAssets).toEqual([2]);
+    // Every scenario covers every warehouse cohort explicitly.
+    for (const scenario of HYPOTHETICAL_SHOCKS) {
+      expect(Object.keys(scenario.shocksByMarket).sort()).toEqual(["BROAD_ETF", "ESTABLISHED_SOLANA", "INACTIVE", "LIQUID_MAJOR", "MAJOR_FX", "SPECULATIVE_SOLANA"]);
+    }
   });
 });
 
@@ -281,12 +318,32 @@ describe("allocation backtest", () => {
   it("charges costs: net never beats gross, and zero cost makes them equal", () => {
     const X = factorReturns(400, [0.01, 0.02, 0.03], 0.4, 81);
     const costly = backtestAllocation({ returns: X }, "INVERSE_VOLATILITY", config);
-    expect(costly.costPaid).toBeGreaterThan(0);
+    expect(costly.costDrag).toBeGreaterThan(0);
+    // Cost is exactly turnover × bps (simple sum), and the compounded drag is slightly smaller.
+    expect(costly.costSum).toBeCloseTo((costly.turnover * config.costBpsPerSide) / 10_000, 15);
+    expect(costly.costDrag).toBeLessThanOrEqual(costly.costSum);
     expect(costly.totalReturnNet).toBeLessThan(costly.totalReturnGross);
     const free = backtestAllocation({ returns: X }, "INVERSE_VOLATILITY", { ...config, costBpsPerSide: 0 });
     expect(free.totalReturnNet).toBeCloseTo(free.totalReturnGross, 12);
     // First rebalance trades from cash into a fully invested book: one-way turnover 1.
     expect(costly.turnover).toBeGreaterThanOrEqual(1);
+  });
+
+  it("weights drift with returns between rebalances", () => {
+    // Two assets, equal weight, never rebalanced again: after one bar of +10% / −10% the next bar's gross
+    // return uses drifted weights 0.55 / 0.45 (cash 0).
+    const rows = Array.from({ length: 60 }, (_, k) => [0.001 * Math.sin(k), 0.001 * Math.cos(k)]);
+    rows.push([0.1, -0.1], [0.02, 0.02], [0.02, 0]);
+    const bt = backtestAllocation({ returns: rows }, "EQUAL_WEIGHT", { lookback: 60, rebalanceEvery: 1000, costBpsPerSide: 0, shrink: false, periodsPerYear: 252 });
+    expect(bt.grossReturns[0]).toBeCloseTo(0, 15);
+    expect(bt.grossReturns[1]).toBeCloseTo(0.02, 15);
+    expect(bt.grossReturns[2]).toBeCloseTo(0.55 * 0.02, 15);
+  });
+
+  it("refuses ragged or non-finite input", () => {
+    const X = factorReturns(100, [0.01, 0.02], 0.4, 93);
+    expect(() => backtestAllocation({ returns: [...X, [0.01]] }, "EQUAL_WEIGHT", config)).toThrow(/ragged/);
+    expect(() => backtestAllocation({ returns: [...X, [Number.NaN, 0]] }, "EQUAL_WEIGHT", config)).toThrow(/non-finite/);
   });
 
   it("withholds the Sharpe ratio below 100 bars and refuses a too-short look-back", () => {
@@ -315,6 +372,8 @@ describe("portfolio report", () => {
     const erc = report.allocations.find((a) => a.rule === "EQUAL_RISK_CONTRIBUTION")!;
     erc.riskShares!.forEach((s) => expect(s).toBeCloseTo(1 / 3, 6));
     expect(erc.stressedVolatility!).toBeGreaterThan(erc.annualisedVolatility!);
-    expect(erc.scenarios!.find((s) => s.name === "CRYPTO_LIQUIDITY_COLLAPSE")!.unshockedAssets).toEqual(["fixture_0"]);
+    const collapse = erc.scenarios!.find((s) => s.name === "CRYPTO_LIQUIDITY_COLLAPSE")!;
+    expect(collapse.unshockedAssets).toEqual([]);
+    expect(collapse.portfolioReturn!).toBeLessThan(0);
   });
 });

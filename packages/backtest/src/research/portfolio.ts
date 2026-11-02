@@ -12,7 +12,9 @@
  * - Point in time: any weight applied to bar i is computed from returns strictly before bar i.
  *
  * Methods:
- * - Covariance shrinkage toward a scaled identity, with the data-driven intensity of Ledoit & Wolf,
+ * - Correlation shrinkage: the scaled-identity estimator, with the data-driven intensity of Ledoit & Wolf,
+ *   applied to standardised returns so each asset keeps its sample variance (`ledoitWolfCovariance`);
+ *   the raw estimator is `ledoitWolfIdentity`. Source:
  *   "A well-conditioned estimator for large-dimensional covariance matrices" (J. Multivariate Analysis,
  *   2004). Implemented from the published estimator; the paper is queued in the research registry and
  *   has not been re-read in this programme, so it is cited for the formula only.
@@ -21,7 +23,7 @@
  *   (equal contributions; inverse volatility on a diagonal covariance).
  */
 
-export const PORTFOLIO_MODEL_VERSION = "portfolio-1.0.0";
+export const PORTFOLIO_MODEL_VERSION = "portfolio-1.1.0";
 /** Minimum aligned observations for a covariance or correlation estimate. */
 export const MIN_OBSERVATIONS = 30;
 
@@ -155,11 +157,17 @@ export function correlationMatrix(returns: readonly number[][], minObservations 
   return S ? correlationFromCovariance(S) : null;
 }
 
+/** A sample variance at or below this is treated as zero (a frozen or constant series). */
+export const ZERO_VARIANCE = 1e-20;
+
 /**
- * Ledoit–Wolf (2004) shrinkage toward m·I, m = tr(S)/N. Uses the population (1/T) covariance, as the
- * estimator is defined. Returns the shrunk covariance and the intensity δ ∈ [0, 1] (1 = all target).
+ * The Ledoit–Wolf (2004) estimator itself: shrinkage toward m·I, m = tr(S)/N, on the population (1/T)
+ * covariance. Returns the shrunk matrix and the intensity δ ∈ [0, 1] (1 = all target). Applied to raw
+ * returns of assets with very different volatilities it distorts each asset's variance toward the average,
+ * so research code uses `ledoitWolfCovariance` (correlation shrinkage) instead; this is exported for
+ * reference tests.
  */
-export function ledoitWolfCovariance(returns: readonly number[][], minObservations = MIN_OBSERVATIONS): { covariance: number[][]; shrinkage: number } | null {
+export function ledoitWolfIdentity(returns: readonly number[][], minObservations = MIN_OBSERVATIONS): { covariance: number[][]; shrinkage: number } | null {
   const S = covarianceMatrix(returns, { population: true, minObservations });
   if (!S) return null;
   const T = returns.length;
@@ -183,6 +191,27 @@ export function ledoitWolfCovariance(returns: readonly number[][], minObservatio
   const shrinkage = b2 / d2;
   const covariance = S.map((row, i) => row.map((v, j) => shrinkage * (i === j ? m : 0) + (1 - shrinkage) * v));
   return { covariance, shrinkage };
+}
+
+/**
+ * Covariance with Ledoit–Wolf shrinkage applied to the correlation structure only: returns are
+ * standardised by their sample (population) volatility, the 2004 estimator shrinks their correlation
+ * matrix toward the identity, and the result is rescaled. Each asset keeps its own sample variance exactly,
+ * so a low-volatility asset is not made to look riskier than it is (reviewer A, APEX).
+ *
+ * Returns null when any asset has (near-)zero sample variance: a frozen or constant feed must be refused,
+ * not given the largest inverse-volatility weight.
+ */
+export function ledoitWolfCovariance(returns: readonly number[][], minObservations = MIN_OBSERVATIONS): { covariance: number[][]; shrinkage: number } | null {
+  const S = covarianceMatrix(returns, { population: true, minObservations });
+  if (!S) return null;
+  if (S.some((row, i) => !(row[i]! > ZERO_VARIANCE))) return null;
+  const sd = S.map((row, i) => Math.sqrt(row[i]!));
+  const standardised = returns.map((row) => row.map((v, i) => v / sd[i]!));
+  const shrunk = ledoitWolfIdentity(standardised, minObservations);
+  if (!shrunk) return null;
+  const covariance = shrunk.covariance.map((row, i) => row.map((v, j) => (i === j ? S[i]![i]! : v * sd[i]! * sd[j]!)));
+  return { covariance, shrinkage: shrunk.shrinkage };
 }
 
 /**
@@ -366,9 +395,12 @@ export function allocate(rule: AllocationRule, S: readonly number[][]): number[]
 
 /** Historical VaR and expected shortfall (positive numbers are losses). Null below `MIN_OBSERVATIONS`. */
 export function historicalTail(returns: readonly number[], level = 0.95): { var: number; expectedShortfall: number; observations: number } | null {
+  if (!(level > 0 && level < 1)) throw new Error("historicalTail: level must be in (0, 1)");
+  if (returns.some((r) => !Number.isFinite(r))) throw new Error("historicalTail: non-finite return");
   if (returns.length < MIN_OBSERVATIONS) return null;
   const sorted = [...returns].sort((x, y) => x - y);
-  const tailCount = Math.max(1, Math.floor((1 - level) * sorted.length));
+  // The epsilon absorbs binary rounding: (1 − 0.9) · 100 is 9.999…, which must count 10 observations.
+  const tailCount = Math.max(1, Math.floor((1 - level) * sorted.length + 1e-9));
   const tail = sorted.slice(0, tailCount);
   return {
     var: -sorted[tailCount - 1]!,
@@ -380,6 +412,8 @@ export function historicalTail(returns: readonly number[], level = 0.95): { var:
 /**
  * Hypothetical covariance stress: volatilities × `volMultiplier`, and every off-diagonal correlation
  * raised to at least `correlationFloor` (a correlation spike). The result is a scenario, not a forecast.
+ * Raising correlations element-wise does not guarantee a positive semi-definite matrix in general; with a
+ * floor ≥ 0 and long-only weights the resulting portfolio variance is still a valid upper-stress figure.
  */
 export function stressCovariance(S: readonly number[][], scenario: { volMultiplier: number; correlationFloor: number }): number[][] {
   if (!(scenario.volMultiplier > 0)) throw new Error("stressCovariance: volMultiplier must be > 0");
@@ -399,29 +433,35 @@ export function stressCovariance(S: readonly number[][], scenario: { volMultipli
 export type ShockScenario = { name: string; description: string; shocksByMarket: Record<string, number> };
 
 /**
- * Hypothetical instantaneous shocks by market. Labelled HYPOTHETICAL: the magnitudes are scenario inputs
- * chosen for stress testing, not estimates of likelihood.
+ * Hypothetical instantaneous shocks keyed by warehouse cohort (`HistoricalDataset.cohort`: LIQUID_MAJOR,
+ * ESTABLISHED_SOLANA, SPECULATIVE_SOLANA, INACTIVE, BROAD_ETF, MAJOR_FX). Labelled HYPOTHETICAL: the
+ * magnitudes are scenario inputs chosen for stress testing, not estimates of likelihood. A scenario states
+ * every cohort it covers, including 0% moves, so an omission is never mistaken for "no loss".
  */
 export const HYPOTHETICAL_SHOCKS: readonly ShockScenario[] = [
-  { name: "EQUITY_CRASH", description: "Broad equity −20%, crypto −30%, FX/commodities unchanged", shocksByMarket: { BROAD_ETF: -0.2, EQUITY: -0.2, LIQUID_MAJOR: -0.3, ESTABLISHED_SOLANA: -0.3, SPECULATIVE_SOLANA: -0.3 } },
-  { name: "CRYPTO_LIQUIDITY_COLLAPSE", description: "Liquid crypto −40%, Solana long tail −80%", shocksByMarket: { LIQUID_MAJOR: -0.4, ESTABLISHED_SOLANA: -0.6, SPECULATIVE_SOLANA: -0.8 } },
-  { name: "EVERYTHING_DOWN", description: "Every risky market −25% (correlation → 1)", shocksByMarket: { BROAD_ETF: -0.25, EQUITY: -0.25, LIQUID_MAJOR: -0.25, ESTABLISHED_SOLANA: -0.25, SPECULATIVE_SOLANA: -0.25, FX: -0.05, COMMODITY: -0.25 } },
+  { name: "EQUITY_CRASH", description: "Broad equity −20%, crypto −30%, FX unchanged", shocksByMarket: { BROAD_ETF: -0.2, LIQUID_MAJOR: -0.3, ESTABLISHED_SOLANA: -0.3, SPECULATIVE_SOLANA: -0.3, INACTIVE: -0.3, MAJOR_FX: 0 } },
+  { name: "CRYPTO_LIQUIDITY_COLLAPSE", description: "Liquid crypto −40%, established Solana −60%, long tail −80%; equity and FX unchanged", shocksByMarket: { LIQUID_MAJOR: -0.4, ESTABLISHED_SOLANA: -0.6, SPECULATIVE_SOLANA: -0.8, INACTIVE: -0.8, BROAD_ETF: 0, MAJOR_FX: 0 } },
+  { name: "EVERYTHING_DOWN", description: "Every risky cohort −25%, FX −5% (correlation → 1)", shocksByMarket: { BROAD_ETF: -0.25, LIQUID_MAJOR: -0.25, ESTABLISHED_SOLANA: -0.25, SPECULATIVE_SOLANA: -0.25, INACTIVE: -0.25, MAJOR_FX: -0.05 } },
 ];
 
 /**
- * Loss of a long-only allocation under an instantaneous shock. An asset whose market has no shock in the
- * scenario is reported in `unshockedAssets` (assumed 0%), so a scenario that misses a market is visible.
+ * Return of a long-only allocation under an instantaneous shock. When any asset with a non-zero weight
+ * belongs to a market the scenario does not cover, the portfolio return is null (unknown, not 0%) and
+ * the assets are listed in `unshockedAssets`.
  */
-export function scenarioLoss(weights: readonly number[], markets: ReadonlyArray<string | null>, scenario: ShockScenario): { portfolioReturn: number; unshockedAssets: number[] } {
+export function scenarioLoss(weights: readonly number[], markets: ReadonlyArray<string | null>, scenario: ShockScenario): { portfolioReturn: number | null; unshockedAssets: number[] } {
   let portfolioReturn = 0;
   const unshockedAssets: number[] = [];
   weights.forEach((w, i) => {
     const market = markets[i];
     const shock = market ? scenario.shocksByMarket[market] : undefined;
-    if (shock === undefined) unshockedAssets.push(i);
-    else portfolioReturn += w * shock;
+    if (shock === undefined) {
+      if (w !== 0) unshockedAssets.push(i);
+    } else {
+      portfolioReturn += w * shock;
+    }
   });
-  return { portfolioReturn, unshockedAssets };
+  return { portfolioReturn: unshockedAssets.length > 0 ? null : portfolioReturn, unshockedAssets };
 }
 
 // ---------- Point-in-time allocation backtest ----------
@@ -444,9 +484,10 @@ export type AllocationBacktestConfig = {
 export type AllocationBacktest = {
   rule: AllocationRule;
   version: string;
-  /** Per-bar portfolio returns net of rebalance costs, from the first rebalance onwards. */
+  /** Per-bar portfolio returns net of rebalance costs, from the first successful rebalance onwards. */
   netReturns: number[];
   grossReturns: number[];
+  /** Index (in the aligned rows) of netReturns[0]: the first successful rebalance, or −1 when there was none. */
   startIndex: number;
   rebalances: number;
   /** Target weights set at each rebalance bar (applied to that bar's return), for audit. */
@@ -454,13 +495,17 @@ export type AllocationBacktest = {
   /** Rebalances skipped because the rule was undefined on that window (the portfolio was held unchanged). */
   skippedRebalances: number;
   turnover: number;
-  costPaid: number;
+  /** Sum of per-rebalance cost fractions (simple, for comparison with turnover × bps). */
+  costSum: number;
+  /** Compounded cost drag: 1 − Π(1 − cost_k). */
+  costDrag: number;
   totalReturnNet: number;
   totalReturnGross: number;
   annualisedVolatility: number | null;
   maxDrawdown: number;
-  /** Ratios are withheld below 100 bars, as elsewhere in research/. */
+  /** Ratios are withheld below 100 invested bars, as elsewhere in research/. */
   sharpe: number | null;
+  /** False when no rebalance succeeded or fewer than 100 bars were evaluated after the first one. */
   sufficient: boolean;
   evidence: "RESEARCH_ONLY";
 };
@@ -488,18 +533,23 @@ export function backtestAllocation(aligned: Pick<AlignedReturns, "returns">, rul
   if (!Number.isInteger(config.lookback) || config.lookback < MIN_OBSERVATIONS) throw new Error(`backtestAllocation: lookback must be an integer ≥ ${MIN_OBSERVATIONS}`);
   if (!Number.isInteger(config.rebalanceEvery) || config.rebalanceEvery < 1) throw new Error("backtestAllocation: rebalanceEvery must be ≥ 1");
   if (!(config.costBpsPerSide >= 0)) throw new Error("backtestAllocation: cost must be ≥ 0");
-  const startIndex = config.lookback;
+  for (const row of X) {
+    if (row.length !== N) throw new Error("backtestAllocation: ragged return rows");
+    if (row.some((r) => !Number.isFinite(r) || r <= -1)) throw new Error("backtestAllocation: non-finite or ≤ −100% return");
+  }
+  let startIndex = -1;
   const netReturns: number[] = [];
   const grossReturns: number[] = [];
   let w: number[] = new Array<number>(N).fill(0);
   let rebalances = 0;
   let skipped = 0;
   let turnover = 0;
-  let costPaid = 0;
+  let costSum = 0;
+  let keep = 1;
   const rebalanceWeights: Array<{ index: number; weights: number[] }> = [];
-  for (let k = startIndex; k < X.length; k++) {
+  for (let k = config.lookback; k < X.length; k++) {
     let cost = 0;
-    if ((k - startIndex) % config.rebalanceEvery === 0) {
+    if ((k - config.lookback) % config.rebalanceEvery === 0) {
       const window = X.slice(k - config.lookback, k);
       const S = config.shrink ? ledoitWolfCovariance(window)?.covariance ?? null : covarianceMatrix(window);
       let target = S ? allocate(rule, S) : null;
@@ -509,7 +559,9 @@ export function backtestAllocation(aligned: Pick<AlignedReturns, "returns">, rul
         const traded = target.reduce((s, v, i) => s + Math.abs(v - w[i]!), 0);
         cost = (traded * config.costBpsPerSide) / 10_000;
         turnover += traded;
-        costPaid += cost;
+        costSum += cost;
+        keep *= 1 - cost;
+        if (startIndex < 0) startIndex = k;
         w = target;
         rebalances += 1;
         rebalanceWeights.push({ index: k, weights: [...target] });
@@ -517,6 +569,8 @@ export function backtestAllocation(aligned: Pick<AlignedReturns, "returns">, rul
         skipped += 1;
       }
     }
+    // Before the first successful rebalance the book is all cash and is not evaluated.
+    if (startIndex < 0) continue;
     const row = X[k]!;
     const gross = w.reduce((s, wi, i) => s + wi * row[i]!, 0);
     grossReturns.push(gross);
@@ -529,7 +583,7 @@ export function backtestAllocation(aligned: Pick<AlignedReturns, "returns">, rul
   const n = netReturns.length;
   const mean = n > 0 ? netReturns.reduce((s, r) => s + r, 0) / n : 0;
   const sd = n > 1 ? Math.sqrt(netReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / (n - 1)) : 0;
-  const sufficient = n >= 100;
+  const sufficient = rebalances > 0 && n >= 100;
   return {
     rule,
     version: PORTFOLIO_MODEL_VERSION,
@@ -540,7 +594,8 @@ export function backtestAllocation(aligned: Pick<AlignedReturns, "returns">, rul
     rebalanceWeights,
     skippedRebalances: skipped,
     turnover,
-    costPaid,
+    costSum,
+    costDrag: 1 - keep,
     totalReturnNet: compound(netReturns),
     totalReturnGross: compound(grossReturns),
     annualisedVolatility: n > 1 ? sd * Math.sqrt(config.periodsPerYear) : null,
@@ -572,7 +627,7 @@ export type PortfolioReport = {
     annualisedVolatility: number | null;
     stressedVolatility: number | null;
     exposureByMarket: Record<string, number> | null;
-    scenarios: Array<{ name: string; portfolioReturn: number; unshockedAssets: string[] }> | null;
+    scenarios: Array<{ name: string; portfolioReturn: number | null; unshockedAssets: string[] }> | null;
   }>;
   limitations: string[];
   evidence: "RESEARCH_ONLY";
@@ -590,9 +645,10 @@ export function portfolioReport(series: readonly ReturnSeries[], options: { peri
     "Covariances are estimated from history and are unstable; the shrinkage estimate reduces, not removes, that error.",
     "Allocations are research outputs. They never size orders or override the trading-risk engine.",
     "Scenario shocks are hypothetical inputs, not probabilities.",
+    "The allocations below are fitted on the whole sample and described on the same sample (in-sample); equal risk shares hold by construction, not as evidence. Out-of-sample behaviour is what backtestAllocation measures.",
   ];
-  if (aligned.droppedTimestamps > 0) limitations.push(`${aligned.droppedTimestamps} timestamps were missing from at least one series and were dropped, not filled.`);
-  if (!sufficient) limitations.push(`Fewer than ${MIN_OBSERVATIONS} aligned observations: no covariance, correlation or allocation is reported.`);
+  if (aligned.droppedTimestamps > 0) limitations.push(`${aligned.droppedTimestamps} timestamps were dropped (${aligned.invalidReturns} for non-finite or ≤ −100% returns, the rest missing from at least one series); nothing was filled.`);
+  if (!sufficient) limitations.push(`No covariance or allocation is reported: fewer than ${MIN_OBSERVATIONS} aligned observations, or an asset has zero variance (a frozen or constant series).`);
   const rules: AllocationRule[] = ["EQUAL_WEIGHT", "INVERSE_VOLATILITY", "EQUAL_RISK_CONTRIBUTION"];
   return {
     version: PORTFOLIO_MODEL_VERSION,
