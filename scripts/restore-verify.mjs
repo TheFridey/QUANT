@@ -73,13 +73,21 @@ export function parseConnection(url) {
   for (const key of u.searchParams.keys()) {
     if (key !== "sslmode") return { error: `query parameter '${key}' is not allowed (it could redirect the connection)` };
   }
-  const database = decodeURIComponent(u.pathname.replace(/^\//, ""));
+  let database, user, password;
+  try {
+    database = decodeURIComponent(u.pathname.replace(/^\//, ""));
+    user = decodeURIComponent(u.username);
+    password = decodeURIComponent(u.password);
+  } catch {
+    return { error: "has malformed percent-encoding" };
+  }
   if (!database || database.includes("/")) return { error: "must name exactly one database in the path" };
   return {
-    host: u.hostname || "127.0.0.1",
+    // WHATWG URL keeps IPv6 brackets ("[::1]"); libpq wants the bare address.
+    host: (u.hostname || "127.0.0.1").replace(/^\[(.*)\]$/, "$1"),
     port: u.port || "5432",
-    user: decodeURIComponent(u.username),
-    password: decodeURIComponent(u.password),
+    user,
+    password,
     database,
     sslmode: u.searchParams.get("sslmode") ?? undefined,
   };
@@ -103,9 +111,10 @@ export function checkDrillArgs({ adminUrl, dump, sourceUrl, scratchName }) {
 
 /** libpq environment for a connection; nothing connection-related goes on the command line. */
 export function connectionEnv(conn, database, extra = {}) {
-  const env = { ...process.env, PGHOST: conn.host, PGPORT: conn.port, PGUSER: conn.user, PGPASSWORD: conn.password, PGDATABASE: database, ...extra };
-  delete env.PGSERVICE;
-  delete env.PGSERVICEFILE;
+  // Drop every inherited libpq variable (PGHOSTADDR, PGOPTIONS, PGSERVICE, PGTARGETSESSIONATTRS, ...) so
+  // only the parsed connection decides where psql and pg_restore connect.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PG")));
+  Object.assign(env, { PGHOST: conn.host, PGPORT: conn.port, PGUSER: conn.user, PGPASSWORD: conn.password, PGDATABASE: database, ...extra });
   if (conn.sslmode) env.PGSSLMODE = conn.sslmode;
   return env;
 }

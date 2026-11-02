@@ -20,7 +20,7 @@ Durable checkpoint for Operation APEX. **On resume, reconstruct state from Git, 
 
 ## Reviews
 
-A: APPROVE WITH NOTES. B+C: BLOCK on H-1, fixed in `621a789`, re-review requested. D+E: APPROVE WITH NOTES. Details in [`REPORT.md`](REPORT.md) §4.
+A: APPROVE WITH NOTES. B+C: BLOCK on H-1; fixed in `621a789`; **re-review APPROVE WITH NOTES** (it attacked the drill with `?dbname=`, `?options=`, encoded and conninfo variants, all refused, with `odin`, `odin_test` and `postgres` snapshotted unchanged). Its three LOW re-review notes (inherited `PG*` variables, malformed percent-encoding, IPv6 brackets) are fixed in the following commit. D+E: APPROVE WITH NOTES. Details in [`REPORT.md`](REPORT.md) §4.
 
 ## Blockers
 
@@ -40,7 +40,7 @@ A: APPROVE WITH NOTES. B+C: BLOCK on H-1, fixed in `621a789`, re-review requeste
 
 ## Next actions (in order)
 
-1. Confirm the B+C re-review verdict and record it above; confirm CI on the PR is green (unit, integration, e2e).
+1. Confirm CI on PR #44 is green (unit, integration, e2e).
 2. With operator approval: merge; deploy (packages, worker, API restart; no migration); run the restore drill on the latest production dump and `portfolio-cli` on SOL/USDC 1h + GATO 1h; record both here and in `docs/ascend/STATUS.md`.
 3. With the unlock: PCR-1 (lifecycle fencing) first, then PCR-3, PCR-2, PCR-4, PCR-5.
 4. Enforce `requiresApproval` in the research pipeline (non-protected; `packages/evolution/src/pipeline.ts`).

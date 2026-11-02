@@ -43,6 +43,26 @@ describe("restore verification drill guards (APEX §15.3)", () => {
     expect(env.PGSERVICE).toBeUndefined();
   });
 
+  it("ignores inherited libpq variables, decodes IPv6 hosts and reports bad encoding (re-review LOWs)", () => {
+    const saved = { PGHOSTADDR: process.env.PGHOSTADDR, PGOPTIONS: process.env.PGOPTIONS };
+    process.env.PGHOSTADDR = "10.0.0.9";
+    process.env.PGOPTIONS = "-c search_path=evil";
+    try {
+      const env = connectionEnv(parseConnection("postgresql://u:p@127.0.0.1:5432/postgres"), "postgres");
+      expect(env.PGHOSTADDR).toBeUndefined();
+      expect(env.PGOPTIONS).toBeUndefined();
+      const readOnly = connectionEnv(parseConnection("postgresql://u:p@127.0.0.1:5432/quant"), "quant", { PGOPTIONS: "-c default_transaction_read_only=on" });
+      expect(readOnly.PGOPTIONS).toBe("-c default_transaction_read_only=on");
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    expect(parseConnection("postgresql://u:p@[::1]:5432/postgres").host).toBe("::1");
+    expect(checkDrillArgs({ ...ok, adminUrl: "postgresql://u:%zz@127.0.0.1:5432/postgres" })).toMatch(/percent-encoding/);
+  });
+
   it("requires a source to compare against, and refuses bad names", () => {
     expect(checkDrillArgs({ ...ok, sourceUrl: undefined })).toMatch(/--source-url is required/);
     expect(checkDrillArgs({ ...ok, sourceUrl: "postgresql://u:p@127.0.0.1:5432/postgres" })).toMatch(/application database/);
