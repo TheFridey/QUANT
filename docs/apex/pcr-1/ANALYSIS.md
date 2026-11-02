@@ -1,89 +1,134 @@
-# PCR-1: fence pending exits to their position lot
+# PCR-1: fence pending exits to the units they were booked against (v2)
 
-Status: **reproduced, fix prepared, protected half awaiting operator approval.** Branch `apex/pcr-1-lifecycle-fence` (from `main` `c3b23e9`; independent of PR #44). PAPER-only; no risk default, entry control or live-money path changes.
+Status: **design complete and tested; the protected half awaits operator approval.** Branch `apex/pcr-1-lifecycle-fence`, draft PR #45. PAPER-only. No risk default, entry control or live-money path changes. The protected file is unchanged, and the unlock file has not been created.
 
-## 1. Defect
+v1 fenced on the lot id only. The independent review (`RISK_REVIEW.md`) and the operator asked for two remaining issues to be resolved first:
+- **F-PCR1-a:** the protection retry read the position identity outside the account lock.
+- **F-PCR1-b:** a lot that is reduced and then increased keeps its id, so an old exit could reach new units.
 
-A pending SELL is booked for one position lot. If that lot closes by another path and a new lot opens on the same pair before the SELL settles, the SELL sells the **new** lot.
+v2 resolves both.
 
-`Order` has no reference to the lot it was booked for (`schema.prisma`, model `Order`). Settle (`apps/worker/src/executor/settle.ts`) cancels a pending SELL only while the pair is **flat** (ASCEND-00 F5, `EXIT_SUPERSEDED`). Pending orders settle in `submittedAt` order, so an earlier-submitted pending BUY on the same pair fills first and reopens the pair. The F5 check then sees a non-flat position and lets the stale SELL settle.
+## 1. Defects
 
-### Reachable sequence (current code)
+### D1: stale pending exit sells a reopened lot (reproduced)
 
-1. Lot L1 is open on pair P (owner: strategy X).
-2. T0: a BUY on P becomes PENDING (paper latency, default 1 s). This is allowed while L1 is open: entry de-duplication is per strategy instance and pair (`INSTANCE_ALREADY_OWNS`, `PENDING_ENTRY_IN_FLIGHT` in `packages/agent-core/src/plan.ts`), so a second instance can enter P, and operator tickets may add to a held pair.
-3. T1 > T0: the planner books a protective NET_CLOSE for L1, PENDING. `pendingNetCloseByPair` defers further *exits* on P, not entries.
-4. Same cycle, protect phase: protection fills and closes L1. The pair is flat and L1's id is cleared.
-5. Next cycle, settle, in `submittedAt` order: the BUY (T0) fills and opens lot L2 with fresh protection. Then the NET_CLOSE (T1) sees qty > 0, passes F5, and **sells L2**.
+A pending SELL is booked for lot L1. Protection closes L1, and an earlier-submitted pending BUY reopens the pair as L2 in the next settle loop: settle runs in `submittedAt` order, and F5 only cancels while the pair is flat. The stale SELL then sells L2.
 
-### Evidence (executed 2 Nov 2026, local Postgres 16, code at `c3b23e9`)
+Evidence: on `c3b23e9`, the integration reproduction filled the stale NET_CLOSE against a fresh $100 lot (−$0.69 round trip; the lot's new protection was lost).
 
-`apps/worker/src/executor/lifecycle-fence.integration.test.ts` seeds exactly that state and calls the real `settlePendingPaperOrders` / `settlePendingOrder`. On unpatched code, the stale NET_CLOSE was `FILLED`, the new lot went back to 0 with its lifecycle cleared, realised P&L was −$0.69 on a $100 lot (fees + spread for an unintended round trip), and two fills were booked.
+Reachability:
+- Entry de-duplication is per instance and pair, so a second strategy instance or an operator ticket can have a pending BUY on a held pair.
+- `pendingNetCloseByPair` defers exits, not entries.
 
-### Severity
+### D2: reduce then add within one lot (F-PCR1-b)
 
-**Medium.** The ledger stays consistent (cash equals the ledger), and exposure never exceeds what was admitted. The defect closes a position that the operator or another strategy deliberately opened, pays a round trip in costs, and removes protection armed for the new lot. It affects PAPER accounting and strategy attribution, and could distort research on live-paper results.
+Suppose the exit is booked for 2 units, another exit sells 1, and an add buys 1. The lot id is unchanged, so a lot-id fence lets the old exit sell 2, which includes the unit bought after it was booked.
 
-Out of scope: SANDBOX orders already at the broker (`applyExternalFill`). A broker-side stale SELL cannot be cancelled locally once submitted. That is a separate, existing outbox concern.
+### D3: protection retry decides outside the lock (F-PCR1-a; reproduced)
 
-## 2. Fix
+`apps/worker/src/executor/protect.ts` read the leg, position, lot fence and quantity before `lockAccount`, then sold that quantity inside the lock. A concurrent close and reopen between the two slips past the fence.
 
-| Part | File | Protected? | State on the branch |
-| --- | --- | --- | --- |
-| Nullable `Order.positionLifecycleId` (no index: nothing queries by it) | `packages/shared/prisma/schema.prisma`, migration `20261102120000_order_position_lifecycle` | No; **production migration needs approval** | Implemented |
-| Reason code `EXIT_LIFECYCLE_MISMATCH` | `packages/shared/src/reasons.ts` | No | Implemented |
-| Fence: cancel a stamped SELL whose lot is not the pair's open lot, releasing reservations exactly as F5 does; flatten exits exempt; unstamped rows unchanged | `apps/worker/src/executor/settle.ts` | No | Implemented |
-| Stamp the lot on every pending SELL and on exit remainders | `packages/trading-engine/src/store.ts` | **Yes** | Patch only: [`store-stamping.patch`](store-stamping.patch). `git apply --check` passes against `c3b23e9`; not applied |
+Evidence: a deterministic race test holds the account lock in another transaction while it swaps the lot. On the old code the retry **sold the new lot** (1 filled SELL). On the new code it sells nothing and resolves the stale intent.
 
-The two *code* halves are safe in either order: the fence is a no-op until rows are stamped (null → today's behaviour), so deploying the fence without the stamping changes nothing in behaviour.
+## 2. Design: a transaction-safe unit identity
 
-**The migration must go first.** A build whose Prisma client knows `positionLifecycleId` selects it on every `Order` read. Against a schema without the column, the whole executor would fail, including exits (risk review, MEDIUM). Old builds ignore the column, so migrate, then deploy. On rollback, redeploy the previous build and keep the column.
+| Element | Definition | Written |
+| --- | --- | --- |
+| `Position.cumBoughtQty` | Monotonic: total quantity ever bought on the row. Every BUY fill adds its quantity; it never decreases or resets, even across lots | In the same upsert, in the same account-locked transaction, that applies each fill (all three fill paths) |
+| `Order.positionBoughtQtyAtBooking` | The counter's value when a SELL is booked | In the account-locked transaction that writes the pending SELL, and for exit remainders right after the parent fill in the same transaction |
+| `Order.positionLifecycleId` | The lot id at booking | Same. Used for attribution and as a redundant fence |
 
-### Design choices
+At settlement (`exitFence`, `packages/shared/src/position-lot.ts`, pure):
 
-- **Stamp at booking, not at decision.** The stamp is read inside the account-locked transaction that writes the order (`currentLotId`). The book cannot change between the read and the insert.
-- **Remainders inherit the parent's lot.** After a partial SELL the lot is still open, so `ensurePositionLifecycleOnOpen` returns the same id, and `bookExitRemainder` receives it.
-- **Flatten exits are exempt** (`ownerScope = ACCOUNT_FLATTEN` or `intent = FLATTEN`). A flatten means "be flat now". When the engine is halted, settle already cancels pending ENTRY/OPERATOR BUYs before they can reopen the pair.
-- **Operator reduces are fenced.** An operator SELL booked against L1 is cancelled if L2 has replaced L1; the operator can resubmit against L2. This is the conservative reading: never sell a lot the order was not for.
-- **Fence location.** In the settle loop beside F5, with the same release path (`releasePendingExitReservation` clamps at zero; `releaseInTx` is a no-op without a HELD reservation). It runs before the eligibility check, so a stale exit that is not yet eligible is also cancelled.
-- **Rejected alternatives.**
-  - A timestamp heuristic (compare `submittedAt` with the lot's first fill). It needs no migration, but Prisma's `now()` and the shared transaction timestamps make it ambiguous within one cycle.
-  - A database trigger that stamps on insert. It avoids touching `store.ts`, but it hides trading behaviour in SQL and sidesteps the protected-path review the change deserves.
+```
+added   = cumBoughtQty(now) − stamp        (≥ 0 by monotonicity; < 0 ⇒ inconsistent ⇒ cancel)
+allowed = qty(now) − added
+allowed ≤ 0          → CANCEL  EXIT_LIFECYCLE_MISMATCH   (no booked unit survives; covers reopen)
+allowed < order qty  → CAP     EXIT_CAPPED_TO_BOOKED_LOT (sell only the surviving booked units)
+otherwise            → PROCEED
+```
 
-### What it cannot weaken
+Under first-in first-out unit accounting, `allowed` is exactly the number of booked units still held. Units bought after booking are consumed only once every booked unit is gone. So a capped exit can never sell a unit acquired after it was booked. This is proven against an independent unit-level model (§3).
 
-- **Entries:** untouched.
-- **Risk limits:** untouched.
-- **Exits for the open lot:** settle exactly as before (control test).
-- **Protection:** `ProtectionIntent` retries already have their own lifecycle fence (D07). An exit cancelled by the fence leaves the open lot with the protection armed by its own BUY fill (`armProtectionForFill`), and the planner can plan a fresh exit against it next cycle.
+Unchanged behaviour:
+- **Flat pair:** cancels every pending SELL (F5, `EXIT_SUPERSEDED`).
+- **Flatten exits** (`ACCOUNT_FLATTEN` or `FLATTEN`): never capped, because they mean "be flat now".
+- **Unstamped legacy rows:** proceed as today. A lot-only stamp still fences a different lot.
 
-## 3. Regression tests (`apps/worker/src/executor/lifecycle-fence.integration.test.ts`)
+Applying a decision happens in the worker settle loop, under the same lock:
+- **CANCEL** releases reservations exactly as F5 does.
+- **CAP** shrinks `Order.qty` and releases only the excess STRATEGY reserved exit quantity.
 
-| Test | Before fix | Fence only (branch) | With stamping patch |
-| --- | --- | --- | --- |
-| Stale protective NET_CLOSE does not sell the new lot | **fails** (reproduces the defect) | pass | expected pass |
-| Control: SELL for the still-open lot fills | pass | pass | expected pass |
-| Flatten exit fills whichever lot is open | pass | pass | expected pass |
-| Legacy unstamped SELL keeps today's behaviour | pass | pass | expected pass |
-| OPERATOR reduce for a closed lot is fenced even before it is eligible | n/a | pass | expected pass |
-| Fenced STRATEGY exit releases its reserved exit qty, clamped at zero | n/a | pass | expected pass |
-| Booking stamps a pending SELL with the open lot, and a BUY with none | n/a | **fails** (needs `store.ts`) | expected pass; **not executed** (requires the unlock) |
+**Protection retry.** It reads every input under the lock and fences on the lot id. Lot-wide protection is the existing design: legs are rescaled to the whole lot on adds (`armProtectionForFill`). A retry for the open lot therefore protects the whole lot, while a retry for a closed lot never touches a reopened one.
 
-"Before fix" for the first row was executed against `c3b23e9` (the reproduction in §1). The fence tests seed stamped rows; they prove the fence logic, not reachability, which §1 shows separately.
+### Coverage of the lifecycle events the operator listed
 
-Branch-wide, executed: `pnpm test` gives 828 passed, 1 failed (the stamping test above), 25 skipped (bubblewrap). `pnpm typecheck` and `pnpm lint` are clean. Existing settle F5 unit tests pass.
+| Event | Mechanism | Evidence |
+| --- | --- | --- |
+| Initial fill (open) | The counter rises; the lot id is minted | patch; property model |
+| Addition | The counter rises; the lot id is kept | unit and integration tests (cap) |
+| Reduction | Neither changes; the existing exit cap applies | unit (cap at survivors) |
+| Closure | Qty 0 → F5 cancel | unit; v1 tests |
+| Reopening | Counter delta ≥ new qty → cancel; the lot id also differs | reproduction test; unit; property |
+| Pending orders | Stamp at booking; fence at every settle, including before eligibility | integration (OPERATOR before eligibility; STRATEGY cap persisted) |
+| Retries | Protection retry under the lock with the lot fence; exit remainders stamped in the parent's transaction | race test; patch |
+| Concurrent events | Everything is read and written under `lockAccount` (`FOR UPDATE`). Two concurrent settles release a reservation exactly once | integration (concurrent settles; race test) |
+| Worker recovery | Stamps and counters are durable. Re-running settle from a fresh client after a restart is idempotent | integration (recovery) |
 
-Still to add with the unlock (from the risk review):
-- a store-level test that a partial exit's remainder carries the parent's lot (`store.exit-policy.integration.test.ts`, protected package);
-- an end-to-end executor test: admit, then `evaluateProtections`, then the next settle, building the sequence without seeded rows.
+## 3. Evidence (executed 2 Nov 2026, local Postgres 16)
 
-## 4. Rollout (after approval)
+Unit and property tests (`packages/shared/src/position-lot.test.ts`, 14 tests):
+- Lifecycle cases, plus a property test against an independent FIFO unit model: 3,000 random sequences of buys, reductions, bookings and settlements, with more than 5,000 settlement checks. It asserts exact agreement and that no sold unit was bought after booking.
+- **Mutation:** making the fence ignore the counter (v1 behaviour) fails 6 tests.
 
-1. Unlock; apply `store-stamping.patch`; run the full suite (all 5 PCR-1 tests must pass) and the quant-safety review.
-2. PR with CI green.
-3. Deploy, in this order: back up; **apply the migration first** (metadata-only on PostgreSQL 16, no rewrite and no index build); then rebuild packages and worker, and restart the worker. Rollback: redeploy the previous build; keep the column.
-4. Watch `EXIT_LIFECYCLE_MISMATCH` cancellations (expected rare) beside `EXIT_SUPERSEDED`.
+Integration tests (`apps/worker/src/executor/lifecycle-fence.integration.test.ts`, 14 tests). Positions are seeded in the state the patched fills produce:
 
-## 5. Independent risk review
+| Test | Result |
+| --- | --- |
+| Stale NET_CLOSE after reopen is cancelled (reproduction, D1) | pass. **Fails on `c3b23e9`** |
+| Same-lot exit fills (control) | pass |
+| Flatten exempt | pass |
+| Legacy unstamped row unchanged | pass |
+| OPERATOR reduce fenced before eligibility | pass |
+| Fenced STRATEGY exit releases its reservation, clamped | pass |
+| Reduce-then-add caps to the surviving booked units (D2) | pass |
+| Two exits from one booking cannot oversell the survivors | pass |
+| Capped STRATEGY exit releases only the excess reservation | pass |
+| Concurrent settles release exactly once | pass |
+| Recovery: re-run from a fresh client is idempotent | pass |
+| Protection retry racing close and reopen never sells the new lot (D3) | pass. **Fails on the old `protect.ts`** |
+| Booking stamps lot and counter on a pending SELL, none on a BUY | **fails by design**: needs the protected patch |
 
-See [`RISK_REVIEW.md`](RISK_REVIEW.md).
+Migration order (`packages/shared/src/pcr1-migration.test.ts` plus two executed experiments):
+- **Static test.** The migration contains only `ADD COLUMN` statements: nullable, or `NOT NULL DEFAULT 0`. No drop, rename, retype, rewrite or index.
+- **Old code on the new schema.** The full `c3b23e9` suite against the migrated database gave 153 files and **822 passed**, 25 skipped, identical to the baseline. **Migrating first is safe** for the running build.
+- **New code on the old schema.** All 13 PCR-1 integration tests fail with "The column `cumBoughtQty` does not exist". **The code must not run before the migration.**
+
+The protected patch (`store-stamping.patch`) passes `git apply --check` on `c3b23e9` and on current `main`. It is not applied, and the patched build has not been executed; that happens after the unlock.
+
+## 4. Protected change requested (for operator approval)
+
+`docs/apex/pcr-1/store-stamping.patch`, `packages/trading-engine/src/store.ts` only:
+- `currentLotStamp()`: stamps lot id and counter on pending SELLs (`commitProposedOrder`) and on exit remainders (`bookExitRemainder`, after the parent fill, same transaction).
+- `boughtDelta()`: increments `cumBoughtQty` by the fill quantity on BUY fills in `fillExistingPending`, `fillCommittedOrder` and `applyExternalFill`, in the same position upsert.
+
+After the unlock:
+1. Apply the patch.
+2. Run the full suite; all 14 PCR-1 integration tests must pass.
+3. Add the store-level remainder test and an end-to-end executor test (admit, then `evaluateProtections`, then the next settle).
+4. Run `quant-safety-reviewer`.
+5. Keep the PR in draft until review.
+
+## 5. Rollout (after approval)
+
+1. Back up, then verify the restore with `scripts/restore-verify.mjs`.
+2. **Apply the migration first.** It is metadata-only on PostgreSQL 16: no rewrite, no index build. The running build keeps working (experiment above).
+3. Rebuild packages and worker, then restart the worker and the API.
+4. Smoke: health; `EXECUTION_MODE=PAPER`; cycles advancing; there may be `EXIT_LIFECYCLE_MISMATCH` and `EXIT_CAPPED_TO_BOOKED_LOT` reasons, and they should be rare.
+5. Rollback: redeploy the previous build and keep the columns. Never drop them while a new build may run.
+
+## 6. Residuals
+
+- The FIFO interpretation is a choice. The ledger itself is average-cost and fungible. FIFO is the strictest reading that guarantees "never sells newer units"; it can cancel or shrink an exit that a looser reading would allow. The planner re-plans the next cycle, and protection remains armed.
+- SANDBOX orders already at the broker are outside the local settle loop. They are stamped, but nothing reads the stamp.
+- Positions open at deploy time start the counter at 0. Only differences are used, so this is exact for every exit booked after the deploy.
