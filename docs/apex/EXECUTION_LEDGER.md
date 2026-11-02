@@ -69,7 +69,7 @@ A: APPROVE WITH NOTES. B+C: BLOCK on H-1; fixed in `621a789`; **re-review APPROV
 ## Next actions (in order)
 
 1. CI on PR #44 is green (above). The PCR-1 defect is reproduced by an integration test and analysed in `docs/apex/pcr-1/ANALYSIS.md` on the separate branch `apex/pcr-1-lifecycle-fence` (kept out of this PR).
-2. With operator approval: merge; deploy (packages, worker, API restart; no migration); run the restore drill on the latest production dump and `portfolio-cli` on SOL/USDC 1h + GATO 1h; record both here and in `docs/ascend/STATUS.md`.
+2. **Operator approval, 2 Nov 2026: merge PR #44 once the latest commit passes all required CI and the review findings remain resolved. This is not approval to deploy from an environment without VPS access.** Deployment procedure: [`DEPLOY_PR44.md`](DEPLOY_PR44.md). Then, through the authorised process: deploy (packages, worker, API restart; no migration); run the restore drill on the latest production dump and `portfolio-cli` on SOL/USDC 1h + GATO 1h; record both here and in `docs/ascend/STATUS.md`.
 3. With the unlock: PCR-1 (lifecycle fencing) first, then PCR-3, PCR-2, PCR-4, PCR-5.
 4. Enforce `requiresApproval` in the research pipeline (non-protected; `packages/evolution/src/pipeline.ts`).
 5. ASCEND-10 views for regimes, portfolio and the research registry (every number with its source and timestamp).
