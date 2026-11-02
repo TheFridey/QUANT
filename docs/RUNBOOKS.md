@@ -89,5 +89,38 @@ node scripts/verify-external-providers.mjs --provider oanda_practice
 
 ## Restore / backup
 
-TBD — document before Gate D migrations. Do not delete ambiguous paper history.
-Until a tested restore drill exists, treat Postgres volume backups as operator-owned and unproven.
+Do not delete ambiguous paper history. Production backups are custom-format dumps written by the VPS
+`quant-backup.service` to `/srv/quant/backups/quant-<UTC stamp>.dump` before each deploy (see
+`docs/ascend/STATUS.md` for recorded ones). Backup scheduling, retention and encryption live on the VPS,
+not in this repository, and have not been inspected from a session with VPS access (APEX `NOT_VERIFIED`).
+
+### Isolated restore verification (APEX §15.3)
+
+Restores a dump into a **new** scratch database (`odin_restore_drill_<stamp>`), verifies it and drops it.
+It never writes to an existing database; the admin URL must name `postgres` or `template1`.
+
+```bash
+RESTORE_ADMIN_URL=postgresql://<user>:<pass>@127.0.0.1:5432/postgres \
+  nice -n 15 node scripts/restore-verify.mjs \
+    --dump /srv/quant/backups/quant-<stamp>.dump \
+    --source-url postgresql://<user>:<pass>@127.0.0.1:5432/<app db>   # optional, read-only counts
+```
+
+Pass criteria (`"ok": true`, exit 0): `pg_restore` exits 0; a latest Prisma migration is present; every
+append-only table keeps its trigger, and a table with rows still rejects `DELETE` (probed inside a
+rolled-back transaction); with `--source-url`, no table is missing or extra and no restored count
+exceeds the live source (lower counts are reported as drift, since a live database keeps growing).
+Check free disk first: the scratch copy needs about the size of the live database (~1 GB on 1 Nov 2026).
+
+Evidence: local drill on 2 Nov 2026 (57 tables, 2,128 rows, exact match, restore 0.6 s) and fail-closed
+controls (truncated dump → exit 1; application DB as admin URL → refused). A production-dump drill is
+still `NOT_VERIFIED` (needs VPS access). `scripts/backup-restore-nonprod.mjs` remains for plain-SQL
+test-database resets.
+
+### Recovery objectives (proposed, not yet agreed with the operator)
+
+- RPO: the latest pre-deploy dump; there is no scheduled dump or WAL archiving verified in-repo, so
+  RPO between deploys is unbounded until the VPS schedule is confirmed.
+- RTO: restore time measured by the drill plus rebuild; record the production figure when the drill runs there.
+- Migration rollback: Prisma migrations here are forward-only. Roll back by restoring the pre-deploy
+  dump into a new database and repointing `DATABASE_URL`, never by dropping tables in place.
