@@ -2,11 +2,21 @@
 
 Durable checkpoint for Operation APEX. **On resume, reconstruct state from Git, CI and this file, in that order. Do not trust a chat summary.** Repository rules (`AGENTS.md`, `CLAUDE.md`) override everything here. Increment report: [`REPORT.md`](REPORT.md).
 
-## Current state (2 Nov 2026)
+## Current state (2 Nov 2026, ~16:10 UTC)
 
-- Active phase: **F (release) of increment 1**. PR [#44](https://github.com/TheFridey/QUANT/pull/44) is **ready for merge pending operator approval**: CI green on code head `2288780`, mergeable (`clean`), every reviewer finding fixed or documented, no open review threads.
-- Branch: `ccr-e2adef27-cgrrwj` (from `main` `c3b23e9`), pushed. Draft PR #44.
-- Deployed: unchanged by APEX. Last recorded production deploy `d2d1526` (`NOT_VERIFIED` from this session).
+| Item | State | Evidence |
+| --- | --- | --- |
+| PR [#44](https://github.com/TheFridey/QUANT/pull/44) (increment 1) | **Merged** to `main` as **`4331e99`** (merge commit; head `bff5000`) under operator approval, 2 Nov 2026 | CI run [41435827772](https://github.com/TheFridey/QUANT/actions/runs/41435827772) on `bff5000`: `test`, `browser-e2e`, `build-packages` all success; mergeable `clean`; 0 review threads; reviewer findings unchanged since the `2288780` verification (later commits docs-only) |
+| Deployment of `4331e99` | **Not performed** (`BLOCKED_EXTERNAL`: no VPS access from this session; the operator's approval excludes deploying from here) | Procedure: [`DEPLOY_PR44.md`](DEPLOY_PR44.md). Last recorded production deploy is still `d2d1526` (`NOT_VERIFIED`) |
+| PR [#45](https://github.com/TheFridey/QUANT/pull/45) PCR-1 (draft) | v2 design implemented outside protected paths; protected patch prepared and **not applied**; independent v2 review in progress | Branch `apex/pcr-1-lifecycle-fence` at `a550c23`. CI on `f185b3d`: 157/158 files pass; the only failure is the by-design booking-stamp test (explained on the PR) |
+| ASCEND-08 research loop | In progress on `apex/ascend-08-research-loop` (isolated worktree; not pushed) | Paused by a rate limit 11:3x to 15:20 UTC, then resumed |
+| ASCEND-09 trade memory | In progress on `apex/ascend-09-trade-memory` (isolated worktree; not pushed) | Same |
+| Designated branch | `ccr-e2adef27-cgrrwj` restarted from `main` `4331e99` for follow-up work (PR #44 is merged; no new commits stacked on merged history) | — |
+
+Operator approvals recorded, 2 Nov 2026:
+1. Merge PR #44 after green CI (done). Not approval to deploy from an environment without VPS access.
+2. Push `apex/pcr-1-lifecycle-fence` and open a draft PR (done, #45). Do not apply the protected patch or create the unlock.
+3. Separate focused PRs for ASCEND-08 and ASCEND-09, with independent reviewers. Not to be merged or deployed automatically.
 
 ## Commits
 
