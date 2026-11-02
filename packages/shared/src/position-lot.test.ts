@@ -66,9 +66,10 @@ describe("PCR-1 lot fence: lifecycle cases", () => {
   });
 
   it("stamping and counter updates", () => {
-    expect(exitStampFor(null)).toEqual({ lotId: null, boughtQtyAtBooking: null });
-    expect(exitStampFor(pos("0", "3", null))).toEqual({ lotId: null, boughtQtyAtBooking: null });
-    expect(exitStampFor(pos("2", "3"))).toEqual({ lotId: "lot_A", boughtQtyAtBooking: "3.00000000" });
+    expect(exitStampFor(null)).toEqual({ lotId: null, boughtQtyAtBooking: null, allocationBoughtQtyAtBooking: null });
+    expect(exitStampFor(pos("0", "3", null))).toEqual({ lotId: null, boughtQtyAtBooking: null, allocationBoughtQtyAtBooking: null });
+    expect(exitStampFor(pos("2", "3"))).toEqual({ lotId: "lot_A", boughtQtyAtBooking: "3.00000000", allocationBoughtQtyAtBooking: null });
+    expect(exitStampFor(pos("2", "3"), { qty: "1", cumBoughtQty: "4" })).toEqual({ lotId: "lot_A", boughtQtyAtBooking: "3.00000000", allocationBoughtQtyAtBooking: "4.00000000" });
     expect(nextCumBoughtQty("3", "BUY", "1.5")).toBe("4.50000000");
     expect(nextCumBoughtQty("3", "SELL", "1.5")).toBe("3.00000000");
     expect(() => nextCumBoughtQty("3", "BUY", "-1")).toThrow();
@@ -166,5 +167,87 @@ describe("PCR-1 lot fence: property test against a FIFO unit model", () => {
       else if (surviving < booked) expect(decision).toEqual({ action: "CAP", qty: d(String(surviving)).toFixed(8), reason: "EXIT_CAPPED_TO_BOOKED_LOT" });
       else expect(decision).toEqual({ action: "PROCEED", qty: d(String(booked)).toFixed(8) });
     }
+  });
+});
+
+describe("PCR-1 v3: STRATEGY exits are fenced per owner", () => {
+  const strategySell = (qty: string, allocStamp: string, pairStamp = "2") => ({
+    qty,
+    ownerScope: "STRATEGY",
+    intent: "EXIT",
+    stamp: { lotId: "lot_A", boughtQtyAtBooking: pairStamp, allocationBoughtQtyAtBooking: allocStamp },
+  });
+
+  it("review MEDIUM: another owner's buys and sells never cancel B's exit", () => {
+    // A holds 1, B holds 1 (pair cum 2). B books an exit for its 1 (B's cum 1). A buys 5 and sells 6.
+    // The pair: qty 1, cum 7 (pair FIFO alone would cancel). B's allocation: qty 1, cum 1 (untouched).
+    expect(exitFence(strategySell("1", "1"), pos("1", "7"), { qty: "1", cumBoughtQty: "1" })).toEqual({ action: "PROCEED", qty: "1.00000000" });
+  });
+
+  it("an owner's own re-buy after a pro-rata reduction is never sold by its old exit", () => {
+    // A booked 1 (A cum 1). A net close sold A's unit (A qty 0), then A re-entered with 1 (A qty 1, cum 2).
+    expect(exitFence(strategySell("1", "1"), pos("2", "4"), { qty: "1", cumBoughtQty: "2" })).toEqual({ action: "CANCEL", reason: "EXIT_LIFECYCLE_MISMATCH" });
+    // A booked 2 (A cum 2); 1 sold pro rata (A qty 1); A bought 1 (A qty 2, cum 3): only 1 booked unit survives.
+    expect(exitFence(strategySell("2", "2"), pos("3", "5"), { qty: "2", cumBoughtQty: "3" })).toEqual({ action: "CAP", qty: "1.00000000", reason: "EXIT_CAPPED_TO_BOOKED_LOT" });
+  });
+
+  it("a STRATEGY exit whose owner holds nothing is cancelled; one without an owner stamp falls back to pair level", () => {
+    expect(exitFence(strategySell("1", "1"), pos("1", "2"), { qty: "0", cumBoughtQty: "1" })).toEqual({ action: "CANCEL", reason: "EXIT_LIFECYCLE_MISMATCH" });
+    expect(exitFence(strategySell("1", "1"), pos("1", "2"), null)).toEqual({ action: "CANCEL", reason: "EXIT_LIFECYCLE_MISMATCH" });
+    const pairOnly = { qty: "1", ownerScope: "STRATEGY", intent: "EXIT", stamp: { lotId: "lot_A", boughtQtyAtBooking: "2", allocationBoughtQtyAtBooking: null } };
+    expect(exitFence(pairOnly, pos("2", "3"), { qty: "1", cumBoughtQty: "9" })).toEqual({ action: "PROCEED", qty: "1.00000000" });
+  });
+
+  it("flatten is capped at the quantity held instead of being rejected", () => {
+    expect(exitFence(sell("3", "3", "lot_A", "ACCOUNT_FLATTEN", "FLATTEN"), pos("1", "3"))).toEqual({ action: "CAP", qty: "1.00000000", reason: "EXIT_CAPPED_TO_POSITION" });
+  });
+
+  it("property: per-owner decisions match each owner's own FIFO model, whatever the other owner does", () => {
+    let s = 99;
+    const random = () => {
+      s = (s * 1103515245 + 12345) % 2147483648;
+      return s / 2147483648;
+    };
+    let checks = 0;
+    for (let run = 0; run < 2000; run++) {
+      const owners = ["A", "B"].map(() => ({ units: [] as number[], cum: 0 }));
+      let birth = 0;
+      let pairCum = 0;
+      const pending: Array<{ owner: number; qty: number; stamp: number; booked: Set<number> }> = [];
+      for (let step = 0; step < 30; step++) {
+        const o = Math.floor(random() * 2);
+        const owner = owners[o]!;
+        const r = random();
+        if (r < 0.35) {
+          const q = 1 + Math.floor(random() * 3);
+          for (let i = 0; i < q; i++) owner.units.push(++birth);
+          owner.cum += q;
+          pairCum += q;
+        } else if (r < 0.55 && owner.units.length > 0) {
+          owner.units = owner.units.slice(1 + Math.floor(random() * owner.units.length));
+        } else if (r < 0.75 && owner.units.length > 0) {
+          pending.push({ owner: o, qty: 1 + Math.floor(random() * owner.units.length), stamp: owner.cum, booked: new Set(owner.units) });
+        } else if (pending.length > 0) {
+          const exit = pending.shift()!;
+          const held = owners[exit.owner]!;
+          const pairQty = owners[0]!.units.length + owners[1]!.units.length;
+          if (pairQty === 0) continue;
+          const surviving = held.units.filter((u) => exit.booked.has(u)).length;
+          const decision = exitFence(
+            { qty: String(exit.qty), ownerScope: "STRATEGY", intent: "EXIT", stamp: { lotId: null, boughtQtyAtBooking: "0", allocationBoughtQtyAtBooking: String(exit.stamp) } },
+            { qty: String(pairQty), cumBoughtQty: String(pairCum), lotId: null },
+            { qty: String(held.units.length), cumBoughtQty: String(held.cum) },
+          );
+          checks += 1;
+          if (surviving === 0) expect(decision).toEqual({ action: "CANCEL", reason: "EXIT_LIFECYCLE_MISMATCH" });
+          else if (surviving < exit.qty) expect(decision).toEqual({ action: "CAP", qty: d(String(surviving)).toFixed(8), reason: "EXIT_CAPPED_TO_BOOKED_LOT" });
+          else expect(decision).toEqual({ action: "PROCEED", qty: d(String(exit.qty)).toFixed(8) });
+          const sold = decision.action === "CANCEL" ? 0 : Number(decision.qty);
+          expect(held.units.slice(0, sold).every((u) => exit.booked.has(u))).toBe(true);
+          held.units = held.units.slice(sold);
+        }
+      }
+    }
+    expect(checks).toBeGreaterThan(3_000);
   });
 });

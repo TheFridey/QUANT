@@ -21,9 +21,9 @@ const statements = sql
 
 describe("PCR-1 migration is additive and backward-compatible", () => {
   it("contains only ADD COLUMN statements that old code can ignore", () => {
-    expect(statements.length).toBe(3);
+    expect(statements.length).toBe(5);
     for (const statement of statements) {
-      expect(statement).toMatch(/^ALTER TABLE "(Order|Position)" ADD COLUMN "\w+" (TEXT|DECIMAL\(38,8\))( NOT NULL DEFAULT 0)?$/);
+      expect(statement).toMatch(/^ALTER TABLE "(Order|Position|StrategyAllocation)" ADD COLUMN "\w+" (TEXT|DECIMAL\(38,8\))( NOT NULL DEFAULT 0)?$/);
     }
   });
 

@@ -382,6 +382,9 @@ model Order {
   /// Position.cumBoughtQty when a SELL was booked (PCR-1). At settle the SELL may sell at most
   /// qty − (cumBoughtQty(now) − this): the booked units still held. Null for BUYs and legacy rows.
   positionBoughtQtyAtBooking Decimal? @db.Decimal(38, 8)
+  /// StrategyAllocation.cumBoughtQty of the owning instance when a STRATEGY SELL was booked (PCR-1).
+  /// STRATEGY exits are fenced per owner: other instances' trades never cancel or cap them.
+  allocationBoughtQtyAtBooking Decimal? @db.Decimal(38, 8)
   /// Who owns the economic consequence: STRATEGY | OPERATOR | PROTECTION | ACCOUNT_FLATTEN | NET_CLOSE | LEGACY.
   ownerScope      String    @default("LEGACY")
   /// External venue order id (SANDBOX). Null for local PAPER.
@@ -906,6 +909,8 @@ model StrategyAllocation {
   pendingCapitalUsd  Decimal  @db.Decimal(24, 8) @default(0)
   /// Quantity committed to in-flight exit orders (prevents concurrent oversell).
   reservedExitQty    Decimal  @db.Decimal(24, 8) @default(0)
+  /// Monotonic: total quantity this instance ever bought on this pair (PCR-1; never decreases or resets).
+  cumBoughtQty       Decimal  @default(0) @db.Decimal(38, 8)
   /// Cumulative fees attributed to this allocation.
   feesUsd            Decimal  @db.Decimal(24, 8) @default(0)
   /// STRATEGY | UNATTRIBUTED | LEGACY

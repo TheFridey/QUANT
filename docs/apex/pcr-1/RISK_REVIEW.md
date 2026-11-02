@@ -1,4 +1,32 @@
-# PCR-1 independent risk review
+# PCR-1 independent risk reviews
+
+## Review 2 (v2, head `a550c23`)
+
+The reviewer worked in a separate context and modified nothing. It ran:
+- the PCR-1 tests: 33/34, the 1 being the expected booking-stamp failure
+- `git apply --check`
+- a `prisma migrate diff`: no Order or Position drift
+- pure `exitFence` scenarios
+
+It verified by grep that there are exactly three `Position.baseQty` write paths and that each one is patched, and that every stamp is taken under the account lock.
+
+Verdicts:
+- **non-protected half: APPROVE WITH NOTES**
+- **protected patch: APPROVE WITH NOTES**. Before merge it requires: remainder-stamp inheritance; the multi-owner cancellation accepted or fixed; the added tests; and a second review of the applied diff.
+
+| Severity | Finding | Disposition (v3) |
+| --- | --- | --- |
+| MEDIUM | Pair-wide FIFO ignores ownership. Instance A's buys and sells can cancel B's legitimate exit, and an owner's own re-buy after a pro-rata reduction could be sold by its old exit | **Fixed.** Each `StrategyAllocation` has its own monotonic counter, and STRATEGY exits fence per owner. Unit tests, integration tests and a per-owner property test cover it; disabling the branch fails 4 tests. Pair-level scopes keep pair FIFO, and the residual is documented: conservative, re-planned next cycle |
+| LOW | Remainders were re-stamped after the parent fill instead of inheriting, so a remainder could sell a post-booking unit | **Fixed in the patch.** `settlePendingOrder` passes the parent's stamps and `bookExitRemainder` inherits them. An immediate parent is unchanged, since its stamp equals its booking state |
+| LOW | Flatten is exempt from the cap and is rejected `SELL_EXCEEDS_POSITION` after a partial reduction (pre-existing) | **Fixed.** Capped at the quantity held (`EXIT_CAPPED_TO_POSITION`); integration test |
+| LOW | CAP test reservation equals the order quantity, so the clamp could hide a double release | **Fixed.** A CAP-then-expiry test with an extra 0.5 reservation passes |
+| LOW | Stamp taken at insert, not at decision (`paperLatencyMs = 0`, same plan) | Documented (ANALYSIS §6). Such a SELL fills immediately and is never fenced |
+| LOW | SANDBOX external fills run unlocked (pre-existing) | Documented. The counter increment is atomic |
+| LOW | Re-deploy after a rollback can under-fence stamps from before the rollback | Runbook note (ANALYSIS §6) |
+| LOW | Protection: resolved legs are marked FILLED; a crash replay never resolves (pre-existing) | Documented; out of scope |
+| Tests after unlock | Each patched upsert increments its counter (including `applyExternalFill` and the allocation); CAP then fill or reject; remainder inheritance; the end-to-end admit → `evaluateProtections` → settle path | Listed in ANALYSIS §4. They require the unlock |
+
+## Review 1 (v1)
 
 A reviewer in a separate context read the analysis, the branch diff, the protected patch (not applied) and the real code paths. It ran the fence tests and `git apply --check` and modified nothing. Branch head reviewed: `9450483`.
 

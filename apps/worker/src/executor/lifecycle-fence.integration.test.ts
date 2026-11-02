@@ -74,9 +74,10 @@ describe.skipIf(!enabled)("PCR-1: pending exits are fenced to their position lot
   }
 
   /** `lot` simulates the stamp PCR-1 adds at booking time (Order.positionLifecycleId). */
-  async function pending(input: { clientOrderId: string; side: "BUY" | "SELL"; intent: string; ownerScope: string; submittedAt: Date; observationId: string; lot?: string | null; stampCum?: string | null; qty?: string; eligibleAt?: Date; strategyInstanceId?: string }) {
+  async function pending(input: { clientOrderId: string; side: "BUY" | "SELL"; intent: string; ownerScope: string; submittedAt: Date; observationId: string; lot?: string | null; stampCum?: string | null; allocStamp?: string | null; qty?: string; eligibleAt?: Date; strategyInstanceId?: string }) {
     return prisma.order.create({
       data: {
+        ...(input.allocStamp !== undefined ? { allocationBoughtQtyAtBooking: input.allocStamp } : {}),
         ...(input.lot !== undefined ? { positionLifecycleId: input.lot } : {}),
         ...(input.stampCum !== undefined ? { positionBoughtQtyAtBooking: input.stampCum } : {}),
         ...(input.strategyInstanceId ? { strategyInstanceId: input.strategyInstanceId } : {}),
@@ -362,6 +363,87 @@ describe.skipIf(!enabled)("PCR-1: pending exits are fenced to their position lot
     expect(sell.reasonCodes.filter((code) => code === "EXIT_LIFECYCLE_MISMATCH")).toHaveLength(1);
     expect(await prisma.fill.count()).toBe(0);
     expect((await positionNow()).baseQty.toString()).toBe("1");
+  });
+
+  // ---------- v3: STRATEGY exits fenced per owner (review MEDIUM) ----------
+
+  async function allocation(instance: string, qty: string, cumBoughtQty: string, reservedExitQty = "0") {
+    await prisma.strategyAllocation.create({ data: { accountId: "primary", strategyInstanceId: instance, instrumentId: pairAddress, pairAddress, lifecycleId: "lot_L1", qty, avgCostUsd: "100", reservedExitQty, cumBoughtQty } });
+  }
+
+  it("another owner's buys and sells do not cancel an owner's STRATEGY exit", async () => {
+    const now = new Date();
+    const decision = await observation(new Date(now.getTime() - 12_000), "cyc_pcr1_decision");
+    await observation(new Date(now.getTime() - 1_000), "cyc_pcr1");
+    // A held 1, B held 1 (pair cum 2). B booked an exit for 1 (B cum 1). Then A bought 5 and sold 6:
+    // pair qty 1, cum 7; B's allocation untouched (qty 1, cum 1). Pair-level FIFO alone would cancel B.
+    await openPosition("1", "7", "lot_L1");
+    await allocation("inst_a", "0", "6");
+    await allocation("inst_b", "1", "1", "1");
+    await pending({ clientOrderId: "pcr1_v3_owner_b", side: "SELL", intent: "EXIT", ownerScope: "STRATEGY", strategyInstanceId: "inst_b", submittedAt: new Date(now.getTime() - 8_000), observationId: decision.id, qty: "1", lot: "lot_L1", stampCum: "2", allocStamp: "1" });
+
+    await settle(now);
+
+    const sell = await prisma.order.findUniqueOrThrow({ where: { clientOrderId: "pcr1_v3_owner_b" } });
+    expect(sell.status).toBe("FILLED");
+    expect(sell.reasonCodes).not.toContain("EXIT_LIFECYCLE_MISMATCH");
+    expect((await positionNow()).baseQty.toString()).toBe("0");
+  });
+
+  it("an owner's own re-buy after a pro-rata reduction is not sold by its old STRATEGY exit", async () => {
+    const now = new Date();
+    const decision = await observation(new Date(now.getTime() - 12_000), "cyc_pcr1_decision");
+    await observation(new Date(now.getTime() - 1_000), "cyc_pcr1");
+    // A booked 1 when it held 1 (A cum 1). A net close sold A's unit pro rata; A re-entered with 1 (A cum 2).
+    // B still holds 1, so the lot id never changed: only the owner counter shows the unit is new.
+    await openPosition("2", "3", "lot_L1");
+    await allocation("inst_a", "1", "2");
+    await allocation("inst_b", "1", "1");
+    await pending({ clientOrderId: "pcr1_v3_rebuy", side: "SELL", intent: "EXIT", ownerScope: "STRATEGY", strategyInstanceId: "inst_a", submittedAt: new Date(now.getTime() - 8_000), observationId: decision.id, qty: "1", lot: "lot_L1", stampCum: "2", allocStamp: "1" });
+
+    await settle(now);
+
+    const sell = await prisma.order.findUniqueOrThrow({ where: { clientOrderId: "pcr1_v3_rebuy" } });
+    expect(sell.status).toBe("CANCELLED");
+    expect(sell.rejectReason).toBe("EXIT_LIFECYCLE_MISMATCH");
+    expect((await positionNow()).baseQty.toString()).toBe("2");
+  });
+
+  it("CAP then expiry releases exactly the original reservation in total (an extra reservation exposes double release)", async () => {
+    const now = new Date();
+    const decision = await observation(new Date(now.getTime() - 12_000), "cyc_pcr1_decision");
+    await observation(new Date(now.getTime() - 1_000), "cyc_pcr1");
+    await openPosition("2", "3", "lot_L1");
+    // Owner holds 2; booked 2 at owner cum 2; owner since sold 1 and bought 1 (owner qty 2, cum 3). Reserved:
+    // 2 for this exit plus 0.5 for another in-flight exit, which must survive.
+    await allocation("inst_x", "2", "3", "2.5");
+    await pending({ clientOrderId: "pcr1_v3_cap_expire", side: "SELL", intent: "EXIT", ownerScope: "STRATEGY", strategyInstanceId: "inst_x", submittedAt: new Date(now.getTime() - 8_000), eligibleAt: new Date(now.getTime() + 30_000), observationId: decision.id, qty: "2", lot: "lot_L1", stampCum: "2", allocStamp: "2" });
+
+    await settle(now);
+    const capped = await prisma.order.findUniqueOrThrow({ where: { clientOrderId: "pcr1_v3_cap_expire" } });
+    expect(capped.qty.toString()).toBe("1");
+    expect((await prisma.strategyAllocation.findFirstOrThrow({ where: { strategyInstanceId: "inst_x" } })).reservedExitQty.toString()).toBe("1.5");
+
+    // Past expiry (eligible + 60 s): the store expires the capped order and releases only its capped qty.
+    await settle(new Date(now.getTime() + 120_000));
+    const expired = await prisma.order.findUniqueOrThrow({ where: { clientOrderId: "pcr1_v3_cap_expire" } });
+    expect(expired.status).toBe("EXPIRED");
+    expect((await prisma.strategyAllocation.findFirstOrThrow({ where: { strategyInstanceId: "inst_x" } })).reservedExitQty.toString()).toBe("0.5");
+  });
+
+  it("an oversized flatten after a partial reduction is capped to the position and fills", async () => {
+    const now = new Date();
+    const decision = await observation(new Date(now.getTime() - 12_000), "cyc_pcr1_decision");
+    await observation(new Date(now.getTime() - 1_000), "cyc_pcr1");
+    await openPosition("1", "3", "lot_L1");
+    await pending({ clientOrderId: "pcr1_v3_flatten", side: "SELL", intent: "FLATTEN", ownerScope: "ACCOUNT_FLATTEN", submittedAt: new Date(now.getTime() - 8_000), observationId: decision.id, qty: "3", lot: "lot_L1", stampCum: "3" });
+
+    await settle(now);
+
+    const sell = await prisma.order.findUniqueOrThrow({ where: { clientOrderId: "pcr1_v3_flatten" } });
+    expect(sell.status).toBe("FILLED");
+    expect(sell.reasonCodes).toContain("EXIT_CAPPED_TO_POSITION");
+    expect((await positionNow()).baseQty.toString()).toBe("0");
   });
 
   // ---------- F-PCR1-a: protection retry decides under the account lock ----------

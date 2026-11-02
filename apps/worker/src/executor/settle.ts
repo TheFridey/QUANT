@@ -70,6 +70,19 @@ export async function settlePendingPaperOrders(
       const position = await tx.position.findFirst({
         where: { accountId: ctx.accountId, pairAddress: row.pairAddress },
       });
+      // STRATEGY exits are fenced against the owning instance's allocation (per-owner FIFO).
+      const allocation =
+        row.ownerScope === "STRATEGY" && row.strategyInstanceId
+          ? await tx.strategyAllocation.findUnique({
+              where: {
+                accountId_strategyInstanceId_pairAddress: {
+                  accountId: ctx.accountId,
+                  strategyInstanceId: row.strategyInstanceId,
+                  pairAddress: row.pairAddress,
+                },
+              },
+            })
+          : null;
       const decision = exitFence(
         {
           qty: row.qty.toString(),
@@ -78,11 +91,13 @@ export async function settlePendingPaperOrders(
           stamp: {
             lotId: row.positionLifecycleId,
             boughtQtyAtBooking: row.positionBoughtQtyAtBooking?.toString() ?? null,
+            allocationBoughtQtyAtBooking: row.allocationBoughtQtyAtBooking?.toString() ?? null,
           },
         },
         position
           ? { qty: position.baseQty.toString(), lotId: position.lifecycleId, cumBoughtQty: position.cumBoughtQty.toString() }
           : null,
+        allocation ? { qty: allocation.qty.toString(), cumBoughtQty: allocation.cumBoughtQty.toString() } : null,
       );
       if (decision.action === "CANCEL") {
         await tx.order.update({

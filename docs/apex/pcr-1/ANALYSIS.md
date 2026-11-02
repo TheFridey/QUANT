@@ -1,4 +1,11 @@
-# PCR-1: fence pending exits to the units they were booked against (v2)
+# PCR-1: fence pending exits to the units they were booked against (v3)
+
+**v3 (after the independent v2 review, `RISK_REVIEW.md`):**
+- **STRATEGY exits are fenced per owner.** Each `StrategyAllocation` has its own monotonic counter (`cumBoughtQty`), stamped at booking (`Order.allocationBoughtQtyAtBooking`). Another instance's trades never cancel or cap an owner's exit, and an owner's own re-buy after a pro-rata reduction is never sold by its old exit. This fixes the v2 review MEDIUM.
+- **Exit remainders inherit** their pending parent's stamps.
+- **Oversized flatten exits are capped** at the quantity held (`EXIT_CAPPED_TO_POSITION`) instead of being rejected.
+
+The sections below describe the design including these changes.
 
 Status: **design complete and tested; the protected half awaits operator approval.** Branch `apex/pcr-1-lifecycle-fence`, draft PR #45. PAPER-only. No risk default, entry control or live-money path changes. The protected file is unchanged, and the unlock file has not been created.
 
@@ -37,6 +44,10 @@ Evidence: a deterministic race test holds the account lock in another transactio
 | `Position.cumBoughtQty` | Monotonic: total quantity ever bought on the row. Every BUY fill adds its quantity; it never decreases or resets, even across lots | In the same upsert, in the same account-locked transaction, that applies each fill (all three fill paths) |
 | `Order.positionBoughtQtyAtBooking` | The counter's value when a SELL is booked | In the account-locked transaction that writes the pending SELL, and for exit remainders right after the parent fill in the same transaction |
 | `Order.positionLifecycleId` | The lot id at booking | Same. Used for attribution and as a redundant fence |
+| `StrategyAllocation.cumBoughtQty` (v3) | Monotonic per owner (instance × pair) | In the only allocation-increasing write, the BUY upsert in `applyAllocationFill`, inside the fill's transaction |
+| `Order.allocationBoughtQtyAtBooking` (v3) | The owner's counter when a STRATEGY SELL is booked | With the other stamps. Remainders inherit their parent's stamps |
+
+**STRATEGY exits** apply the same formula to the owner's allocation: `allowed = allocQty − (allocCum(now) − stamp)`. This is first-in first-out *within the owner*. **Pair-level exits** (NET_CLOSE, PROTECTION, OPERATOR, LEGACY) use FIFO across the pair. In a pair held by several owners, that can cancel a pair-level exit an ownership-aware reading would allow. That outcome is conservative: the planner re-plans the next cycle and protection stays armed. A STRATEGY row without an owner stamp (legacy) falls back to the pair level.
 
 At settlement (`exitFence`, `packages/shared/src/position-lot.ts`, pure):
 
@@ -81,7 +92,17 @@ Unit and property tests (`packages/shared/src/position-lot.test.ts`, 14 tests):
 - Lifecycle cases, plus a property test against an independent FIFO unit model: 3,000 random sequences of buys, reductions, bookings and settlements, with more than 5,000 settlement checks. It asserts exact agreement and that no sold unit was bought after booking.
 - **Mutation:** making the fence ignore the counter (v1 behaviour) fails 6 tests.
 
-Integration tests (`apps/worker/src/executor/lifecycle-fence.integration.test.ts`, 14 tests). Positions are seeded in the state the patched fills produce:
+v3 additions, all passing:
+- 5 unit tests, including the review's multi-owner scenario and a **per-owner property test**: 2,000 runs with two owners trading independently, more than 3,000 checks. Each STRATEGY decision must equal that owner's own FIFO survivors. Mutation: disabling the per-owner branch fails 4 tests.
+- 4 integration tests:
+  - another owner's trades do not cancel B's exit
+  - an owner's re-buy after a pro-rata reduction is not sold
+  - CAP then expiry releases exactly the original reservation, checked with an extra 0.5 reservation so the clamp cannot hide a double release
+  - an oversized flatten is capped and fills
+
+Branch-wide at v3: `pnpm test` gives **922 passed, 1 failed (the booking stamp, by design), 25 skipped**. `pnpm typecheck` and lint are clean (lint excludes local agent worktrees).
+
+Integration tests (`apps/worker/src/executor/lifecycle-fence.integration.test.ts`, 18 at v3; listed below are those from v2). Positions are seeded in the state the patched fills produce:
 
 | Test | Result |
 | --- | --- |
@@ -108,9 +129,15 @@ The protected patch (`store-stamping.patch`) passes `git apply --check` on `c3b2
 
 ## 4. Protected change requested (for operator approval)
 
-`docs/apex/pcr-1/store-stamping.patch`, `packages/trading-engine/src/store.ts` only:
-- `currentLotStamp()`: stamps lot id and counter on pending SELLs (`commitProposedOrder`) and on exit remainders (`bookExitRemainder`, after the parent fill, same transaction).
-- `boughtDelta()`: increments `cumBoughtQty` by the fill quantity on BUY fills in `fillExistingPending`, `fillCommittedOrder` and `applyExternalFill`, in the same position upsert.
+`docs/apex/pcr-1/store-stamping.patch` covers two protected files and passes `git apply --check` on current `main`.
+
+`packages/trading-engine/src/store.ts`:
+- `currentLotStamp()` stamps three things on pending SELLs (`commitProposedOrder`): the lot id, the pair counter, and for STRATEGY the owner's allocation counter.
+- Exit remainders (`bookExitRemainder`) **inherit** the pending parent's stamps, which `settlePendingOrder` passes through. An immediate parent is stamped in the transaction of its own fill, which equals its state at booking.
+- `boughtDelta()` increments `Position.cumBoughtQty` on BUY fills in `fillExistingPending`, `fillCommittedOrder` and `applyExternalFill`, in the same position upsert.
+
+`packages/trading-engine/src/strategy-allocations.ts`:
+- `applyAllocationFill` (BUY upsert) increments `StrategyAllocation.cumBoughtQty`. Repository-wide grep confirms this is the only allocation-increasing write.
 
 After the unlock:
 1. Apply the patch.
@@ -132,3 +159,7 @@ After the unlock:
 - The FIFO interpretation is a choice. The ledger itself is average-cost and fungible. FIFO is the strictest reading that guarantees "never sells newer units"; it can cancel or shrink an exit that a looser reading would allow. The planner re-plans the next cycle, and protection remains armed.
 - SANDBOX orders already at the broker are outside the local settle loop. They are stamped, but nothing reads the stamp.
 - Positions open at deploy time start the counter at 0. Only differences are used, so this is exact for every exit booked after the deploy.
+- **Re-deploy after a rollback.** BUYs filled while an old build ran are not counted, so stamps taken before the rollback can under-fence a reduce-then-add. The lot-id fence still catches a reopen. After a rollback, re-deploy only once there are no pending SELLs, or cancel pending pair-level SELLs at re-deploy.
+- **Stamp at insert, not at decision** (LOW). With `paperLatencyMs = 0`, an earlier immediate BUY in the same plan raises the counter before a same-pair SELL is stamped. Such a SELL fills immediately and is never pending, so the fence does not apply to it.
+- **SANDBOX external fills** run without the account lock (pre-existing; `sandbox-execution.ts`). The counter increments atomically, so it stays monotonic.
+- **Pre-existing, LOW:** a resolved protection leg is marked FILLED even when nothing sold, and a crash-replayed retry returns `IDEMPOTENT_REPLAY` without resolving.
