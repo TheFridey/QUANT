@@ -17,6 +17,8 @@ import { TerminalController } from "./terminal.controller.js";
 import { RedisHealth } from "./redis-health.js";
 import { TerminalFanout, TerminalGateway } from "./terminal.gateway.js";
 import { TerminalService } from "./terminal.service.js";
+import { TradeLotsController } from "./trade-lots.controller.js";
+import { TradeLotsService } from "./trade-lots.service.js";
 
 @Module({
   imports: [
@@ -30,11 +32,12 @@ import { TerminalService } from "./terminal.service.js";
     }),
     BullModule.registerQueue({ name: QUEUES.ingest }),
   ],
-  controllers: [AuthController, TerminalController, OperatorController, LabController, EvolutionController],
+  controllers: [AuthController, TerminalController, TradeLotsController, OperatorController, LabController, EvolutionController],
   providers: [
     { provide: PrismaClient, useFactory: () => createPrismaClient() },
     AuthService,
     TerminalService,
+    TradeLotsService,
     { provide: RedisHealth, useFactory: () => new RedisHealth(process.env.REDIS_URL) },
     OperatorCapacityService,
     LabService,

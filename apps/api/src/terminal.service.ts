@@ -962,7 +962,7 @@ export class TerminalService {
   }
 
   /** The account the terminal is showing: the active environment's paper account (same as the snapshot). */
-  private async activeAccountId(): Promise<string> {
+  async activeAccountId(): Promise<string> {
     const engineRow = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     const config = this.readConfig(engineRow?.config);
     return resolveExecutionContext({
