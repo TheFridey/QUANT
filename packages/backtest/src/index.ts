@@ -16,3 +16,4 @@ export * from "./research/regime-analysis.js";
 export * from "./research/features.js";
 export * from "./research/ml.js";
 export * from "./research/intelligence.js";
+export * from "./research/portfolio.js";
