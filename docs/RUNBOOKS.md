@@ -100,22 +100,30 @@ Restores a dump into a **new** scratch database (`odin_restore_drill_<stamp>`), 
 It never writes to an existing database; the admin URL must name `postgres` or `template1`.
 
 ```bash
-RESTORE_ADMIN_URL=postgresql://<user>:<pass>@127.0.0.1:5432/postgres \
+RESTORE_ADMIN_URL=postgresql://<drill role>:<pass>@127.0.0.1:5432/postgres \
   nice -n 15 node scripts/restore-verify.mjs \
     --dump /srv/quant/backups/quant-<stamp>.dump \
-    --source-url postgresql://<user>:<pass>@127.0.0.1:5432/<app db>   # optional, read-only counts
+    --source-url postgresql://<user>:<pass>@127.0.0.1:5432/<app db>   # required; opened read-only
 ```
 
-Pass criteria (`"ok": true`, exit 0): `pg_restore` exits 0; a latest Prisma migration is present; every
-append-only table keeps its trigger, and a table with rows still rejects `DELETE` (probed inside a
-rolled-back transaction); with `--source-url`, no table is missing or extra and no restored count
-exceeds the live source (lower counts are reported as drift, since a live database keeps growing).
-Check free disk first: the scratch copy needs about the size of the live database (~1 GB on 1 Nov 2026).
+URLs are split into host, port, user, password and database and passed to `psql`/`pg_restore` only as
+libpq environment variables, so no password appears in `ps`. Any query parameter except `sslmode`
+(for example `?dbname=`, which libpq would otherwise let override the path) is refused, and the scratch
+connection must report `current_database()` = the generated name before `pg_restore` runs. Prefer a
+drill role with `CREATEDB` but not superuser: a tampered dump runs SQL as the restoring role.
 
-Evidence: local drill on 2 Nov 2026 (57 tables, 2,128 rows, exact match, restore 0.6 s) and fail-closed
-controls (truncated dump → exit 1; application DB as admin URL → refused). A production-dump drill is
-still `NOT_VERIFIED` (needs VPS access). `scripts/backup-restore-nonprod.mjs` remains for plain-SQL
-test-database resets.
+Pass criteria (`"ok": true`, exit 0): `pg_restore` exits 0; a non-empty latest Prisma migration; every
+user trigger in the source exists in the restore; each listed append-only table keeps its named
+`*_append_only` / `*_immutable` trigger, and a table with rows still rejects `DELETE` with the trigger's
+own error (probed inside a rolled-back transaction; empty tables report `null`); no table is missing or
+extra; no restored count exceeds the live source (lower counts are reported as drift, since a live
+database keeps growing). Check free disk first: the scratch copy needs about the size of the live
+database (~1 GB on 1 Nov 2026).
+
+Evidence: local drill on 2 Nov 2026 (57 tables, 2,128 rows, exact match, no missing triggers, restore
+under 1 s) and fail-closed controls (truncated dump → exit 1; application DB or `?dbname=` in the admin
+URL → refused). A production-dump drill is still `NOT_VERIFIED` (needs VPS access).
+`scripts/backup-restore-nonprod.mjs` remains for plain-SQL test-database resets.
 
 ### Recovery objectives (proposed, not yet agreed with the operator)
 
