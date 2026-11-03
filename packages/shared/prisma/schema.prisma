@@ -1213,3 +1213,84 @@ model ResearchHoldoutAccess {
 
   @@unique([strategyId, strategyVersion, datasetId])
 }
+
+/// ASCEND-08: kill switch and limits for the bounded autonomous research loop. A missing row means
+/// the loop is disabled. Bounds are also enforced by CHECK constraints in the migration.
+model ResearchLoopControl {
+  id                       String   @id @default("primary")
+  enabled                  Boolean  @default(false)
+  maxExperimentsPerDay     Int      @default(2)
+  maxConcurrentExperiments Int      @default(2)
+  maxAttemptsPerExperiment Int      @default(3)
+  /// At least 70 s so model stages always have time; leaseMs must be at least twice this.
+  tickRuntimeMs            Int      @default(120000)
+  leaseMs                  Int      @default(600000)
+  updatedAt                DateTime @updatedAt
+  updatedBy                String?
+}
+
+/// ASCEND-08: one experiment of the research loop. `version` is bumped on every claim and transition
+/// (optimistic concurrency); `leaseOwner`/`leaseExpiresAt` fence a claim to one tick.
+model ResearchExperiment {
+  id             String    @id @default(cuid())
+  hypothesisId   String
+  state          String    @default("OBSERVE")
+  /// Stage the experiment returns to once BLOCKED_APPROVAL is cleared (FORGE | TEST | PAPER).
+  blockedState   String?
+  attempts       Int       @default(0)
+  lastError      String?
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
+  version        Int       @default(0)
+  /// Stage outputs (hypothesis restatement, forged source and hashes, measured metrics, report id).
+  context        Json      @default("{}")
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  events    ResearchExperimentEvent[]
+  approvals ResearchApproval[]
+
+  @@index([state, leaseExpiresAt])
+  @@index([hypothesisId])
+  @@index([createdAt])
+}
+
+/// ASCEND-08: append-only transition log (DB trigger rejects UPDATE and DELETE).
+model ResearchExperimentEvent {
+  id           String   @id @default(cuid())
+  experimentId String
+  /// CREATED | TRANSITION | ATTEMPT_FAILED | LEASE_RECLAIMED | LEASE_LOST
+  kind         String
+  fromState    String?
+  toState      String
+  actor        String
+  reason       String?
+  evidence     Json
+  evidenceHash String
+  createdAt    DateTime @default(now())
+
+  experiment ResearchExperiment @relation(fields: [experimentId], references: [id], onDelete: Restrict)
+
+  @@index([experimentId, createdAt])
+  @@index([kind, createdAt])
+}
+
+/// ASCEND-08: operator approval of one gated action for one experiment, bound to its subject. Append-only
+/// (DB trigger); valid only while approvedAt <= now < expiresAt. The research loop never writes this table.
+model ResearchApproval {
+  id           String   @id @default(cuid())
+  experimentId String
+  action       String
+  approvedBy   String
+  approvedAt   DateTime @default(now())
+  expiresAt    DateTime
+  /// SHA-256 of what was approved: the restated hypothesis (forge_code), the forged source and artifact
+  /// hashes (run_backtest), or the report content hash (promote_paper). It must match at gate time.
+  subjectHash  String
+  note         String?
+
+  experiment ResearchExperiment @relation(fields: [experimentId], references: [id], onDelete: Restrict)
+
+  @@index([experimentId, action, expiresAt])
+}
