@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import { GUARDS_METADATA } from "@nestjs/common/constants";
-import { ConflictException, ForbiddenException, type ExecutionContext } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, type ExecutionContext } from "@nestjs/common";
 import type { PrismaClient } from "@odin/shared/db";
 import { describe, expect, it } from "vitest";
 import { AdminGuard, type RequestWithUser } from "./http.js";
@@ -38,5 +38,23 @@ describe("ASCEND-08 research loop API", () => {
       ConflictException,
     );
     expect(created).toBe(0);
+  });
+
+  it("answers 400 (not 500) to a lease shorter than twice the tick runtime, and writes nothing", async () => {
+    let upserts = 0;
+    const prisma = {
+      researchLoopControl: {
+        findUnique: async () => null,
+        upsert: async () => {
+          upserts += 1;
+          return {};
+        },
+      },
+    } as unknown as PrismaClient;
+    const controller = new ResearchLoopController(prisma);
+    await expect(
+      controller.control({ tickRuntimeMs: 120_000, leaseMs: 200_000 }, { user: { role: "ADMIN", email: "a@odin.local" } } as unknown as RequestWithUser),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(upserts).toBe(0);
   });
 });

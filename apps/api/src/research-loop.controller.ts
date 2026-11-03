@@ -16,6 +16,7 @@ import {
   listResearchExperimentEvents,
   listResearchExperiments,
   recordResearchApproval,
+  ResearchLoopLimitError,
   researchLoopStatus,
   setResearchLoopControl,
 } from "@odin/evolution";
@@ -113,8 +114,8 @@ function actorOf(request: RequestWithUser): string {
   return request.user?.email ?? "unknown";
 }
 
-function badRequest(error: unknown): Error {
+export function badRequest(error: unknown): Error {
   if (error instanceof ZodError) return new BadRequestException(error.issues);
-  if (error instanceof Error && /leaseMs must exceed/.test(error.message)) return new BadRequestException(error.message);
+  if (error instanceof ResearchLoopLimitError) return new BadRequestException(error.message);
   return error instanceof Error ? error : new Error(String(error));
 }

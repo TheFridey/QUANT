@@ -1441,11 +1441,19 @@ function asContext(value: unknown): Context {
 // Operator operations (called by the ADMIN API)
 // ---------------------------------------------------------------------------------------------------
 
+/** An operator-supplied loop limit is invalid; the API maps this to 400 (never matched by message text). */
+export class ResearchLoopLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResearchLoopLimitError";
+  }
+}
+
 export async function setResearchLoopControl(prisma: PrismaClient, body: unknown, updatedBy: string) {
   const parsed = researchLoopControlBodySchema.parse(body);
   const current = await readResearchLoopControl(prisma);
   const next = { ...current, ...Object.fromEntries(Object.entries(parsed).filter(([, value]) => value !== undefined)) };
-  if (next.leaseMs < 2 * next.tickRuntimeMs) throw new Error("leaseMs must be at least twice tickRuntimeMs");
+  if (next.leaseMs < 2 * next.tickRuntimeMs) throw new ResearchLoopLimitError("leaseMs must be at least twice tickRuntimeMs");
   const data = {
     enabled: next.enabled,
     maxExperimentsPerDay: next.maxExperimentsPerDay,
