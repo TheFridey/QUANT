@@ -2,11 +2,49 @@
 
 Durable checkpoint for Operation APEX. **On resume, reconstruct state from Git, CI and this file, in that order. Do not trust a chat summary.** Repository rules (`AGENTS.md`, `CLAUDE.md`) override everything here. Increment report: [`REPORT.md`](REPORT.md).
 
-## Current state (2 Nov 2026)
+## Checkpoint 3 Nov 2026, ~11:40 UTC: ASCEND-08 and ASCEND-09 merged
 
-- Active phase: **F (release) of increment 1**. PR [#44](https://github.com/TheFridey/QUANT/pull/44) is **ready for merge pending operator approval**: CI green on code head `2288780`, mergeable (`clean`), every reviewer finding fixed or documented, no open review threads.
-- Branch: `ccr-e2adef27-cgrrwj` (from `main` `c3b23e9`), pushed. Draft PR #44.
-- Deployed: unchanged by APEX. Last recorded production deploy `d2d1526` (`NOT_VERIFIED` from this session).
+Operator instruction, 3 Nov 2026: "Push and merge to main when possible." Merging is approved. **Deployment is not**: there is still no VPS access, and nothing is deployed.
+
+| PR | Merge | Evidence |
+| --- | --- | --- |
+| [#47](https://github.com/TheFridey/QUANT/pull/47) ASCEND-08 | **Merged** as `9843ae2` (head `1daaa5d`) | CI run 41604846691 green: test, build-packages, browser-e2e. 0 review threads. No protected paths |
+| [#48](https://github.com/TheFridey/QUANT/pull/48) ASCEND-09 | **Merged** as `017d81c` (head `043ecf9`) | Before merging, `main` `9843ae2` was merged into the branch. Conflicts: `app.module.ts` (both controllers kept) and this ledger. On the combined tree, local `odin_test_merge` (fresh `migrate deploy`): `pnpm test` 168 files, **960 passed**, 25 skipped; typecheck and lint clean. CI run 41627803762 on `043ecf9` green: test, build-packages, browser-e2e. 0 review threads. No protected paths |
+| [#46](https://github.com/TheFridey/QUANT/pull/46) ledger | this commit | docs only |
+| [#45](https://github.com/TheFridey/QUANT/pull/45) PCR-1 | **Not merged; not mergeable by policy.** One test fails by design until the protected stamping patch is applied, which needs the operator's manual unlock. Tests are not disabled to get a green build | Awaiting the unlock |
+
+Migration state on `main`: `20261102100000` (ASCEND-08), plus `20261102150000` and `20261103090000` (ASCEND-09). All are additive. **Production needs approval, and they must run before the new code** (`DEPLOY_PR44.md` procedure plus `migrate deploy` first; for `20261103090000`, set `lock_timeout` or pause the worker). The research loop ships **disabled** (`ResearchLoopControl.enabled` false). `prisma migrate diff` against a freshly migrated database shows only drift that predates this work (`20261029180000` indexes and `updatedAt` defaults), and nothing from these PRs.
+
+## Checkpoint 3 Nov 2026, ~09:00 UTC
+
+The session was idle overnight: worker restarts plus agent rate limits. On resume, the state was rebuilt from Git and GitHub; local Postgres and Redis were restarted. `main` is still `4331e99`, and nothing is deployed.
+
+| PR | Head | CI | Independent review | Status |
+| --- | --- | --- | --- | --- |
+| [#45](https://github.com/TheFridey/QUANT/pull/45) PCR-1 v3 | `6e2bfb6` | 947 passed, 1 by-design failure (booking stamp, which needs the protected patch) | Reviews 1–3: APPROVE WITH NOTES; all findings dispositioned | **Awaiting operator protected-edit approval.** Patch not applied; unlock not created |
+| [#46](https://github.com/TheFridey/QUANT/pull/46) ledger | this commit | green on `885a21b` (run 41604989510) | — | docs only |
+| [#47](https://github.com/TheFridey/QUANT/pull/47) ASCEND-08 | `1daaa5d` | **green on `1daaa5d`** (run 41604846691: test, build-packages, browser-e2e) | Review: APPROVE WITH NOTES (M1 tick throw / unbounded retries; M2 approvals not bound to a subject). Fixed in `a6b7bd5`. Re-review: **APPROVE WITH NOTES**, M1 and M2 resolved; its one LOW regression (500 instead of 400) fixed in `1daaa5d` | Local: 917 passed, 25 skipped. Draft; off by default |
+| [#48](https://github.com/TheFridey/QUANT/pull/48) ASCEND-09 | `ef95b7f` | **green on `ef95b7f`** (run 41604903036: test, build-packages, browser-e2e) | Review: APPROVE WITH NOTES (M1 backfill stall; M2 post-fill decision leakage). Fixed in `eaf2e4b`. Re-review: **APPROVE WITH NOTES**; remaining LOWs documented | Local: 927 passed, 25 skipped. Draft. New migration `20261103090000`: run with `lock_timeout`, migrate first |
+
+All three migrations are additive and must be applied **before** their code ships: `20261102100000` (ASCEND-08), `20261102120000` (PCR-1) and `20261102150000` plus `20261103090000` (ASCEND-09).
+
+## Earlier state (2 Nov 2026, ~16:10 UTC)
+
+| Item | State | Evidence |
+| --- | --- | --- |
+| PR [#44](https://github.com/TheFridey/QUANT/pull/44) (increment 1) | **Merged** to `main` as **`4331e99`** (merge commit; head `bff5000`) under operator approval, 2 Nov 2026 | CI run [41435827772](https://github.com/TheFridey/QUANT/actions/runs/41435827772) on `bff5000`: `test`, `browser-e2e`, `build-packages` all success; mergeable `clean`; 0 review threads; reviewer findings unchanged since the `2288780` verification (later commits docs-only) |
+| Deployment of `4331e99` | **Not performed** (`BLOCKED_EXTERNAL`: no VPS access from this session; the operator's approval excludes deploying from here) | Procedure: [`DEPLOY_PR44.md`](DEPLOY_PR44.md). Last recorded production deploy is still `d2d1526` (`NOT_VERIFIED`) |
+| PR [#45](https://github.com/TheFridey/QUANT/pull/45) PCR-1 (draft) | **v3 complete; protected-edit approval requested.** Non-protected half implemented; protected patch (`store.ts`, `strategy-allocations.ts`) prepared and **not applied**; unlock not created | Head `6e2bfb6`. Local: PCR-1 tests 43/44 (the 1 is the by-design booking stamp); full suite 922 passed, 1 expected failure, 25 skipped. CI on `a550c23`: 937 passed, 1 expected failure. Migration-first verified both ways (old code on the v3 schema: 822 passed; new code on the old schema: every PCR-1 test fails). Independent reviews 1, 2 and 3: APPROVE WITH NOTES (`docs/apex/pcr-1/RISK_REVIEW.md`) |
+| PR [#47](https://github.com/TheFridey/QUANT/pull/47) ASCEND-08 (draft) | Bounded research loop, **off by default** (kill switch). Durable states, lease plus version claims, approval enforcement, persistent budget. Migration `20261102100000` adds 4 tables | Head `1de9fdf` (main merged in; schema reformat reverted so the diff is additive). Local: 908 passed, 25 skipped; typecheck and lint clean; 4 mutants caught. Independent review running |
+| PR [#48](https://github.com/TheFridey/QUANT/pull/48) ASCEND-09 (draft) | Lot histories, point-in-time `TradeLotSnapshot` (append-only, written after commit), reconciled attribution, read-only API. Migration `20261102150000` adds 1 table | Head `237dbae`. Local: 914 passed, 25 skipped; typecheck and lint clean; 4 mutants caught. Independent review running |
+
+Migration names across the open PRs: `20261102100000` (ASCEND-08), `20261102120000` (PCR-1), `20261102150000` (ASCEND-09). All are additive and independent of each other. `prisma migrate deploy` applies whichever are pending, in name order, whichever PR merges first.
+| Designated branch | `ccr-e2adef27-cgrrwj` restarted from `main` `4331e99` for follow-up work (PR #44 is merged; no new commits stacked on merged history) | — |
+
+Operator approvals recorded, 2 Nov 2026:
+1. Merge PR #44 after green CI (done). Not approval to deploy from an environment without VPS access.
+2. Push `apex/pcr-1-lifecycle-fence` and open a draft PR (done, #45). Do not apply the protected patch or create the unlock.
+3. Separate focused PRs for ASCEND-08 and ASCEND-09, with independent reviewers. Not to be merged or deployed automatically.
 
 ## Commits
 
@@ -73,4 +111,4 @@ A: APPROVE WITH NOTES. B+C: BLOCK on H-1; fixed in `621a789`; **re-review APPROV
 3. With the unlock: PCR-1 (lifecycle fencing) first, then PCR-3, PCR-2, PCR-4, PCR-5.
 4. Enforce `requiresApproval` in the research pipeline (non-protected; `packages/evolution/src/pipeline.ts`).
 5. ASCEND-10 views for regimes, portfolio and the research registry (every number with its source and timestamp).
-6. ASCEND-09: review and merge `apex/ascend-09-trade-memory` (adds a migration). Then structured feedback over `TradeLotSnapshot` ENTRY views (pre-entry data only for entry analysis).
+6. ASCEND-09 is merged (`017d81c`; not deployed). Next: structured feedback over `TradeLotSnapshot` ENTRY views (pre-entry data only for entry analysis).
