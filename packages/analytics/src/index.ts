@@ -4,3 +4,5 @@ export * from "./observability.js";
 export * from "./account-valuation.js";
 export * from "./snapshot-cost.js";
 export * from "./trade-autopsy.js";
+export * from "./lot-history.js";
+export * from "./entry-view.js";

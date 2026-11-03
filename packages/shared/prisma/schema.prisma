@@ -343,6 +343,8 @@ model AgentDecision {
   inputSource  String?
   durationMs   Int?
   createdAt    DateTime @default(now())
+  /// ASCEND-09: last write. Upserts overwrite content but keep createdAt, so point-in-time views use this.
+  updatedAt    DateTime @default(now()) @updatedAt
 
   @@unique([cycleId, agent, pairAddress])
   @@index([createdAt])
@@ -701,6 +703,38 @@ model TradeMemory {
   @@index([tradeId, phase])
   @@index([pairAddress, capturedAt])
   @@index([postExit, capturedAt])
+}
+
+/// ASCEND-09 point-in-time lot memory. One row per fill: ENTRY (lot open), ADD, or EXIT (each reducing
+/// fill). `view` is built only from rows timestamped at or before the fill (`asOf`). Written by the
+/// worker after the executor transaction commits; never read by order admission. Append-only (DB trigger).
+model TradeLotSnapshot {
+  id                 String   @id @default(cuid())
+  accountId          String
+  pairAddress        String
+  /// Lot key: id of the fill that opened the lot.
+  entryFillId        String
+  fillId             String   @unique
+  /// ENTRY | ADD | EXIT
+  /// SKIPPED: explicit marker for a fill that cannot be reconstructed (eventKind holds the reason).
+  phase              String
+  /// Lifecycle event of the fill: ENTRY | ADD | REDUCE | EXIT
+  eventKind          String
+  asOf               DateTime
+  /// Identity label resolved at write time (Position / ProtectionOrder); not part of `view` or `viewHash`.
+  lifecycleId        String?
+  lifecycleIdSource  String?
+  strategyInstanceId String?
+  strategyVersion    String?
+  configHash         String?
+  view               Json
+  viewHash           String
+  builderVersion     String
+  createdAt          DateTime @default(now())
+
+  @@index([accountId, asOf])
+  @@index([accountId, entryFillId])
+  @@index([accountId, phase, asOf])
 }
 
 model ModelUsageLog {
