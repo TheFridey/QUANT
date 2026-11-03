@@ -136,3 +136,16 @@ Evidence (worktree `pr/ascend-09`, database `odin_test_a09`, Redis 7):
 | `pnpm typecheck`, `pnpm exec eslint .` | exit 0 |
 
 Mutation checks (reverted and confirmed by grep before the full run): **M1** (no marker for orphans and no fallback marker, i.e. the old stall) killed by the orphan-stall test (`written: 0`); **M2** (decision filter ignores `updatedAt`) killed by the unit and DB decision-rewrite tests. Removing the explicit `updatedAt` in `upsertDecision` alone would survive, by design: Prisma's `@updatedAt` and the DB trigger also set it.
+
+## Re-review (head `dcf3ed7`): APPROVE WITH NOTES
+
+The reviewer worked in a separate context:
+- Re-ran the stall probe against the fixed writer. Run 1 wrote 200 `ORPHAN_SELL` markers, run 2 wrote the BUY's snapshot, and run 3 found 0 candidates.
+- Ran the 6 ASCEND-09 test files: 45 passed.
+- Confirmed M1, M2 and L1 to L4 as fixed. Nothing touches trading state, and no protected path is in the diff.
+
+Remaining LOW notes, accepted and documented:
+
+- **Deploy lock.** `ALTER TABLE "AgentDecision" ADD COLUMN` is metadata-only, but it takes a brief ACCESS EXCLUSIVE lock. If it queues behind an executor transaction (up to 60 s), other sessions' reads and writes of `AgentDecision` wait behind it, which can stall a cycle. Run the migration with `SET lock_timeout = '5s'` and retry on timeout, or with the worker paused. **Migration-first**: a build whose Prisma client knows `AgentDecision.updatedAt` fails against the old schema. The deployed build ignores the column, and the trigger keeps its upserts correct.
+- **Permanent `PAIR_FILL_CAP_EXCEEDED` markers.** Once a pair passes 20,000 fills, each later fill on it gets a permanent SKIPPED marker. Raising the cap later cannot recover those fills, because `fillId` is unique and the table is append-only. Making the reason retryable would reintroduce the M1 stall risk without a cursor. Production is far below the cap (about 30 round trips in total on 2 Nov 2026), so this is accepted. Revisit with a per-pair cursor before any pair nears 20,000 fills.
+- **Test databases cannot reset `TradeLotSnapshot`** (TRUNCATE is refused). Fixtures must keep using generated fill ids; fixed ids would silently reuse stale rows.
