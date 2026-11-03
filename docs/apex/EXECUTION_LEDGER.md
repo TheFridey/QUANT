@@ -2,6 +2,35 @@
 
 Durable checkpoint for Operation APEX. **On resume, reconstruct state from Git, CI and this file, in that order. Do not trust a chat summary.** Repository rules (`AGENTS.md`, `CLAUDE.md`) override everything here. Increment report: [`REPORT.md`](REPORT.md).
 
+## Checkpoint 3 Nov 2026, ~11:55 UTC: `d2fc28a` deployed to production
+
+Operator instruction, 3 Nov 2026: deploy the latest `main` to the live server; the three migrations were approved separately. Deployed from a session with SSH access to the VPS, following [`DEPLOY_PR44.md`](DEPLOY_PR44.md). PAPER-only: `EXECUTION_MODE`, `LIVE_MONEY_*` and risk limits were not touched.
+
+| Item | Value |
+| --- | --- |
+| Deployed | `d2fc28a` (detached checkout in `/srv/quant/app/repo`); previous `d2d1526`, fast-forward |
+| Preflight | Clean checkout; no protected paths changed between `d2d1526` and `d2fc28a`; lockfile adds only the `@odin/evolution` workspace link for the worker; `.env` PAPER / false; API health `ok`; 85 GB disk free |
+| Backup | `/srv/quant/backups/quant-20261103T114910Z.dump` (348 MB, 57 `TABLE DATA` entries) via `quant-backup.service` |
+| Restore drill | **Not run** (`NOT_VERIFIED`): no drill-role credentials in this session. Only the dump's table of contents was read |
+| Build snapshot (rollback) | `/srv/quant/releases/d2d1526-20261103T114947Z` |
+| Migrations | `prisma migrate deploy` applied `20261102100000_ascend08_research_loop`, `20261102150000_trade_lot_snapshot`, `20261103090000_ascend09_review` before the new code started. The worker was **not** paused and no `lock_timeout` was set; the migration completed without error |
+| Build | `pnpm install --frozen-lockfile`, `build:packages`, then API, worker and web builds, run as `quant` with `.env` sourced |
+| Restarted units | `quant-api.service`, `quant-worker.service`, `quant-web.service` at 11:51:54 UTC. PostgreSQL and `quant-redis.service` not restarted. The web unit logged status 143 for the stopped old process (SIGTERM from the restart) |
+
+| Smoke test | Result |
+| --- | --- |
+| Deployed SHA | `d2fc28a` |
+| Health | `{"status":"ok"}` within the first poll and again after 60 s |
+| Env unchanged | `EXECUTION_MODE=PAPER`, `LIVE_MONEY_ENABLED=false` |
+| Market data | 168 `MarketObservation` rows in the 2 minutes after restart |
+| Worker | `CycleRun.startedAt` advancing (11:53:20 UTC) |
+| Research loop | `ResearchLoopControl`: 0 rows (no control row, so the loop stays at its disabled default) |
+| API and worker logs | 0 error or exception lines since the restart |
+| Web | `127.0.0.1:4317` → 307 |
+| Other tenants | scalesmiths.co.uk 200, veteranfinder.co.uk 200 |
+| Authenticated checks (`/api/health/detail`, model-ops, autonomy GET/PUT), public Basic Auth 401, UI label, engine-config hash | **Not run** (`NOT_VERIFIED`) |
+| `portfolio-cli` research evidence | **Not run** |
+
 ## Checkpoint 3 Nov 2026, ~11:40 UTC: ASCEND-08 and ASCEND-09 merged
 
 Operator instruction, 3 Nov 2026: "Push and merge to main when possible." Merging is approved. **Deployment is not**: there is still no VPS access, and nothing is deployed.
@@ -82,7 +111,7 @@ A: APPROVE WITH NOTES. B+C: BLOCK on H-1; fixed in `621a789`; **re-review APPROV
 
 | Blocker | Type | What unblocks it |
 | --- | --- | --- |
-| VPS inspection, deploy, production smoke tests, production restore drill | `BLOCKED_EXTERNAL` | A session with VPS access (SSH or an attached computer); none is configured |
+| Production restore drill, authenticated smoke tests, `portfolio-cli` on the VPS | `BLOCKED_EXTERNAL` | Drill-role credentials and an operator login; VPS SSH access exists (`d2fc28a` deployed 3 Nov 2026) |
 | Merging to `main` and deploying | `BLOCKED_APPROVAL` | Operator approval (standing rule in `docs/ascend/singularity/README.md`) |
 | PCR-1 to PCR-5 (protected paths) | `BLOCKED_APPROVAL` | Operator-created unlock; see [`PROTECTED_CHANGE_REQUESTS.md`](PROTECTED_CHANGE_REQUESTS.md) |
 | New historical data (FX, longer histories, liquidity history) | `BLOCKED_EXTERNAL` | Provider network access; an operator purchase decision for paid tiers |
