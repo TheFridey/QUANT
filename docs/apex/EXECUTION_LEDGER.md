@@ -2,7 +2,20 @@
 
 Durable checkpoint for Operation APEX. **On resume, reconstruct state from Git, CI and this file, in that order. Do not trust a chat summary.** Repository rules (`AGENTS.md`, `CLAUDE.md`) override everything here. Increment report: [`REPORT.md`](REPORT.md).
 
-## Current state (2 Nov 2026, ~16:10 UTC)
+## Checkpoint 3 Nov 2026, ~09:00 UTC
+
+The session was idle overnight: worker restarts plus agent rate limits. On resume, the state was rebuilt from Git and GitHub; local Postgres and Redis were restarted. `main` is still `4331e99`, and nothing is deployed.
+
+| PR | Head | CI | Independent review | Status |
+| --- | --- | --- | --- | --- |
+| [#45](https://github.com/TheFridey/QUANT/pull/45) PCR-1 v3 | `6e2bfb6` | 947 passed, 1 by-design failure (booking stamp, which needs the protected patch) | Reviews 1–3: APPROVE WITH NOTES; all findings dispositioned | **Awaiting operator protected-edit approval.** Patch not applied; unlock not created |
+| [#46](https://github.com/TheFridey/QUANT/pull/46) ledger | this commit | green on `93abb98` | — | docs only |
+| [#47](https://github.com/TheFridey/QUANT/pull/47) ASCEND-08 | `1daaa5d` | green on `1de9fdf`; re-running on the fixes | Review: APPROVE WITH NOTES (M1 tick throw / unbounded retries; M2 approvals not bound to a subject). Fixed in `a6b7bd5`. Re-review: **APPROVE WITH NOTES**, M1 and M2 resolved; its one LOW regression (500 instead of 400) fixed in `1daaa5d` | Local: 917 passed, 25 skipped. Draft; off by default |
+| [#48](https://github.com/TheFridey/QUANT/pull/48) ASCEND-09 | `ef95b7f` | green on `237dbae`; re-running on the fixes | Review: APPROVE WITH NOTES (M1 backfill stall; M2 post-fill decision leakage). Fixed in `eaf2e4b`. Re-review: **APPROVE WITH NOTES**; remaining LOWs documented | Local: 927 passed, 25 skipped. Draft. New migration `20261103090000`: run with `lock_timeout`, migrate first |
+
+All three migrations are additive and must be applied **before** their code ships: `20261102100000` (ASCEND-08), `20261102120000` (PCR-1) and `20261102150000` plus `20261103090000` (ASCEND-09).
+
+## Earlier state (2 Nov 2026, ~16:10 UTC)
 
 | Item | State | Evidence |
 | --- | --- | --- |
