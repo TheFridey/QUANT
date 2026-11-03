@@ -343,6 +343,8 @@ model AgentDecision {
   inputSource  String?
   durationMs   Int?
   createdAt    DateTime @default(now())
+  /// ASCEND-09: last write. Upserts overwrite content but keep createdAt, so point-in-time views use this.
+  updatedAt    DateTime @default(now()) @updatedAt
 
   @@unique([cycleId, agent, pairAddress])
   @@index([createdAt])
@@ -714,6 +716,7 @@ model TradeLotSnapshot {
   entryFillId        String
   fillId             String   @unique
   /// ENTRY | ADD | EXIT
+  /// SKIPPED: explicit marker for a fill that cannot be reconstructed (eventKind holds the reason).
   phase              String
   /// Lifecycle event of the fill: ENTRY | ADD | REDUCE | EXIT
   eventKind          String

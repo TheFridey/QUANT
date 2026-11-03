@@ -62,9 +62,21 @@ export class TradeLotsService {
     return { accountId, history: reconstructLots({ fills, hints, asOf: now.toISOString() }), truncated, fillCount: fills.length };
   }
 
+  /** Environment and origin of the entry fill's observation: marks from another environment never mix in. */
+  private async markScope(lot: Lot): Promise<{ tradingEnvironment?: string; dataOrigin?: string }> {
+    const entry = await this.prisma.fill.findUnique({ where: { id: lot.entryFillId }, select: { observationId: true } });
+    if (!entry?.observationId) return {};
+    const observation = await this.prisma.marketObservation.findUnique({ where: { id: entry.observationId }, select: { tradingEnvironment: true, dataOrigin: true } });
+    return {
+      ...(observation?.tradingEnvironment ? { tradingEnvironment: observation.tradingEnvironment } : {}),
+      ...(observation?.dataOrigin ? { dataOrigin: observation.dataOrigin } : {}),
+    };
+  }
+
   private async enrich(lot: Lot, asOf: string) {
+    const scope = await this.markScope(lot);
     const marks = await this.prisma.marketObservation.findMany({
-      where: { pairAddress: lot.pairAddress, receivedAt: { gte: new Date(lot.openedAt), lte: new Date(lot.closedAt ?? asOf) }, priceUsd: { not: null } },
+      where: { pairAddress: lot.pairAddress, receivedAt: { gte: new Date(lot.openedAt), lte: new Date(lot.closedAt ?? asOf) }, priceUsd: { not: null }, ...scope },
       select: { receivedAt: true, priceUsd: true },
       orderBy: { receivedAt: "asc" },
       take: MAX_MARKS_PER_LOT,
@@ -77,7 +89,7 @@ export class TradeLotsService {
     let mark = null;
     if (lot.status === "OPEN") {
       const latest = await this.prisma.marketObservation.findFirst({
-        where: { pairAddress: lot.pairAddress, receivedAt: { lte: new Date(asOf) }, priceUsd: { not: null } },
+        where: { pairAddress: lot.pairAddress, receivedAt: { lte: new Date(asOf) }, priceUsd: { not: null }, ...scope },
         orderBy: { receivedAt: "desc" },
         select: { receivedAt: true, priceUsd: true },
       });
@@ -132,6 +144,13 @@ export class TradeLotsService {
       const view = row.view as unknown as PointInTimeView;
       const recomputed = viewHash(view);
       const latestStamp = collectTimestamps(view).reduce((max, item) => Math.max(max, Date.parse(item.at)), 0);
+      // The view must describe the row it is stored in (review L4): same fill, time, account, lot and phase.
+      const identityMatches =
+        view.asOf === row.asOf.toISOString() &&
+        view.fill?.id === row.fillId &&
+        view.accountId === row.accountId &&
+        view.entryFillId === row.entryFillId &&
+        view.phase === row.phase;
       return {
         id: row.id,
         fillId: row.fillId,
@@ -141,8 +160,12 @@ export class TradeLotsService {
         createdAt: row.createdAt.toISOString(),
         builderVersion: row.builderVersion,
         viewHash: row.viewHash,
-        /** The stored view still hashes to the recorded viewHash. */
-        integrity: recomputed === row.viewHash ? "HASH_MATCH" : "HASH_MISMATCH",
+        /**
+         * HASH_MATCH: the stored view re-hashes to viewHash and its asOf / fill / account / lot / phase equal
+         * the row's columns. This detects corruption, not tampering: anyone able to write the row could
+         * recompute the hash (the append-only triggers are the tamper control).
+         */
+        integrity: recomputed !== row.viewHash ? "HASH_MISMATCH" : identityMatches ? "HASH_MATCH" : "IDENTITY_MISMATCH",
         /** No timestamp inside the view is later than its asOf. */
         temporalBoundary: latestStamp <= row.asOf.getTime() ? "OK" : "VIOLATED",
         view,
@@ -167,13 +190,14 @@ export class TradeLotsService {
   async attribution() {
     const now = new Date();
     const loaded = await this.load(now);
-    const [ledger, positions, allocations] = await Promise.all([
+    const [ledger, positions, allocations, coverage] = await Promise.all([
       this.prisma.ledgerEntry.findMany({
         where: { accountId: loaded.accountId, type: { in: ["REALIZED_PNL", "FEE"] } },
         select: { id: true, accountId: true, type: true, amountUsd: true, fillId: true, orderId: true },
       }),
       this.prisma.position.findMany({ where: { accountId: loaded.accountId }, select: { pairAddress: true, baseQty: true } }),
       this.prisma.strategyAllocation.findMany({ where: { accountId: loaded.accountId } }),
+      this.prisma.tradeLotSnapshot.groupBy({ by: ["phase", "eventKind"], where: { accountId: loaded.accountId }, _count: { _all: true } }),
     ]);
     const reconciliation = reconcileLotsWithLedger({
       accountId: loaded.accountId,
@@ -199,9 +223,13 @@ export class TradeLotsService {
       status: loaded.truncated ? "INCOMPLETE" : reconciliation.status,
       attribution: summariseLotAttribution(loaded.history.lots),
       reconciliation,
+      /** Point-in-time memory rows by phase; SKIPPED rows name the reason fills could not be reconstructed. */
+      snapshotCoverage: coverage
+        .map((row) => ({ phase: row.phase, eventKind: row.eventKind, count: row._count._all }))
+        .sort((left, right) => left.phase.localeCompare(right.phase) || left.eventKind.localeCompare(right.eventKind)),
       rules: [
         "Lot realised P&L uses the ledger's average-cost arithmetic (fees in cost basis, 8 dp, ROUND_HALF_UP)",
-        "RECONCILED requires |ledger REALIZED_PNL total − lot total| ≤ 1e-8, |FEE rows − fill fees| ≤ 1e-8 and no itemised discrepancy",
+        "PNL_FEES_RECONCILED requires |ledger REALIZED_PNL total − lot total| ≤ 1e-8, |FEE rows − fill fees| ≤ 1e-8 and no itemised discrepancy; cash lines are not checked",
         "Instance realised P&L splits each sell fill's ledger-basis P&L by attributed quantity; quantity no allocation owns is shown as 'unresolved'",
         "allocationBasisRealizedPnlUsd mirrors StrategyAllocation (instance's own cost basis) and is compared with the stored rows separately",
       ],

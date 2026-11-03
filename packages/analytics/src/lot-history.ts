@@ -39,6 +39,8 @@ export type LotFillInput = {
   reasonCodes: string[];
   strategyVersion: string | null;
   cycleId: string | null;
+  /** Fill.observationId (the observation the fill was priced on), when known. */
+  observationId?: string | null;
 };
 
 type Stringish = { toString(): string };
@@ -57,6 +59,7 @@ export function lotFillFromRow(row: {
   slippageBps: Stringish;
   source: string;
   strategyInstanceId: string | null;
+  observationId?: string | null;
   createdAt: Date;
   order: {
     accountId: string;
@@ -90,6 +93,7 @@ export function lotFillFromRow(row: {
     reasonCodes: row.order.reasonCodes ?? [],
     strategyVersion: row.order.strategyVersion,
     cycleId: row.order.cycleId,
+    observationId: row.observationId ?? null,
   };
 }
 
@@ -765,7 +769,8 @@ export type AllocationCheck = {
 
 export type LedgerReconciliation = {
   accountId: string;
-  status: "RECONCILED" | "UNRECONCILED";
+  /** PNL_FEES_RECONCILED covers realised P&L, fees and positions only; cash lines are not checked. */
+  status: "PNL_FEES_RECONCILED" | "UNRECONCILED";
   tolerance: string;
   realizedPnl: { ledgerTotalUsd: string; lotsTotalUsd: string; unreconciledUsd: string; withinTolerance: boolean };
   fees: { ledgerTotalUsd: string; fillsTotalUsd: string; unreconciledUsd: string; withinTolerance: boolean };
@@ -781,6 +786,8 @@ export const RECONCILIATION_TOLERANCE = "0.00000001";
  * Compare reconstructed lots with the ledger. The sum of lot realised P&L must equal the REALIZED_PNL
  * total and fill fees must equal the FEE rows, within 1e-8, with every row linked to a known fill. Any
  * difference, unlinked row, orphan fill or position mismatch is itemised and makes the result UNRECONCILED.
+ * Cash lines (FILL_DEBIT / FILL_CREDIT against PaperAccount.cashUsd) are not part of this check, hence
+ * the status name PNL_FEES_RECONCILED.
  */
 export function reconcileLotsWithLedger(input: {
   accountId: string;
@@ -916,7 +923,7 @@ export function reconcileLotsWithLedger(input: {
   const allocations = input.allocations ? checkAllocations(lots, input.allocations, tolerance) : [];
   return {
     accountId: input.accountId,
-    status: realizedOk && feesOk && items.length === 0 ? "RECONCILED" : "UNRECONCILED",
+    status: realizedOk && feesOk && items.length === 0 ? "PNL_FEES_RECONCILED" : "UNRECONCILED",
     tolerance: RECONCILIATION_TOLERANCE,
     realizedPnl: { ledgerTotalUsd: usd(ledgerRealized), lotsTotalUsd: usd(lotsRealized), unreconciledUsd: usd(realizedDiff), withinTolerance: realizedOk },
     fees: { ledgerTotalUsd: usd(ledgerFees), fillsTotalUsd: usd(fillFees), unreconciledUsd: usd(feeDiff), withinTolerance: feesOk },

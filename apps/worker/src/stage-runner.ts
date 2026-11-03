@@ -1575,7 +1575,8 @@ export class StageRunner {
     try {
       const ctx = await this.contextForCycle(cycleId);
       if (!ctx) return;
-      const result = await persistTradeLotSnapshots(this.prisma, { accountId: ctx.accountId });
+      // Fills younger than the settle margin are left for a later cycle (review L1).
+      const result = await persistTradeLotSnapshots(this.prisma, { accountId: ctx.accountId, now: this.now() });
       if (result.candidates > 0) workerLog.info({ cycleId, ...result }, "trade lot snapshots");
     } catch (error) {
       workerLog.warn({ cycleId, error: error instanceof Error ? error.message : String(error) }, "trade lot snapshot write failed");

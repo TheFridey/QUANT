@@ -73,7 +73,7 @@ describe.skipIf(!enabled)("ASCEND-09 lot history API (DB)", () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
     await prisma.$executeRaw`SELECT pg_advisory_lock(${INTEGRATION_TEST_ADVISORY_LOCK})`;
     await prisma.$executeRawUnsafe(
-      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "MarketObservation", "PaperAccount", "ProtectionOrder", "StrategyAllocation", "TradeLotSnapshot" RESTART IDENTITY CASCADE`,
+      `TRUNCATE TABLE "Fill", "LedgerEntry", "Order", "Position", "MarketObservation", "PaperAccount", "ProtectionOrder", "StrategyAllocation" RESTART IDENTITY CASCADE`,
     );
     for (const id of [ACCOUNT, OTHER]) {
       await prisma.paperAccount.create({ data: { id, cashUsd: "1000000", startingBalanceUsd: "1000000" } });
@@ -130,7 +130,7 @@ describe.skipIf(!enabled)("ASCEND-09 lot history API (DB)", () => {
 
   it("reconciles attribution with the ledger exactly", async () => {
     const report = await service.attribution();
-    expect(report.status).toBe("RECONCILED");
+    expect(report.status).toBe("PNL_FEES_RECONCILED");
     expect(report.reconciliation.items).toEqual([]);
     expect(report.reconciliation.realizedPnl.unreconciledUsd).toBe("0.00000000");
     expect(report.reconciliation.fees.unreconciledUsd).toBe("0.00000000");

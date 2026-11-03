@@ -41,6 +41,11 @@ export type PitDecision = {
   reasonCodes: string[];
   inputSource: string | null;
   createdAt: string;
+  /**
+   * Time of the row's last write. Upserts overwrite content but keep createdAt, so a row whose
+   * updatedAt is after asOf (or unknown) may show content changed after the fill and is excluded.
+   */
+  updatedAt: string | null;
   /** Only numeric cost fields are read from the EXECUTOR output (see costFieldsFrom). */
   output: unknown;
 };
@@ -50,6 +55,8 @@ export type PitPlanOrder = {
   qty?: string;
   estimatedCostUsd?: string;
   estimatedNotionalUsd?: string;
+  /** Reason codes as planned (immutable CyclePlan, written before the fill). */
+  reasonCodes?: string[];
 };
 
 export type PitConfigRevision = { configHash: string; engineUpdatedAt: string; createdAt: string };
@@ -130,6 +137,8 @@ export type PointInTimeSource = {
   strategyInstance: PitStrategyInstance | null;
   /** EXIT only: the lot's entry fill price, the excursion reference. */
   entryPriceUsd?: string;
+  /** EXIT only: true when the mark query hit its row cap (the excursion covers a prefix of the window). */
+  marksTruncated?: boolean;
 };
 
 export type PointInTimeView = {
@@ -164,6 +173,11 @@ export type PointInTimeView = {
     intent: string;
     ownerScope: string | null;
     reasonCodes: string[];
+    /**
+     * CYCLE_PLAN_AT_DECISION: codes from the immutable plan, recorded before the fill.
+     * ORDER_CURRENT_STATE: Order.reasonCodes as stored now (the order row is mutable; may include later codes).
+     */
+    reasonCodesSource: "CYCLE_PLAN_AT_DECISION" | "ORDER_CURRENT_STATE";
     exitReason: { code: string; source: string } | null;
     executionMode: string;
     venue: string;
@@ -179,6 +193,9 @@ export type PointInTimeView = {
     fillFreshness: string | null;
   };
   decisions: DecisionView[];
+  /** True when at least one decision for this cycle and pair was rewritten after asOf (or has no known write time). */
+  decisionUnavailable: boolean;
+  unavailableDecisions: Array<{ id: string; agent: string; pairAddress: string; createdAt: string; reason: "UPDATED_AFTER_ASOF" | "UPDATE_TIME_UNKNOWN" }>;
   estimatedCost: {
     source: "CYCLE_PLAN" | "NONE";
     plannedAt: string | null;
@@ -206,6 +223,8 @@ export type PointInTimeView = {
   };
   /** EXIT views only: excursion from marks in [openedAt, asOf]. */
   excursionToDate: LotExcursion | null;
+  /** EXIT views only: the mark query hit its cap; null for other phases. */
+  excursionTruncated: boolean | null;
 };
 
 export type ObservationView = {
@@ -286,13 +305,27 @@ export function buildPointInTimeView(source: PointInTimeSource): PointInTimeView
   const decisionObservation = pickObservation(source.observations, source.order.decisionObservationId ?? source.order.observationId, pair, asOf);
   const fillObservation = pickObservation(source.observations, source.fill.observationId ?? source.order.fillObservationId, pair, asOf);
 
-  const decisions = source.decisions
+  const scoped = source.decisions
     .filter((row) => row.cycleId === source.order.cycleId && (row.pairAddress === pair || row.pairAddress === "") && atOrBefore(row.createdAt, asOf))
     .sort((left, right) => ms(left.createdAt) - ms(right.createdAt) || left.agent.localeCompare(right.agent) || left.id.localeCompare(right.id));
+  // A row rewritten after asOf would show post-fill content under a pre-fill createdAt: exclude it.
+  const decisions = scoped.filter((row) => atOrBefore(row.updatedAt, asOf));
+  const unavailable = scoped
+    .filter((row) => !atOrBefore(row.updatedAt, asOf))
+    .map((row) => ({
+      id: row.id,
+      agent: row.agent,
+      pairAddress: row.pairAddress,
+      createdAt: row.createdAt,
+      reason: row.updatedAt === null ? ("UPDATE_TIME_UNKNOWN" as const) : ("UPDATED_AFTER_ASOF" as const),
+    }));
   const executor = decisions.filter((row) => row.agent === "EXECUTOR" && row.pairAddress === pair).at(-1) ?? null;
 
   const plan = source.plan && atOrBefore(source.plan.plannedAt, asOf) ? source.plan : null;
   const planned = plan?.orders.find((row) => row.clientOrderId === source.order.clientOrderId) ?? null;
+  const plannedCodes = planned?.reasonCodes ?? null;
+  const reasonCodes = plannedCodes ? [...plannedCodes] : [...source.order.reasonCodes];
+  const reasonCodesSource = plannedCodes ? ("CYCLE_PLAN_AT_DECISION" as const) : ("ORDER_CURRENT_STATE" as const);
 
   const revisions = source.configRevisions.filter((row) => atOrBefore(row.createdAt, asOf));
   const pinned = source.cycle?.configRevision
@@ -356,8 +389,9 @@ export function buildPointInTimeView(source: PointInTimeSource): PointInTimeView
       cycleId: source.order.cycleId,
       intent: source.order.intent,
       ownerScope: source.order.ownerScope,
-      reasonCodes: [...source.order.reasonCodes],
-      exitReason: source.fill.side === "SELL" ? exitReasonFor({ reasonCodes: source.order.reasonCodes, intent: source.order.intent, ownerScope: source.order.ownerScope }) : null,
+      reasonCodes,
+      reasonCodesSource,
+      exitReason: source.fill.side === "SELL" ? exitReasonFor({ reasonCodes, intent: source.order.intent, ownerScope: source.order.ownerScope }) : null,
       executionMode: source.order.executionMode,
       venue: source.order.venue,
       createdAt: orderCreatedAt,
@@ -382,6 +416,8 @@ export function buildPointInTimeView(source: PointInTimeSource): PointInTimeView
       inputSource: row.inputSource,
       createdAt: row.createdAt,
     })),
+    decisionUnavailable: unavailable.length > 0,
+    unavailableDecisions: unavailable,
     estimatedCost: {
       source: planned ? "CYCLE_PLAN" : "NONE",
       plannedAt: planned ? plan!.plannedAt : null,
@@ -407,6 +443,7 @@ export function buildPointInTimeView(source: PointInTimeSource): PointInTimeView
       dataMode: cycle?.dataMode ?? null,
     },
     excursionToDate: excursion,
+    excursionTruncated: excursion === null ? null : source.marksTruncated === true,
   };
 }
 

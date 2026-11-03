@@ -45,6 +45,7 @@ function decision(id: string, agent: string, second: number, extra: Partial<PitD
     reasonCodes: ["ENTRY_SIGNAL"],
     inputSource: "feed",
     createdAt: t(second),
+    updatedAt: t(second),
     output: { estimatedCostUsd: "100.30000000", spreadBps: "20", impactBps: "5.5", expiresAt: t(600), eligibleAt: t(31) },
     ...extra,
   };
@@ -225,7 +226,40 @@ describe("point-in-time entry view (ASCEND-09)", () => {
       ],
     });
     expect(view.order.exitReason).toEqual({ code: "STOP_LOSS", source: "REASON_CODE" });
+    expect(view.order.reasonCodesSource).toBe("ORDER_CURRENT_STATE");
     expect(view.excursionToDate).toMatchObject({ observations: 1, lowUsd: "0.95000000", windowEnd: exitAt });
+    expect(view.excursionTruncated).toBe(false);
     expect(() => assertNoPostAsOfTimestamps(view)).not.toThrow();
+    const capped = buildPointInTimeView({ ...source, phase: "EXIT", kind: "EXIT", marksTruncated: true, marks: [], fill: { ...source.fill, id: "fill_exit", side: "SELL", createdAt: exitAt } });
+    expect(capped.excursionTruncated).toBe(true);
+    expect(entryView(source).excursionTruncated).toBeNull();
+  });
+
+  it("excludes a decision rewritten after the entry fill and marks the view decisionUnavailable (review M2)", () => {
+    const source = baseSource();
+    // Same row id and createdAt as before the fill, content overwritten one second after it.
+    const rewritten = source.decisions.map((row) =>
+      row.id === "d_exec" ? { ...row, decision: "REJECT", reasonCodes: ["REJECTED"], output: { estimatedCostUsd: "1" }, updatedAt: t(31) } : row,
+    );
+    const view = entryView({ ...source, decisions: rewritten });
+    expect(view.decisions.map((row) => row.agent)).toEqual(["PULSE", "AEGIS"]);
+    expect(view.decisionUnavailable).toBe(true);
+    expect(view.unavailableDecisions).toEqual([{ id: "d_exec", agent: "EXECUTOR", pairAddress: PAIR, createdAt: t(29), reason: "UPDATED_AFTER_ASOF" }]);
+    expect(view.estimatedCost.executorDecision).toBeNull();
+    expect(JSON.stringify(view)).not.toContain("REJECT");
+    expect(() => assertNoPostAsOfTimestamps(view)).not.toThrow();
+    const unknown = entryView({ ...source, decisions: source.decisions.map((row) => (row.id === "d_pulse" ? { ...row, updatedAt: null } : row)) });
+    expect(unknown.unavailableDecisions.map((row) => [row.agent, row.reason])).toEqual([["PULSE", "UPDATE_TIME_UNKNOWN"]]);
+    expect(entryView(source).decisionUnavailable).toBe(false);
+  });
+
+  it("uses reason codes recorded in the cycle plan, and labels the order's current codes otherwise", () => {
+    const source = baseSource();
+    const planned = entryView({ ...source, plan: { ...source.plan!, orders: [{ ...source.plan!.orders[0]!, reasonCodes: ["ORDER_PROPOSED", "ENTRY_SIGNAL"] }] } });
+    expect(planned.order.reasonCodes).toEqual(["ORDER_PROPOSED", "ENTRY_SIGNAL"]);
+    expect(planned.order.reasonCodesSource).toBe("CYCLE_PLAN_AT_DECISION");
+    const current = entryView(source);
+    expect(current.order.reasonCodes).toEqual(["ORDER_PROPOSED", "FILLED"]);
+    expect(current.order.reasonCodesSource).toBe("ORDER_CURRENT_STATE");
   });
 });

@@ -218,7 +218,7 @@ describe("lot reconciliation with the ledger (ASCEND-09)", () => {
   it("matches the REALIZED_PNL and FEE ledger totals exactly", () => {
     const history = reconstructLots({ fills, asOf: at(9) });
     const result = reconcileLotsWithLedger({ accountId: ACCOUNT, history, ledger, positions: [{ pairAddress: PAIR, baseQty: "7.00000000" }] });
-    expect(result.status).toBe("RECONCILED");
+    expect(result.status).toBe("PNL_FEES_RECONCILED");
     expect(result.items).toEqual([]);
     expect(result.realizedPnl.unreconciledUsd).toBe("0.00000000");
     expect(result.fees.unreconciledUsd).toBe("0.00000000");
@@ -272,7 +272,7 @@ describe("lot reconciliation with the ledger (ASCEND-09)", () => {
       allocations: [{ strategyInstanceId: "inst_a", pairAddress: PAIR, qty: "0", realizedPnlUsd: "5", feesUsd: row.feesUsd, costBasisKnown: true }],
     });
     expect(bad.allocationStatus).toBe("MISMATCH");
-    expect(bad.status).toBe("RECONCILED"); // the ledger itself still reconciles
+    expect(bad.status).toBe("PNL_FEES_RECONCILED"); // the ledger itself still reconciles
   });
 });
 
