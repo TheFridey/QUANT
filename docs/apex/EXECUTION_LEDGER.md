@@ -2,6 +2,19 @@
 
 Durable checkpoint for Operation APEX. **On resume, reconstruct state from Git, CI and this file, in that order. Do not trust a chat summary.** Repository rules (`AGENTS.md`, `CLAUDE.md`) override everything here. Increment report: [`REPORT.md`](REPORT.md).
 
+## Checkpoint 3 Nov 2026, ~11:40 UTC: ASCEND-08 and ASCEND-09 merged
+
+Operator instruction, 3 Nov 2026: "Push and merge to main when possible." Merging is approved. **Deployment is not**: there is still no VPS access, and nothing is deployed.
+
+| PR | Merge | Evidence |
+| --- | --- | --- |
+| [#47](https://github.com/TheFridey/QUANT/pull/47) ASCEND-08 | **Merged** as `9843ae2` (head `1daaa5d`) | CI run 41604846691 green: test, build-packages, browser-e2e. 0 review threads. No protected paths |
+| [#48](https://github.com/TheFridey/QUANT/pull/48) ASCEND-09 | **Merged** as `017d81c` (head `043ecf9`) | Before merging, `main` `9843ae2` was merged into the branch. Conflicts: `app.module.ts` (both controllers kept) and this ledger. On the combined tree, local `odin_test_merge` (fresh `migrate deploy`): `pnpm test` 168 files, **960 passed**, 25 skipped; typecheck and lint clean. CI run 41627803762 on `043ecf9` green: test, build-packages, browser-e2e. 0 review threads. No protected paths |
+| [#46](https://github.com/TheFridey/QUANT/pull/46) ledger | this commit | docs only |
+| [#45](https://github.com/TheFridey/QUANT/pull/45) PCR-1 | **Not merged; not mergeable by policy.** One test fails by design until the protected stamping patch is applied, which needs the operator's manual unlock. Tests are not disabled to get a green build | Awaiting the unlock |
+
+Migration state on `main`: `20261102100000` (ASCEND-08), plus `20261102150000` and `20261103090000` (ASCEND-09). All are additive. **Production needs approval, and they must run before the new code** (`DEPLOY_PR44.md` procedure plus `migrate deploy` first; for `20261103090000`, set `lock_timeout` or pause the worker). The research loop ships **disabled** (`ResearchLoopControl.enabled` false). `prisma migrate diff` against a freshly migrated database shows only drift that predates this work (`20261029180000` indexes and `updatedAt` defaults), and nothing from these PRs.
+
 ## Checkpoint 3 Nov 2026, ~09:00 UTC
 
 The session was idle overnight: worker restarts plus agent rate limits. On resume, the state was rebuilt from Git and GitHub; local Postgres and Redis were restarted. `main` is still `4331e99`, and nothing is deployed.
@@ -98,4 +111,4 @@ A: APPROVE WITH NOTES. B+C: BLOCK on H-1; fixed in `621a789`; **re-review APPROV
 3. With the unlock: PCR-1 (lifecycle fencing) first, then PCR-3, PCR-2, PCR-4, PCR-5.
 4. Enforce `requiresApproval` in the research pipeline (non-protected; `packages/evolution/src/pipeline.ts`).
 5. ASCEND-10 views for regimes, portfolio and the research registry (every number with its source and timestamp).
-6. ASCEND-09: review and merge `apex/ascend-09-trade-memory` (adds a migration). Then structured feedback over `TradeLotSnapshot` ENTRY views (pre-entry data only for entry analysis).
+6. ASCEND-09 is merged (`017d81c`; not deployed). Next: structured feedback over `TradeLotSnapshot` ENTRY views (pre-entry data only for entry analysis).
