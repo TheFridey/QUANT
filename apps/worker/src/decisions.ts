@@ -33,6 +33,8 @@ export async function upsertDecision(
       output: toJson(decision.output),
       inputSource: decision.inputSource ?? null,
       durationMs: decision.durationMs ?? null,
+      // ASCEND-09: an overwrite keeps createdAt, so point-in-time views rely on this (a DB trigger also bumps it).
+      updatedAt: new Date(),
     },
   });
 }

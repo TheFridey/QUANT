@@ -96,6 +96,7 @@ import {
 } from "@odin/trading-engine";
 import { upsertDecision } from "./decisions.js";
 import { workerLog } from "./logger.js";
+import { persistTradeLotSnapshots } from "./trade-lot-memory.js";
 import { admitPlannedOrders } from "./executor/admit.js";
 import type { ExecutorHost } from "./executor/host.js";
 import { consumeCyclePlan } from "./executor/plan-consume.js";
@@ -438,6 +439,7 @@ export class StageRunner {
       await this.persistEquitySnapshot(cycleId, loaded);
     }
     await this.persistTradeReconstruction(cycleId);
+    await this.persistLotMemory(cycleId);
     await this.persistObservability(cycleId);
     await this.prisma.cycleRun.update({
       where: { id: cycleId },
@@ -1562,6 +1564,23 @@ export class StageRunner {
       holders: holders === null ? null : holders.ok ? { ok: true, top10Pct: holders.data.top10Pct } : { ok: false, code: holders.code, error: holders.error },
       liquidityUsd: pair.liquidityUsd,
     });
+  }
+
+  /**
+   * ASCEND-09: point-in-time lot snapshots, written after the executor transaction has committed.
+   * Read-only towards trading state (inserts only into the append-only TradeLotSnapshot table); a
+   * failure is logged and never fails the cycle or changes trading behaviour.
+   */
+  private async persistLotMemory(cycleId: string): Promise<void> {
+    try {
+      const ctx = await this.contextForCycle(cycleId);
+      if (!ctx) return;
+      // Fills younger than the settle margin are left for a later cycle (review L1).
+      const result = await persistTradeLotSnapshots(this.prisma, { accountId: ctx.accountId, now: this.now() });
+      if (result.candidates > 0) workerLog.info({ cycleId, ...result }, "trade lot snapshots");
+    } catch (error) {
+      workerLog.warn({ cycleId, error: error instanceof Error ? error.message : String(error) }, "trade lot snapshot write failed");
+    }
   }
 
   private async persistTradeReconstruction(cycleId: string): Promise<void> {
