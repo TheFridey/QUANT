@@ -20,6 +20,7 @@ import {
   resolveMarketFeedMode,
 } from "./deterministic-feed.js";
 import { RedisBus } from "./redis-bus.js";
+import { RESEARCH_LOOP_QUEUE, ResearchLoopProcessor, ResearchLoopScheduler } from "./research-loop.js";
 import { Scheduler } from "./scheduler.js";
 import { StageLeaseService } from "./stage-lease.js";
 import { liveFeed, StageRunner } from "./stage-runner.js";
@@ -35,7 +36,7 @@ const queues = Object.values(QUEUES).map((name) => ({ name }));
         return { connection: { url, maxRetriesPerRequest: null } };
       },
     }),
-    BullModule.registerQueue(...queues),
+    BullModule.registerQueue(...queues, { name: RESEARCH_LOOP_QUEUE }),
   ],
   providers: [
     RedisBus,
@@ -66,6 +67,8 @@ const queues = Object.values(QUEUES).map((name) => ({ name }));
     ExecutorProcessor,
     ArchivistProcessor,
     Scheduler,
+    ResearchLoopScheduler,
+    ResearchLoopProcessor,
     {
       provide: "WORKER_BOOT",
       useFactory: async () => {
