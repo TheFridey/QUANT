@@ -37,24 +37,25 @@ Quantity no allocation owns is attributed to `unresolved` and flagged `ALLOCATIO
 
 The worker writes one row per fill: `ENTRY` at lot open, `ADD`, and `EXIT` for each reducing fill. The ENTRY view holds the decision and fill observations, the cycle's agent decisions for the pair (and cycle-wide `""` rows), quote freshness (observation age at order and at fill), the estimated cost from the stored `CyclePlan` plus numeric cost fields of the EXECUTOR decision, realised fee and slippage of the fill itself, strategy instance and version, and the config hash. EXIT views add the exit reason and the excursion to date over `[openedAt, exit fill]`.
 
-The writer runs in `archivist()` after `persistTradeReconstruction`, i.e. after the executor stage and its transaction have committed. It never runs inside order admission, inserts only into `TradeLotSnapshot`, and is wrapped in `try/catch` so a failure is logged (`trade lot snapshot write failed`) and never fails the cycle. Candidates are the account's fills without a snapshot, oldest first, 200 per cycle, starting 10 minutes before the newest snapshot, so fills settled in another cycle and history from before this feature are filled in on later cycles. `createMany(skipDuplicates)` on the unique `fillId` makes it idempotent.
+The writer runs in `archivist()` after `persistTradeReconstruction`, i.e. after the executor stage and its transaction have committed. It never runs inside order admission, inserts only into `TradeLotSnapshot`, and is wrapped in `try/catch` so a failure is logged (`trade lot snapshot write failed`) and never fails the cycle. Candidates are the account's fills with **no row at all**, oldest first, 200 per cycle, and only fills older than `SNAPSHOT_SETTLE_MS` (60 s, the upper clamp of the executor transaction timeout), so fills settled in another cycle and history from before this feature are filled in on later cycles, and a snapshot normally lands one cycle after its fill. Every candidate receives exactly one row: a snapshot, or a `SKIPPED` marker whose `eventKind` is the reason (`ORPHAN_SELL`, `PAIR_FILL_CAP_EXCEEDED` above 20 000 fills on one pair, `TEMPORAL_GUARD_REJECTED`, `NOT_IN_RECONSTRUCTION`). That makes progress durable without a mutable cursor: unreconstructable fills cannot stall the backlog and old fills are never abandoned. Each run returns, and logs, the number of candidates, rows written, snapshots and skips per reason; `GET /api/terminal/lots/attribution` reports `snapshotCoverage` by phase and reason. `createMany(skipDuplicates)` on the unique `fillId` makes it idempotent.
 
 ## Temporal-boundary guarantees
 
 For a snapshot anchored to fill F with `asOf = F.createdAt`:
 
-1. **Query filter.** Every read that feeds the view is bounded: observations `receivedAt <= asOf`; decisions `createdAt <= asOf`; `CyclePlan.plannedAt <= asOf`; `CycleRun.startedAt <= asOf`; config revisions `createdAt <= asOf`; marks `receivedAt` in `[openedAt, asOf]`.
+1. **Query filter.** Every read that feeds the view is bounded: observations `receivedAt <= asOf`; decisions `createdAt <= asOf`; `CyclePlan.plannedAt <= asOf`; `CycleRun.startedAt <= asOf`; config revisions `createdAt <= asOf`; marks `receivedAt` in `[openedAt, asOf]`, restricted to the entry fill observation's `tradingEnvironment` (else the cycle's) and `dataOrigin`, as the fill path restricts its observation by environment. `receivedAt` is the worker's stage clock when the observation was ingested, not a provider time; `eventTime` (when known) is checked too.
+1a. **Rewritten rows.** `AgentDecision` rows are upserted: content is overwritten while `createdAt` is kept. Each row now carries `updatedAt` (set by Prisma, by `upsertDecision` explicitly, and bumped by a DB trigger for raw SQL updates). A decision with `updatedAt > asOf` (or no known write time) is **excluded**, listed in `unavailableDecisions` and the view sets `decisionUnavailable: true`; its content and cost fields never appear. Rows that existed before the migration got the migration time, so a backfilled view treats them as possibly changed. Order reason codes come from the immutable `CyclePlan` order (`reasonCodesSource: "CYCLE_PLAN_AT_DECISION"`); orders not in a plan (protection exits, remainders, operator orders) use `Order.reasonCodes` as stored now, labelled `ORDER_CURRENT_STATE`.
 2. **Builder filter.** `buildPointInTimeView` re-applies the same bounds to whatever it is given (an observation with a later `eventTime` is also dropped), so a caller that passes later rows cannot leak them. Mutable rows: a `StrategyInstance` updated after `asOf` is omitted (`UPDATED_AFTER_ASOF_OMITTED`) rather than shown as it is now.
 3. **No forward-dated free text.** Decision `input`/`output` JSON and observation `raw` payloads are never copied (the EXECUTOR output carries `expiresAt`); only whitelisted numeric cost fields are. The view never records how many rows were excluded, since that count would itself depend on the future.
 4. **Guard before write.** `assertNoPostAsOfTimestamps` walks every ISO timestamp in the view and the writer skips (never writes) a view with any timestamp after `asOf`.
 5. **Lot classification is causal.** A fill's event kind, quantities before/after, `openedAt`, entry price and realised P&L depend only on earlier fills (sequential rebuild); the test compares a prefix with prefix + later fills.
 6. `lifecycleId` / `lifecycleIdSource` are columns outside `view` and `viewHash`: they are identity labels resolved at write time (Position or ProtectionOrder), not information used by the view.
 
-`entryView(source)` is `buildPointInTimeView` at the lot's entry fill and refuses any other fill. The API returns the **stored** ENTRY snapshot with `integrity` (stored view re-hashes to `viewHash`) and `temporalBoundary` (no timestamp after `asOf`); a lot without one yet reports `entryViewState: "NOT_RECORDED_YET"`. The API never rebuilds an entry view from current rows.
+`entryView(source)` is `buildPointInTimeView` at the lot's entry fill and refuses any other fill. The API returns the **stored** ENTRY snapshot with `integrity` (`HASH_MATCH` only when the stored view re-hashes to `viewHash` **and** its `asOf`, fill id, account, lot and phase equal the row's columns; otherwise `HASH_MISMATCH` or `IDENTITY_MISMATCH`) and `temporalBoundary` (no timestamp after `asOf`). The hash detects corruption, not tampering: anyone who can write the row can recompute it; the append-only triggers (UPDATE, DELETE and TRUNCATE rejected) are the tamper control; a lot without one yet reports `entryViewState: "NOT_RECORDED_YET"`. The API never rebuilds an entry view from current rows.
 
 ## Reconciliation rules
 
-`reconcileLotsWithLedger` (and `GET /api/terminal/lots/attribution`) is `RECONCILED` only when all hold:
+`reconcileLotsWithLedger` (and `GET /api/terminal/lots/attribution`) is `PNL_FEES_RECONCILED` only when all hold (the name says what is covered: cash lines, `FILL_DEBIT` / `FILL_CREDIT` against `PaperAccount.cashUsd`, are **not** checked):
 
 - `|Σ REALIZED_PNL ledger rows − Σ lot realised P&L| ≤ 1e-8`;
 - `|Σ −FEE ledger rows − Σ fill fees| ≤ 1e-8`;
@@ -85,7 +86,7 @@ All commands ran with `DATABASE_URL` and `DATABASE_URL_TEST` set to `postgresql:
 | Typecheck | `pnpm typecheck` | exit 0 |
 | Lint | `pnpm lint` | exit 0 |
 
-What the tests cover: lot boundaries (open, add, partial reduce, close, reopen); lifecycle labels and conflicts; multi-instance attribution including pro-rata protection exits and an unowned exit; reconciliation equal to ledger rows produced by the real `applyFill`, and a corrupted ledger (altered amount, row without fill, missing row, orphan sell, position mismatch) reported as `UNRECONCILED`; prefix invariance of the entry view under later observations, decisions, config revisions and fills; no timestamp in an entry view after the entry fill; MAE/MFE window ends (1 ms either side, other pair, null price, open lot to `asOf`); null marks; the append-only trigger rejecting Prisma and raw `UPDATE`/`DELETE`; the snapshot write leaving `Order`, `Fill`, `Position`, `LedgerEntry`, `StrategyAllocation`, `PaperAccount`, `RiskReservation` and `ProtectionOrder` md5 row hashes unchanged after a real paper cycle; archivist idempotency; a DB prefix-invariance rebuild (truncate, add later rows, rewrite: same `viewHash`).
+What the tests cover: lot boundaries (open, add, partial reduce, close, reopen); lifecycle labels and conflicts; multi-instance attribution including pro-rata protection exits and an unowned exit; reconciliation equal to ledger rows produced by the real `applyFill`, and a corrupted ledger (altered amount, row without fill, missing row, orphan sell, position mismatch) reported as `UNRECONCILED`; prefix invariance of the entry view under later observations, decisions, config revisions and fills; no timestamp in an entry view after the entry fill; MAE/MFE window ends (1 ms either side, other pair, null price, open lot to `asOf`); null marks; the append-only trigger rejecting Prisma and raw `UPDATE`/`DELETE`; the snapshot write leaving `Order`, `Fill`, `Position`, `LedgerEntry`, `StrategyAllocation`, `PaperAccount`, `RiskReservation` and `ProtectionOrder` md5 row hashes unchanged after a real paper cycle; archivist idempotency; a DB prefix-invariance rebuild (add later rows, rebuild the stored fill with `planTradeLotSnapshots({ fillIds })`: same `viewHash`). The first-round figures in this table are superseded by the review-fix evidence below.
 
 ### Mutation checks (each run, then reverted; reverts confirmed by grep before the final suite)
 
@@ -99,11 +100,39 @@ What the tests cover: lot boundaries (open, add, partial reduce, close, reopen);
 ## Limitations
 
 - Fill order within the same millisecond falls back to `id`. A fill committed later with an earlier `createdAt` (a concurrent operator order, for example) could be classified against a sequence that later gains an earlier fill; the lot API then disagrees with the stored `eventKind`, and reconciliation still uses the full ledger.
-- `AgentDecision` rows are upserted and have no `updatedAt`: a decision created before the fill and updated after it would show its later content. The writer runs right after commit, which narrows but does not close this. `Order.reasonCodes` is likewise read as stored (the fill itself appends `FILLED`).
+- Decision rewrites are detected by `updatedAt` (client clock, the same clock as `Fill.createdAt`, plus a DB `clock_timestamp()` floor). A rewrite within the same millisecond as the fill would not be detected. Rows from before the migration are treated as possibly changed, so backfilled views of old lots usually have `decisionUnavailable: true`.
+- `Order.reasonCodes` for orders outside a cycle plan is current state (labelled `ORDER_CURRENT_STATE`).
+- The settle margin assumes no transaction that writes fills stays open longer than 60 s (the executor's timeout is clamped to 60 s; other paths use Prisma's 5 s default).
+- `SKIPPED` markers are permanent: a pair above 20 000 fills, or a view the guard refused, is reported and never retried automatically.
 - Config hash: the cycle's pinned revision when its `engineUpdatedAt` matches `CycleRun.configRevision`, else the latest revision at or before the fill (`method` says which). `EngineControl.updatedAt` also moves on non-config writes, so the pinned match can miss.
 - `allocationBasisRealizedPnlUsd` mirrors `settleFillByOwnerScope`. Allocation repairs and recovery paths outside fills are not modelled, so `allocationStatus` can be `MISMATCH` while the ledger reconciles; that is reported, not hidden.
 - Excursions use the entry fill price as reference, not a mid; slippage USD is implied from `slippageBps`.
 - Backfilled snapshots for history before this feature are built with the same filters but were captured late (`createdAt` much later than `asOf`).
 - The writer caps at 200 fills per cycle and 20 000 fills per pair; the API reads at most 50 000 fills per account (beyond that: `INCOMPLETE`).
-- Not run here: browser e2e, production deployment (no VPS access), sandbox tests (no bubblewrap). No independent safety review was run: this session has no subagent tool, and no protected path changed.
+- Not run here: browser e2e, production deployment (no VPS access), sandbox tests (no bubblewrap).
 - The legacy per-fill `TradeMemory` writer is unchanged.
+
+## Review fixes (draft PR #48, review APPROVE WITH NOTES)
+
+Commit `eaf2e4b` on `pr/ascend-09` (after merge `237dbae` of `main` `4331e99`); additive migration `20261103090000_ascend09_review` (`AgentDecision.updatedAt`, a touch trigger for raw updates, a `TRUNCATE` trigger on `TradeLotSnapshot`). No protected path changed.
+
+| Finding | Fix |
+| --- | --- |
+| M1 backfill stall (200 orphan sells), pair cap drops fills, 10-minute lookback abandons fills | One row per candidate: snapshot or `SKIPPED` marker with reason; no lookback; skips counted and reported |
+| M2 upserted decisions keep `createdAt`; `Order.reasonCodes` read as current | `AgentDecision.updatedAt`; rewritten decisions excluded with `decisionUnavailable`; plan reason codes or a `ORDER_CURRENT_STATE` label |
+| L1 late-committing earlier fill | 60 s settle margin before a fill is a candidate |
+| L2 mark scope, truncation, clock | Environment and origin filter; `excursionTruncated`; `receivedAt` documented as stage clock |
+| L3 status name | `PNL_FEES_RECONCILED` |
+| L4 integrity, tamper wording, TRUNCATE | Identity checks against row columns; documented; `BEFORE TRUNCATE` trigger |
+
+Evidence (worktree `pr/ascend-09`, database `odin_test_a09`, Redis 7):
+
+| Check | Result |
+| --- | --- |
+| `pnpm vitest run apps/worker/src/trade-lot-memory.integration.test.ts` | 12 passed: settle margin, writer failure leaves the cycle `COMPLETE`, trading-row hashes unchanged, idempotency, prefix invariance (rebuild without truncation), decision rewritten by `upsertDecision` and by raw SQL excluded, UPDATE/DELETE/TRUNCATE rejected, EXIT snapshot, 205 orphan sells then an entry (200 + 6 rows over two runs), 210-fill backlog drained (105 ENTRY + 105 EXIT), fill cap markers, multi-account isolation |
+| `pnpm vitest run apps/api/src/trade-lots.auth.test.ts` | 4 passed: 401 without a token and with a bad token on all three endpoints; 200 with a valid one |
+| `pnpm vitest run packages/analytics/src` | 39 passed (entry view 11, lot history 12) |
+| `pnpm test` | 164 files passed, 4 skipped; **927 passed, 25 skipped** (sandbox tests, no bubblewrap) |
+| `pnpm typecheck`, `pnpm exec eslint .` | exit 0 |
+
+Mutation checks (reverted and confirmed by grep before the full run): **M1** (no marker for orphans and no fallback marker, i.e. the old stall) killed by the orphan-stall test (`written: 0`); **M2** (decision filter ignores `updatedAt`) killed by the unit and DB decision-rewrite tests. Removing the explicit `updatedAt` in `upsertDecision` alone would survive, by design: Prisma's `@updatedAt` and the DB trigger also set it.
