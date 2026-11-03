@@ -58,6 +58,7 @@ CREATE TABLE "ResearchApproval" (
     "approvedBy" TEXT NOT NULL,
     "approvedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "expiresAt" TIMESTAMP(3) NOT NULL,
+    "subjectHash" TEXT NOT NULL,
     "note" TEXT,
 
     CONSTRAINT "ResearchApproval_pkey" PRIMARY KEY ("id")
@@ -92,9 +93,9 @@ ALTER TABLE "ResearchLoopControl" ADD CONSTRAINT "ResearchLoopControl_bounds" CH
   "maxExperimentsPerDay" BETWEEN 0 AND 50
   AND "maxConcurrentExperiments" BETWEEN 1 AND 10
   AND "maxAttemptsPerExperiment" BETWEEN 1 AND 10
-  AND "tickRuntimeMs" BETWEEN 5000 AND 600000
-  AND "leaseMs" BETWEEN 10000 AND 3600000
-  AND "leaseMs" > "tickRuntimeMs"
+  AND "tickRuntimeMs" BETWEEN 70000 AND 600000
+  AND "leaseMs" BETWEEN 140000 AND 3600000
+  AND "leaseMs" >= 2 * "tickRuntimeMs"
 );
 
 ALTER TABLE "ResearchExperiment" ADD CONSTRAINT "ResearchExperiment_state_known" CHECK (
@@ -117,6 +118,8 @@ ALTER TABLE "ResearchApproval" ADD CONSTRAINT "ResearchApproval_action_known" CH
 
 ALTER TABLE "ResearchApproval" ADD CONSTRAINT "ResearchApproval_window" CHECK ("expiresAt" > "approvedAt");
 
+ALTER TABLE "ResearchApproval" ADD CONSTRAINT "ResearchApproval_subject" CHECK ("subjectHash" ~ '^[a-f0-9]{64}$');
+
 -- ASCEND-08: the transition log and operator approvals are append-only.
 CREATE FUNCTION odin_research_loop_append_only() RETURNS trigger AS $$
 BEGIN
@@ -132,15 +135,28 @@ CREATE TRIGGER "ResearchApproval_append_only"
   BEFORE UPDATE OR DELETE ON "ResearchApproval"
   FOR EACH ROW EXECUTE FUNCTION odin_research_loop_append_only();
 
--- ASCEND-08: a terminal experiment never changes state again, and experiments are never deleted
+-- TRUNCATE bypasses row triggers, so it is refused separately (including via TRUNCATE … CASCADE).
+CREATE TRIGGER "ResearchExperimentEvent_no_truncate"
+  BEFORE TRUNCATE ON "ResearchExperimentEvent"
+  FOR EACH STATEMENT EXECUTE FUNCTION odin_research_loop_append_only();
+
+CREATE TRIGGER "ResearchApproval_no_truncate"
+  BEFORE TRUNCATE ON "ResearchApproval"
+  FOR EACH STATEMENT EXECUTE FUNCTION odin_research_loop_append_only();
+
+CREATE TRIGGER "ResearchExperiment_no_truncate"
+  BEFORE TRUNCATE ON "ResearchExperiment"
+  FOR EACH STATEMENT EXECUTE FUNCTION odin_research_loop_append_only();
+
+-- ASCEND-08: a terminal experiment is frozen (no column may change), and experiments are never deleted
 -- (their events reference them). REVIEW may only be abandoned by the operator.
 CREATE FUNCTION odin_research_experiment_guard() RETURNS trigger AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'ResearchExperiment rows are never deleted (ASCEND-08)';
   END IF;
-  IF OLD."state" IN ('REJECTED', 'FAILED', 'ABANDONED') AND NEW."state" <> OLD."state" THEN
-    RAISE EXCEPTION 'ResearchExperiment % is terminal (%)', OLD."id", OLD."state";
+  IF OLD."state" IN ('REJECTED', 'FAILED', 'ABANDONED') THEN
+    RAISE EXCEPTION 'ResearchExperiment % is terminal (%) and frozen', OLD."id", OLD."state";
   END IF;
   IF OLD."state" = 'REVIEW' AND NEW."state" NOT IN ('REVIEW', 'ABANDONED') THEN
     RAISE EXCEPTION 'ResearchExperiment % in REVIEW may only be abandoned', OLD."id";

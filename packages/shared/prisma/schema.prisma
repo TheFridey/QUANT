@@ -1222,6 +1222,7 @@ model ResearchLoopControl {
   maxExperimentsPerDay     Int      @default(2)
   maxConcurrentExperiments Int      @default(2)
   maxAttemptsPerExperiment Int      @default(3)
+  /// At least 70 s so model stages always have time; leaseMs must be at least twice this.
   tickRuntimeMs            Int      @default(120000)
   leaseMs                  Int      @default(600000)
   updatedAt                DateTime @updatedAt
@@ -1275,8 +1276,8 @@ model ResearchExperimentEvent {
   @@index([kind, createdAt])
 }
 
-/// ASCEND-08: operator approval of one gated action for one experiment. Append-only (DB trigger);
-/// valid only while approvedAt <= now < expiresAt. The research loop never writes this table.
+/// ASCEND-08: operator approval of one gated action for one experiment, bound to its subject. Append-only
+/// (DB trigger); valid only while approvedAt <= now < expiresAt. The research loop never writes this table.
 model ResearchApproval {
   id           String   @id @default(cuid())
   experimentId String
@@ -1284,6 +1285,9 @@ model ResearchApproval {
   approvedBy   String
   approvedAt   DateTime @default(now())
   expiresAt    DateTime
+  /// SHA-256 of what was approved: the restated hypothesis (forge_code), the forged source and artifact
+  /// hashes (run_backtest), or the report content hash (promote_paper). It must match at gate time.
+  subjectHash  String
   note         String?
 
   experiment ResearchExperiment @relation(fields: [experimentId], references: [id], onDelete: Restrict)

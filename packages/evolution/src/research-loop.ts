@@ -64,8 +64,10 @@ export const RESEARCH_LOOP_LIMIT_BOUNDS = {
   maxExperimentsPerDay: { min: 0, max: 50 },
   maxConcurrentExperiments: { min: 1, max: 10 },
   maxAttemptsPerExperiment: { min: 1, max: 10 },
-  tickRuntimeMs: { min: 5_000, max: 600_000 },
-  leaseMs: { min: 10_000, max: 3_600_000 },
+  /** At least 70 s: a model stage needs up to 60 s plus margin, so a shorter tick could never run one. */
+  tickRuntimeMs: { min: 70_000, max: 600_000 },
+  /** Also at least 2 × tickRuntimeMs, so a lease cannot expire while its tick is still working. */
+  leaseMs: { min: 140_000, max: 3_600_000 },
 } as const;
 
 export const researchLoopControlBodySchema = z
@@ -74,14 +76,16 @@ export const researchLoopControlBodySchema = z
     maxExperimentsPerDay: z.number().int().min(0).max(50).optional(),
     maxConcurrentExperiments: z.number().int().min(1).max(10).optional(),
     maxAttemptsPerExperiment: z.number().int().min(1).max(10).optional(),
-    tickRuntimeMs: z.number().int().min(5_000).max(600_000).optional(),
-    leaseMs: z.number().int().min(10_000).max(3_600_000).optional(),
+    tickRuntimeMs: z.number().int().min(70_000).max(600_000).optional(),
+    leaseMs: z.number().int().min(140_000).max(3_600_000).optional(),
   })
   .strict();
 
 export const researchApprovalBodySchema = z
   .object({
     action: z.enum(["forge_code", "run_backtest", "promote_paper"]),
+    /** The subject the operator reviewed, as shown on the blocked experiment (`approvalRequest.subjectHash`). */
+    subjectHash: z.string().regex(/^[a-f0-9]{64}$/),
     /** Approval lifetime; default 24 h, at most 7 days. */
     ttlMinutes: z.number().int().min(1).max(10_080).default(1_440),
     note: z.string().max(1_000).optional(),
@@ -129,6 +133,8 @@ export type ResearchLoopDeps = {
   clock?: () => number;
   /** Test seam: awaited after the claim and before any experiment is advanced. */
   afterClaim?: (claimedIds: string[]) => Promise<void>;
+  /** Test seam (fault injection): awaited inside each transition's transaction, just before it commits. */
+  beforeCommit?: (experimentId: string, to: string) => Promise<void>;
 };
 
 export type ResearchLoopTickResult = {
@@ -142,6 +148,8 @@ export type ResearchLoopTickResult = {
   held: Array<{ id: string; state: string; reason: string }>;
   attemptsFailed: Array<{ id: string; state: string; reason: string }>;
   leaseLost: string[];
+  /** Experiments whose failure could not even be recorded (the lease then lapses at leaseExpiresAt). */
+  errors: Array<{ id: string; error: string }>;
   modelCalls: number;
   stoppedEarly: string | null;
 };
@@ -170,6 +178,7 @@ type TickEnv = {
   policy: AutonomyPolicy;
   control: ResearchLoopControlRow;
   deadline: number;
+  startedAt: number;
   clock: () => number;
   counters: { modelCalls: number };
 };
@@ -407,12 +416,45 @@ export async function findValidApproval(
   prisma: PrismaClient | Tx,
   experimentId: string,
   action: ApprovableAction,
+  subjectHash: string,
   now: Date,
 ) {
   return prisma.researchApproval.findFirst({
-    where: { experimentId, action, approvedAt: { lte: now }, expiresAt: { gt: now } },
+    where: { experimentId, action, subjectHash, approvedAt: { lte: now }, expiresAt: { gt: now } },
     orderBy: { approvedAt: "desc" },
   });
+}
+
+/**
+ * What an approval of `action` covers for this experiment: the restated hypothesis the forge will
+ * implement, the exact forged source and artifact the backtest will run, or the exact report the
+ * paper-candidate label rests on. Null while that subject does not exist yet (nothing to approve).
+ */
+export function approvalSubject(
+  experiment: { id: string; hypothesisId: string; context: unknown },
+  action: ApprovableAction,
+): { subjectHash: string; subject: Record<string, unknown> } | null {
+  const context = asContext(experiment.context);
+  let subject: Record<string, unknown>;
+  if (action === "forge_code") {
+    const hypothesis = asContext(context.hypothesis);
+    if (typeof hypothesis.falsifier !== "string" || typeof hypothesis.conditions !== "string") return null;
+    subject = {
+      action,
+      experimentId: experiment.id,
+      hypothesisId: experiment.hypothesisId,
+      hypothesis: { title: hypothesis.title ?? null, falsifier: hypothesis.falsifier, conditions: hypothesis.conditions },
+    };
+  } else if (action === "run_backtest") {
+    const forge = asContext(context.forge);
+    if (typeof forge.sourceHash !== "string" || typeof forge.artifactHash !== "string") return null;
+    subject = { action, experimentId: experiment.id, sourceHash: forge.sourceHash, artifactHash: forge.artifactHash };
+  } else {
+    const validate = asContext(context.validate);
+    if (typeof validate.reportId !== "string" || typeof validate.contentHash !== "string") return null;
+    subject = { action, experimentId: experiment.id, reportId: validate.reportId, contentHash: validate.contentHash };
+  }
+  return { subject, subjectHash: hashEvidence(subject) };
 }
 
 type GateDecision =
@@ -420,11 +462,14 @@ type GateDecision =
   | { proceed: false; deny: string }
   | { proceed: false; needsApproval: true; gateReason: string };
 
-async function gateAction(env: TickEnv, experimentId: string, action: ApprovableAction): Promise<GateDecision> {
+async function gateAction(env: TickEnv, row: ExperimentRow, action: ApprovableAction): Promise<GateDecision> {
   const gate = assertActionAllowed(env.policy, action);
   if (!gate.allowed) return { proceed: false, deny: gate.reason };
   if (!gate.requiresApproval) return { proceed: true, approvalId: null, gateReason: gate.reason };
-  const approval = await findValidApproval(env.prisma, experimentId, action, env.now);
+  const subject = approvalSubject(row, action);
+  if (!subject) return { proceed: false, needsApproval: true, gateReason: `${gate.reason}; no approvable subject recorded` };
+  // Validity is judged at gate time, not at tick start: an approval that lapsed during the tick is refused.
+  const approval = await findValidApproval(env.prisma, row.id, action, subject.subjectHash, new Date(env.clock()));
   if (!approval) return { proceed: false, needsApproval: true, gateReason: gate.reason };
   return { proceed: true, approvalId: approval.id, gateReason: gate.reason };
 }
@@ -449,6 +494,7 @@ export async function runResearchLoopTick(
     held: [],
     attemptsFailed: [],
     leaseLost: [],
+    errors: [],
     modelCalls: 0,
     stoppedEarly: null,
   };
@@ -474,6 +520,7 @@ export async function runResearchLoopTick(
     policy,
     control,
     deadline: clock() + control.tickRuntimeMs,
+    startedAt: clock(),
     clock,
     counters: { modelCalls: 0 },
   };
@@ -491,20 +538,103 @@ export async function runResearchLoopTick(
   });
   result.claimed = claimed.map((row) => row.id);
   result.reclaimed = reclaimed;
-  if (deps.afterClaim) await deps.afterClaim(result.claimed);
-
-  for (let index = 0; index < claimed.length; index += 1) {
-    const row = claimed[index]!;
-    const stillEnabled = (await readResearchLoopControl(prisma)).enabled;
-    if (!stillEnabled || clock() >= env.deadline) {
-      result.stoppedEarly = stillEnabled ? "TICK_RUNTIME_LIMIT" : "KILL_SWITCH_OFF";
-      for (const rest of claimed.slice(index)) await releaseLease(prisma, rest, deps.owner, null);
-      break;
+  const untouched = new Map(claimed.map((row) => [row.id, row]));
+  try {
+    if (deps.afterClaim) await deps.afterClaim(result.claimed);
+    for (const row of claimed) {
+      const stillEnabled = (await readResearchLoopControl(prisma)).enabled;
+      if (!stillEnabled || clock() >= env.deadline) {
+        result.stoppedEarly = stillEnabled ? "TICK_RUNTIME_LIMIT" : "KILL_SWITCH_OFF";
+        break;
+      }
+      untouched.delete(row.id);
+      await advanceSafely(env, row, result);
     }
-    await advanceOne(env, row, result);
+  } finally {
+    // Whatever happened above, no claimed experiment stays leased once the tick ends.
+    for (const rest of untouched.values()) {
+      try {
+        await releaseLease(prisma, rest, deps.owner, null);
+      } catch (error) {
+        result.errors.push({ id: rest.id, error: `LEASE_RELEASE_FAILED: ${errorMessage(error)}` });
+      }
+    }
+    result.modelCalls = env.counters.modelCalls;
   }
-  result.modelCalls = env.counters.modelCalls;
   return result;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * M1: an unexpected error while advancing one experiment (a database error, a transaction timeout, a
+ * failing side effect) is recorded as a failed attempt in a fresh compare-and-set transaction, so the
+ * retry ceiling still applies, and the tick goes on to the next experiment.
+ */
+async function advanceSafely(env: TickEnv, row: ExperimentRow, result: ResearchLoopTickResult): Promise<void> {
+  try {
+    await advanceOne(env, row, result);
+  } catch (error) {
+    try {
+      await recordAttemptFailure(env, row, `TICK_ERROR: ${errorMessage(error)}`, {}, result);
+    } catch (second) {
+      result.errors.push({ id: row.id, error: `${errorMessage(error)}; recording the attempt failed: ${errorMessage(second)}` });
+    }
+  }
+}
+
+/** Counts one failed attempt; at the ceiling the experiment becomes FAILED with the reason. */
+async function recordAttemptFailure(
+  env: TickEnv,
+  row: ExperimentRow,
+  reason: string,
+  extraEvidence: Record<string, unknown>,
+  result: ResearchLoopTickResult,
+): Promise<void> {
+  const attempts = row.attempts + 1;
+  const ceiling = attempts >= env.control.maxAttemptsPerExperiment;
+  const toState = ceiling ? "FAILED" : row.state;
+  const recordedReason = ceiling
+    ? `RETRY_CEILING: ${attempts}/${env.control.maxAttemptsPerExperiment} attempts; last error: ${reason}`
+    : reason;
+  const evidence = { attempts, maxAttempts: env.control.maxAttemptsPerExperiment, lastError: reason, ...extraEvidence, experimentVersion: row.version };
+  try {
+    await env.prisma.$transaction(async (tx) => {
+      const updated = await tx.researchExperiment.updateMany({
+        where: { id: row.id, leaseOwner: env.deps.owner, version: row.version },
+        data: {
+          attempts,
+          lastError: recordedReason,
+          ...(ceiling ? { state: "FAILED", blockedState: null } : {}),
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          version: { increment: 1 },
+        },
+      });
+      if (updated.count !== 1) throw new LeaseLostError(row.id);
+      await tx.researchExperimentEvent.create({
+        data: {
+          id: newId("rxev"),
+          experimentId: row.id,
+          kind: ceiling ? "TRANSITION" : "ATTEMPT_FAILED",
+          fromState: row.state,
+          toState,
+          actor: env.deps.owner,
+          reason: recordedReason,
+          evidence: toJson(evidence),
+          evidenceHash: hashEvidence(evidence),
+        },
+      });
+    });
+  } catch (error) {
+    if (!(error instanceof LeaseLostError)) throw error;
+    result.leaseLost.push(row.id);
+    return;
+  }
+  if (ceiling) result.advanced.push({ id: row.id, from: row.state, to: "FAILED", reason: recordedReason });
+  else result.attemptsFailed.push({ id: row.id, state: row.state, reason });
 }
 
 async function advanceOne(env: TickEnv, row: ExperimentRow, result: ResearchLoopTickResult): Promise<void> {
@@ -516,6 +646,9 @@ async function advanceOne(env: TickEnv, row: ExperimentRow, result: ResearchLoop
       reason: `RETRY_CEILING: ${row.attempts}/${env.control.maxAttemptsPerExperiment} attempts; last error: ${row.lastError ?? "none"}`,
       evidence: { attempts: row.attempts, lastError: row.lastError },
     };
+  } else if (leaseRemainingMs(env, row) < Math.max(env.deadline - env.clock(), 0) + 10_000) {
+    // L1: never start stage work the lease might not cover (it would be reclaimed mid-work).
+    outcome = { kind: "hold", reason: "LEASE_TOO_SHORT: remaining lease does not cover the rest of the tick" };
   } else {
     try {
       outcome = await runStage(env, row);
@@ -532,53 +665,16 @@ async function advanceOne(env: TickEnv, row: ExperimentRow, result: ResearchLoop
   }
 
   if (outcome.kind === "attempt_failed") {
-    const failure = outcome;
-    const attempts = row.attempts + 1;
-    if (attempts >= env.control.maxAttemptsPerExperiment) {
-      return commitAdvance(
-        env,
-        row,
-        {
-          kind: "advance",
-          to: "FAILED",
-          reason: `RETRY_CEILING: ${attempts}/${env.control.maxAttemptsPerExperiment} attempts; last error: ${failure.reason}`,
-          evidence: { attempts, lastError: failure.reason, ...(failure.evidence ?? {}) },
-        },
-        result,
-        attempts,
-      );
-    }
-    try {
-      await env.prisma.$transaction(async (tx) => {
-        const updated = await tx.researchExperiment.updateMany({
-          where: { id: row.id, leaseOwner: env.deps.owner, version: row.version },
-          data: { attempts, lastError: failure.reason, leaseOwner: null, leaseExpiresAt: null, version: { increment: 1 } },
-        });
-        if (updated.count !== 1) throw new LeaseLostError(row.id);
-        const evidence = { attempts, maxAttempts: env.control.maxAttemptsPerExperiment, ...(failure.evidence ?? {}) };
-        await tx.researchExperimentEvent.create({
-          data: {
-            id: newId("rxev"),
-            experimentId: row.id,
-            kind: "ATTEMPT_FAILED",
-            fromState: row.state,
-            toState: row.state,
-            actor: env.deps.owner,
-            reason: failure.reason,
-            evidence: toJson(evidence),
-            evidenceHash: hashEvidence(evidence),
-          },
-        });
-      });
-      result.attemptsFailed.push({ id: row.id, state: row.state, reason: failure.reason });
-    } catch (error) {
-      if (!(error instanceof LeaseLostError)) throw error;
-      result.leaseLost.push(row.id);
-    }
-    return;
+    return recordAttemptFailure(env, row, outcome.reason, outcome.evidence ?? {}, result);
   }
 
   return commitAdvance(env, row, outcome, result, row.attempts);
+}
+
+/** Lease time left, on the tick's logical clock (`now` plus the wall time elapsed since the tick began). */
+function leaseRemainingMs(env: TickEnv, row: ExperimentRow): number {
+  if (!row.leaseExpiresAt) return 0;
+  return row.leaseExpiresAt.getTime() - (env.now.getTime() + (env.clock() - env.startedAt));
 }
 
 async function commitAdvance(
@@ -629,6 +725,7 @@ async function commitAdvance(
         },
       });
       if (outcome.sideEffects) await outcome.sideEffects(tx);
+      if (env.deps.beforeCommit) await env.deps.beforeCommit(row.id, outcome.to);
     });
     result.advanced.push({ id: row.id, from: row.state, to: outcome.to, reason: outcome.reason });
   } catch (error) {
@@ -645,7 +742,7 @@ async function runStage(env: TickEnv, row: ExperimentRow): Promise<StageOutcome>
   const state = row.state as ResearchExperimentState;
   if (state === "BLOCKED_APPROVAL") return unblock(env, row);
   if (isGatedStage(state)) {
-    const decision = await gateAction(env, row.id, GATED_STAGE_ACTIONS[state]);
+    const decision = await gateAction(env, row, GATED_STAGE_ACTIONS[state]);
     if (!decision.proceed) {
       if ("deny" in decision) return { kind: "hold", reason: `DENIED: ${decision.deny}` };
       return {
@@ -680,7 +777,7 @@ async function unblock(env: TickEnv, row: ExperimentRow): Promise<StageOutcome> 
   if (!target || !isGatedStage(target)) {
     return { kind: "advance", to: "FAILED", reason: "BLOCKED_APPROVAL without a valid blockedState", evidence: { blockedState: target } };
   }
-  const decision = await gateAction(env, row.id, GATED_STAGE_ACTIONS[target]);
+  const decision = await gateAction(env, row, GATED_STAGE_ACTIONS[target]);
   if (!decision.proceed) {
     if ("deny" in decision) return { kind: "hold", reason: `DENIED: ${decision.deny}` };
     return { kind: "hold", reason: `AWAITING_APPROVAL: ${GATED_STAGE_ACTIONS[target]}` };
@@ -1348,7 +1445,7 @@ export async function setResearchLoopControl(prisma: PrismaClient, body: unknown
   const parsed = researchLoopControlBodySchema.parse(body);
   const current = await readResearchLoopControl(prisma);
   const next = { ...current, ...Object.fromEntries(Object.entries(parsed).filter(([, value]) => value !== undefined)) };
-  if (next.leaseMs <= next.tickRuntimeMs) throw new Error("leaseMs must exceed tickRuntimeMs");
+  if (next.leaseMs < 2 * next.tickRuntimeMs) throw new Error("leaseMs must be at least twice tickRuntimeMs");
   const data = {
     enabled: next.enabled,
     maxExperimentsPerDay: next.maxExperimentsPerDay,
@@ -1404,8 +1501,19 @@ export async function recordResearchApproval(
   const parsed = researchApprovalBodySchema.parse(body);
   const experiment = await prisma.researchExperiment.findUnique({ where: { id: experimentId } });
   if (!experiment) return { ok: false as const, error: "EXPERIMENT_NOT_FOUND" };
-  if (isTerminalExperimentState(experiment.state) || experiment.state === "REVIEW") {
-    return { ok: false as const, error: `EXPERIMENT_NOT_ACTIVE: ${experiment.state}` };
+  // M2: an approval answers a pending request. It is refused before the experiment asks for it,
+  // for any other action than the one it is blocked on, and for any subject other than the current one.
+  if (experiment.state !== "BLOCKED_APPROVAL" || !experiment.blockedState || !isGatedStage(experiment.blockedState)) {
+    return { ok: false as const, error: `APPROVAL_NOT_REQUESTED: experiment is in ${experiment.state}` };
+  }
+  const requested = GATED_STAGE_ACTIONS[experiment.blockedState];
+  if (parsed.action !== requested) {
+    return { ok: false as const, error: `ACTION_MISMATCH: experiment awaits ${requested}, not ${parsed.action}` };
+  }
+  const subject = approvalSubject(experiment, parsed.action);
+  if (!subject) return { ok: false as const, error: "SUBJECT_UNAVAILABLE: nothing recorded to approve" };
+  if (subject.subjectHash !== parsed.subjectHash) {
+    return { ok: false as const, error: `SUBJECT_MISMATCH: current subject is ${subject.subjectHash}` };
   }
   const approval = await prisma.researchApproval.create({
     data: {
@@ -1415,6 +1523,7 @@ export async function recordResearchApproval(
       approvedBy,
       approvedAt: now,
       expiresAt: new Date(now.getTime() + parsed.ttlMinutes * 60_000),
+      subjectHash: subject.subjectHash,
       note: parsed.note ?? null,
     },
   });
@@ -1473,6 +1582,10 @@ export async function listResearchExperiments(prisma: PrismaClient) {
       strategyId: forgeContext.strategyId ?? null,
       sourceHash: forgeContext.sourceHash ?? null,
       reportId: asContext(context.validate).reportId ?? null,
+      approvalRequest:
+        row.state === "BLOCKED_APPROVAL" && row.blockedState && isGatedStage(row.blockedState)
+          ? { action: GATED_STAGE_ACTIONS[row.blockedState], ...(approvalSubject(row, GATED_STAGE_ACTIONS[row.blockedState]) ?? { subjectHash: null, subject: null }) }
+          : null,
     };
   });
 }
