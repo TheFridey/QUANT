@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./genesis": {
+      "types": "./dist/genesis/index.d.ts",
+      "default": "./dist/genesis/index.js"
     }
   },
   "scripts": {

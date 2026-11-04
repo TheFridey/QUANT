@@ -530,6 +530,8 @@ model Hypothesis {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  modelVersions ModelVersion[]
+
   @@index([status, createdAt])
   @@index([market])
 }
@@ -1327,4 +1329,142 @@ model ResearchApproval {
   experiment ResearchExperiment @relation(fields: [experimentId], references: [id], onDelete: Restrict)
 
   @@index([experimentId, action, expiresAt])
+}
+
+/// GENESIS Phase 5: one registered model version. Immutable (DB trigger refuses UPDATE, DELETE, TRUNCATE).
+/// `artefact` is data only (coefficients, trees, calibrator parameters); `artefactHash` is the SHA-256 of its
+/// canonical JSON, verified on insert and re-verified on every load. Never code; never evaluated.
+model ModelVersion {
+  id               String   @id @default(cuid())
+  family           String
+  version          String
+  protocol         String
+  trainingCutoff   DateTime
+  /// Set from the database clock by the insert trigger.
+  createdAt        DateTime @default(now())
+  registeredBy     String
+  datasetHashes    String[]
+  featureSetHash   String
+  labelSpecHash    String
+  codeCommit       String
+  hyperparameters  Json
+  labelDefinition  Json
+  trainingProtocol Json
+  validation       Json
+  evidenceLinks    String[]
+  artefact         Json
+  artefactHash     String
+  /// Optional link to the research hypothesis the model tests.
+  hypothesisId     String?
+
+  hypothesis  Hypothesis?           @relation(fields: [hypothesisId], references: [id], onDelete: Restrict)
+  events      ModelLifecycleEvent[]
+  approvals   ModelPaperApproval[]
+  predictions ShadowPrediction[]
+
+  @@unique([family, version])
+  @@index([artefactHash])
+  @@index([hypothesisId])
+}
+
+/// GENESIS Phase 5: operator approval of one artefact for the PAPER_APPROVED evidence label. Append-only.
+/// It grants no trading authority: the operator promotion process (packages/evolution/src/promotion.ts) stays
+/// the only route to a paper strategy.
+model ModelPaperApproval {
+  id             String   @id @default(cuid())
+  modelVersionId String
+  approvedBy     String
+  approvedAt     DateTime @default(now())
+  expiresAt      DateTime
+  /// Must equal the model's artefactHash (DB trigger).
+  subjectHash    String
+  note           String?
+
+  modelVersion ModelVersion          @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
+  events       ModelLifecycleEvent[]
+
+  @@index([modelVersionId, expiresAt])
+}
+
+/// GENESIS Phase 5: append-only lifecycle chain of a model (seq 0 = EXPERIMENTAL). The current state is the
+/// toState of the highest seq. States are evidence labels only and grant no trading authority.
+model ModelLifecycleEvent {
+  id             String   @id @default(cuid())
+  modelVersionId String
+  seq            Int
+  fromState      String?
+  toState        String
+  actor          String
+  reason         String
+  evidence       Json
+  evidenceHash   String
+  approvalId     String?
+  /// Set from the database clock by the insert trigger.
+  createdAt      DateTime @default(now())
+
+  modelVersion ModelVersion        @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
+  approval     ModelPaperApproval? @relation(fields: [approvalId], references: [id], onDelete: Restrict)
+
+  @@unique([modelVersionId, seq])
+  @@index([toState, createdAt])
+}
+
+/// GENESIS Phase 6: one shadow prediction (or abstention) of a model for one decision bar. Append-only;
+/// written after the decision bar closes and before the horizon ends (CHECK + insert trigger).
+model ShadowPrediction {
+  id                  String   @id @default(cuid())
+  modelVersionId      String
+  instrumentKey       String
+  /// PREDICTED | ABSTAINED
+  status              String
+  predictedAt         DateTime
+  decisionBarOpenTime DateTime
+  /// Close of the decision bar (decisionBarOpenTime + barMs).
+  decisionTime        DateTime
+  barMs               Int
+  horizonBars         Int
+  /// Close of the last horizon bar (decisionBarOpenTime + (horizonBars + 1) * barMs).
+  horizonEndsAt       DateTime
+  features            Json
+  featureHash         String
+  probability         Float?
+  expectedNetReturn   Float?
+  confidenceBasis     String
+  /// Round-trip cost estimate (fee + slippage on both sides), bps.
+  estimatedCostBps    Float
+  abstainReasons      String[]
+  inputHash           String
+  recordHash          String
+  /// Set from the database clock by the insert trigger.
+  createdAt           DateTime @default(now())
+
+  modelVersion ModelVersion   @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
+  outcome      ShadowOutcome?
+
+  @@unique([modelVersionId, instrumentKey, decisionBarOpenTime])
+  @@index([modelVersionId, decisionTime])
+  @@index([status, horizonEndsAt])
+}
+
+/// GENESIS Phase 6: hypothetical outcome of one shadow prediction, at most one per prediction. Append-only.
+/// source is always HYPOTHETICAL_SHADOW: these rows are never paper fills and never enter the ledger.
+model ShadowOutcome {
+  id                        String   @id @default(cuid())
+  predictionId              String   @unique
+  resolvedAt                DateTime
+  hypotheticalFillAvailable Boolean
+  realisedNetReturn         Float?
+  positive                  Boolean?
+  mae                       Float?
+  mfe                       Float?
+  exitReason                String?
+  /// Round-trip cost applied (fee + slippage on both sides), bps.
+  costBpsApplied            Float
+  source                    String   @default("HYPOTHETICAL_SHADOW")
+  barsHash                  String
+  recordHash                String
+  /// Set from the database clock by the insert trigger.
+  createdAt                 DateTime @default(now())
+
+  prediction ShadowPrediction @relation(fields: [predictionId], references: [id], onDelete: Restrict)
 }
