@@ -65,7 +65,7 @@ import {
   type StrategyConfig,
 } from "@odin/shared";
 import { PrismaClient, toJson } from "@odin/shared/db";
-import { queryHistoricalDrawdown } from "./historical-drawdown.js";
+import { HistoricalDrawdownCache, queryHistoricalDrawdown } from "./historical-drawdown.js";
 import { resetPaperBalance } from "./paper-balance.js";
 import {
   allowedActions,
@@ -81,6 +81,11 @@ export class TerminalService {
     private readonly prisma: PrismaClient,
     @InjectQueue(QUEUES.ingest) private readonly ingest: Queue,
   ) {}
+
+  /** All-history drawdown, cached per account for 30 s so dashboard polling does not rescan. */
+  private readonly historicalDrawdownCache = new HistoricalDrawdownCache((accountId) =>
+    queryHistoricalDrawdown(this.prisma, accountId),
+  );
 
   /** Ping Redis over the ingest queue's existing client; no new connection per snapshot. */
   private async queueRedisUp(): Promise<boolean> {
@@ -215,11 +220,11 @@ export class TerminalService {
         take: closedTradeLimit, // analyticsWindows.closedTrades — latest N, not calendar ALL
       }),
     );
-    // Max drawdown is measured over ALL equity snapshots in PostgreSQL (single-row
-    // window-function aggregate). The former earliest-500 sample missed every later
-    // drawdown and reported 0.00% on a long-running account.
+    // Max drawdown is measured over ALL equity snapshots in PostgreSQL (single-pass
+    // window-function query, cached per account for 30 s). The former earliest-500
+    // sample missed every later drawdown and reported 0.00% on a long-running account.
     const historicalDrawdown = await timed("historical_drawdown", true, () =>
-      queryHistoricalDrawdown(this.prisma, metricsAccountId),
+      this.historicalDrawdownCache.get(metricsAccountId),
     );
     const report = performanceReport({
       valuation,
