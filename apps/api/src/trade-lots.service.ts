@@ -20,7 +20,7 @@ import { TerminalService } from "./terminal.service.js";
 export const MAX_ACCOUNT_FILLS = 50_000;
 const MAX_MARKS_PER_LOT = 5_000;
 
-type Loaded = { accountId: string; history: LotHistory; truncated: boolean; fillCount: number };
+export type Loaded = { accountId: string; history: LotHistory; truncated: boolean; fillCount: number };
 
 /**
  * ASCEND-09 read-only lot history API: lots rebuilt from the active account's fills, one lot's timeline
@@ -34,7 +34,8 @@ export class TradeLotsService {
     private readonly terminal: TerminalService,
   ) {}
 
-  private async load(now: Date): Promise<Loaded> {
+  /** Also read by FeedbackService (GENESIS Phase 7), so not private. */
+  async load(now: Date): Promise<Loaded> {
     const accountId = await this.terminal.activeAccountId();
     const rows = await this.prisma.fill.findMany({
       where: { order: { accountId } },
@@ -63,7 +64,7 @@ export class TradeLotsService {
   }
 
   /** Environment and origin of the entry fill's observation: marks from another environment never mix in. */
-  private async markScope(lot: Lot): Promise<{ tradingEnvironment?: string; dataOrigin?: string }> {
+  async markScope(lot: Lot): Promise<{ tradingEnvironment?: string; dataOrigin?: string }> {
     const entry = await this.prisma.fill.findUnique({ where: { id: lot.entryFillId }, select: { observationId: true } });
     if (!entry?.observationId) return {};
     const observation = await this.prisma.marketObservation.findUnique({ where: { id: entry.observationId }, select: { tradingEnvironment: true, dataOrigin: true } });

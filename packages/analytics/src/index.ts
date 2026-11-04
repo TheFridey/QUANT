@@ -6,3 +6,4 @@ export * from "./snapshot-cost.js";
 export * from "./trade-autopsy.js";
 export * from "./lot-history.js";
 export * from "./entry-view.js";
+export * from "./feedback.js";
