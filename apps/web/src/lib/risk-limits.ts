@@ -23,7 +23,7 @@ export const RISK_LIMIT_FIELDS: readonly RiskLimitField[] = [
   {
     key: "maxDailyLossPct",
     label: "Max daily loss %",
-    help: "Of start-of-day equity (Europe/London). Once reached, new entries stay blocked until the next London day.",
+    help: "Of start-of-day equity (Europe/London). Once reached, new entries stay blocked and the circuit breaker opens until the next London day, even if equity recovers.",
     min: "0.1",
     max: "100",
     defaultValue: "3",
@@ -31,7 +31,7 @@ export const RISK_LIMIT_FIELDS: readonly RiskLimitField[] = [
   {
     key: "maxTotalDrawdownPct",
     label: "Max total drawdown %",
-    help: "Below the account high-water mark. Blocks new entries and opens the circuit breaker.",
+    help: "Below the account high-water mark. While breached, new entries are blocked and the circuit breaker is open; it clears when equity recovers.",
     min: "0.1",
     max: "100",
     defaultValue: "10",
@@ -131,23 +131,24 @@ export function riskDraftNotes(draft: RiskLimitDraft, account: RiskLimitAccount)
   if (Number.isFinite(daily) && Number.isFinite(total) && daily >= total) {
     notes.push({
       tone: "warning",
-      text: `A ${daily}% daily limit cannot bind while total drawdown is ${total}%: the high-water mark is never below start-of-day equity, so the total-drawdown limit always trips first.`,
+      text: `With daily ${daily}% at or above total ${total}%, the total-drawdown limit always trips first (the high-water mark is never below start-of-day equity). The daily limit then only adds a block for the rest of the London day after a loss of ${daily}% or more.`,
     });
   }
   const equity = account.equityUsd === null ? NaN : Number(account.equityUsd);
   const hwm = account.highWaterMarkUsd === null ? NaN : Number(account.highWaterMarkUsd);
   if (Number.isFinite(equity) && Number.isFinite(hwm) && hwm > 0 && Number.isFinite(total)) {
     const drawdown = ((hwm - equity) / hwm) * 100;
-    const resumeAt = hwm * (1 - total / 100);
+    // Entries are blocked at drawdown >= limit, so admission needs equity strictly above this; round up to the cent.
+    const resumeAt = Math.ceil(hwm * (1 - total / 100) * 100) / 100;
     if (drawdown >= total) {
       notes.push({
         tone: "warning",
-        text: `Current drawdown is ${drawdown.toFixed(2)}%, at or above a ${total}% limit: new entries stay blocked (TOTAL_DRAWDOWN_LIMIT) until equity reaches $${resumeAt.toFixed(2)}.`,
+        text: `Current drawdown is ${drawdown.toFixed(2)}%, at or above a ${total}% limit: new entries stay blocked (TOTAL_DRAWDOWN_LIMIT) until equity is above $${resumeAt.toFixed(2)}. Other limits may still block.`,
       });
     } else {
       notes.push({
         tone: "info",
-        text: `Current drawdown is ${drawdown.toFixed(2)}%; a ${total}% limit leaves room to $${resumeAt.toFixed(2)} equity before entries are blocked.`,
+        text: `Current drawdown is ${drawdown.toFixed(2)}%; a ${total}% limit blocks new entries once equity falls to $${resumeAt.toFixed(2)} or below. Other limits may still block.`,
       });
     }
   }

@@ -128,7 +128,7 @@ export function RiskLimitsPanel() {
   }
 
   async function confirm() {
-    if (!pending) return;
+    if (!pending || conflict) return;
     setBusy(true);
     setMessage(null);
     try {
@@ -139,7 +139,7 @@ export function RiskLimitsPanel() {
       setConflict(false);
       await refresh();
       await loadHistory();
-      setMessage({ ok: true, text: "Risk limits saved and recorded in the config history. The engine is still paused; resume it when ready." });
+      setMessage({ ok: true, text: "Risk limits saved and recorded in the config history. The engine has not been resumed; resume it when ready." });
     } catch (caught) {
       setMessage({ ok: false, text: caught instanceof Error ? caught.message : "Change rejected" });
     } finally {
@@ -163,12 +163,16 @@ export function RiskLimitsPanel() {
           engine, and every change is recorded with your name in the config history. Saving never resumes the engine.
         </p>
 
-        {!paused ? (
+        {status === "RUNNING" ? (
           <div className="flex flex-wrap items-center gap-3 rounded border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning" role="status">
-            <span>The engine is {status}. Pause it to change risk limits.</span>
+            <span>The engine is RUNNING. Pause it to change risk limits.</span>
             <Button type="button" size="xs" variant="warning" onClick={() => void control("/engine/pause")}>
               Pause engine
             </Button>
+          </div>
+        ) : !paused ? (
+          <div className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning" role="status">
+            The engine is {status ?? "unknown"}. Risk limits can be changed only while it is paused or stopped.
           </div>
         ) : null}
 
@@ -227,7 +231,7 @@ export function RiskLimitsPanel() {
               ))}
             </ul>
             <div className="flex flex-wrap gap-2">
-              <Button type="button" size="sm" disabled={busy} onClick={() => void confirm()}>
+              <Button type="button" size="sm" disabled={busy || conflict} onClick={() => void confirm()}>
                 {busy ? "Saving…" : "Confirm and save"}
               </Button>
               <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setPending(null)}>
@@ -244,7 +248,7 @@ export function RiskLimitsPanel() {
         ) : null}
 
         <div className="flex flex-wrap gap-2">
-          <Button type="submit" className="w-fit" disabled={!paused || !valid || changes.length === 0 || pending !== null}>
+          <Button type="submit" className="w-fit" disabled={!paused || !valid || conflict || changes.length === 0 || pending !== null}>
             Review changes
           </Button>
           <Button type="button" variant="outline" className="w-fit" onClick={setDefaults}>

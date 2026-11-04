@@ -11,6 +11,9 @@ test("operator edits PAPER risk limits from Settings through the audited config 
   const original = String(before.engine.config.maxDailyLossPct);
   const originalStatus = before.engine.status;
   const next = original === "4" ? "5" : "4";
+  // Only RUNNING and PAUSED can be restored exactly afterwards.
+  test.skip(originalStatus !== "RUNNING" && originalStatus !== "PAUSED", `engine is ${originalStatus}`);
+  let saved = false;
 
   try {
     await ensureEngineStatus(page, "RUNNING");
@@ -35,6 +38,7 @@ test("operator edits PAPER risk limits from Settings through the audited config 
     await expect(confirmBox).toContainText(`Max daily loss %: ${original} → ${next}`);
     await confirmBox.getByRole("button", { name: "Confirm and save" }).click();
     await expect(panel.getByText(/Risk limits saved/)).toBeVisible({ timeout: 15_000 });
+    saved = true;
 
     const after = await snapshot(page);
     expect(String(after.engine.config.maxDailyLossPct)).toBe(next);
@@ -48,9 +52,14 @@ test("operator edits PAPER risk limits from Settings through the audited config 
     expect(latest?.actor).toBeTruthy();
     await expect(panel.getByText(`maxDailyLossPct ${original} → ${next}`)).toBeVisible();
   } finally {
-    // Restore the throwaway e2e account for later specs.
-    await ensureEngineStatus(page, "PAUSED");
-    await apiFromPage(page, "/engine/config", { method: "PATCH", body: { maxDailyLossPct: original } });
-    if (originalStatus === "RUNNING") await ensureEngineStatus(page, "RUNNING");
+    // Restore the throwaway e2e account for later specs, even if a status change fails.
+    try {
+      await ensureEngineStatus(page, "PAUSED");
+    } finally {
+      if (saved || String((await snapshot(page)).engine.config.maxDailyLossPct) !== original) {
+        await apiFromPage(page, "/engine/config", { method: "PATCH", body: { maxDailyLossPct: original } });
+      }
+      await ensureEngineStatus(page, originalStatus as "RUNNING" | "PAUSED");
+    }
   }
 });

@@ -30,7 +30,8 @@ describe("risk limits editor", () => {
     const notes = riskDraftNotes({ ...defaults, maxDailyLossPct: "15" }, { equityUsd: null, highWaterMarkUsd: null });
     expect(notes).toHaveLength(1);
     expect(notes[0]?.tone).toBe("warning");
-    expect(notes[0]?.text).toContain("cannot bind");
+    expect(notes[0]?.text).toContain("always trips first");
+    expect(notes[0]?.text).toContain("rest of the London day");
     expect(riskDraftNotes(defaults, { equityUsd: null, highWaterMarkUsd: null })).toEqual([]);
   });
 
@@ -39,10 +40,11 @@ describe("risk limits editor", () => {
     const blocked = riskDraftNotes(defaults, account);
     expect(blocked[0]).toEqual({
       tone: "warning",
-      text: "Current drawdown is 10.02%, at or above a 10% limit: new entries stay blocked (TOTAL_DRAWDOWN_LIMIT) until equity reaches $9095.40.",
+      // True threshold 9095.4019; equity must be strictly above it.
+      text: "Current drawdown is 10.02%, at or above a 10% limit: new entries stay blocked (TOTAL_DRAWDOWN_LIMIT) until equity is above $9095.41. Other limits may still block.",
     });
     const room = riskDraftNotes({ ...defaults, maxTotalDrawdownPct: "20" }, account);
     expect(room[0]?.tone).toBe("info");
-    expect(room[0]?.text).toContain("$8084.80");
+    expect(room[0]?.text).toContain("$8084.81");
   });
 });
