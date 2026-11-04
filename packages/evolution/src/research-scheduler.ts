@@ -7,11 +7,13 @@ import { isTerminalExperimentState } from "./research-loop-states.js";
  * Eligibility (checked first; skipped hypotheses are reported with the reason):
  * - ACTIVE_OR_IN_REVIEW: the hypothesis already has a non-terminal experiment (including REVIEW).
  * - OPERATOR_ABANDONED: an earlier experiment of the hypothesis was ABANDONED (an operator decision is not retried).
- * - NO_NEW_EVIDENCE: earlier experiments all ended (REJECTED or FAILED) and no dataset of the hypothesis has a
- *   versionHash none of them was pinned to. A failed hypothesis is retried only on new data.
+ * - NO_NEW_EVIDENCE: earlier experiments all ended (REJECTED or FAILED) and the dataset HYPOTHESISE would pin now
+ *   (`choosePinnedDataset`: most bars, then lowest id, the order `pinResearchDataset` uses) has the same id and
+ *   versionHash as one an earlier experiment was pinned to. A failed hypothesis is retried only on new data for that
+ *   choice; another dataset of the hypothesis that would never be pinned is not new evidence.
  *
  * Score (integers; higher first):
- * - knowledgeGap = floor(400 / (1 + fewest measured trials on any of its datasets)); 0 when it has no dataset.
+ * - knowledgeGap = floor(400 / (1 + measured trials on the dataset it would pin)); 0 when it has no dataset.
  * - familyGap    = floor(200 / (1 + measured trials in its strategy family)).
  * - newData      = 300 when it was tried before and a dataset version changed since (the retry reason).
  * - untried      = 100 when it never had an experiment.
@@ -23,7 +25,7 @@ export type TaskCandidate = {
   hypothesisId: string;
   createdAt: string;
   family: string;
-  datasets: Array<{ datasetId: string; versionHash: string }>;
+  datasets: Array<{ datasetId: string; versionHash: string; barCount: number }>;
   priorExperiments: Array<{ state: string; pinned: { datasetId: string; versionHash: string } | null }>;
 };
 
@@ -39,6 +41,11 @@ export type ScoredTask = {
 export type TaskSkip = { hypothesisId: string; reason: "ACTIVE_OR_IN_REVIEW" | "OPERATOR_ABANDONED" | "NO_NEW_EVIDENCE" };
 
 export const TASK_SCORER_VERSION = "genesis-scorer-1";
+
+/** The dataset HYPOTHESISE would pin: most bars, then lowest id (the same order as `pinResearchDataset`). */
+export function choosePinnedDataset<T extends { datasetId: string; barCount: number }>(datasets: readonly T[]): T | null {
+  return [...datasets].sort((a, b) => b.barCount - a.barCount || (a.datasetId < b.datasetId ? -1 : a.datasetId > b.datasetId ? 1 : 0))[0] ?? null;
+}
 
 export function familyOfMarket(market: string): string {
   return `FORGED_SANDBOX:${market}`;
@@ -59,13 +66,14 @@ export function scoreResearchTasks(candidates: readonly TaskCandidate[], stats: 
     }
     const tried = prior.length > 0;
     const pinned = new Set(prior.flatMap((row) => (row.pinned ? [`${row.pinned.datasetId}@${row.pinned.versionHash}`] : [])));
-    const newEvidence = candidate.datasets.some((dataset) => !pinned.has(`${dataset.datasetId}@${dataset.versionHash}`));
+    const choice = choosePinnedDataset(candidate.datasets);
+    const newEvidence = choice !== null && !pinned.has(`${choice.datasetId}@${choice.versionHash}`);
     if (tried && !newEvidence) {
       skipped.push({ hypothesisId: candidate.hypothesisId, reason: "NO_NEW_EVIDENCE" });
       continue;
     }
-    const hasData = candidate.datasets.length > 0;
-    const fewestTrials = hasData ? Math.min(...candidate.datasets.map((dataset) => stats.trialsByDataset[dataset.datasetId] ?? 0)) : 0;
+    const hasData = choice !== null;
+    const fewestTrials = choice ? (stats.trialsByDataset[choice.datasetId] ?? 0) : 0;
     const components = {
       knowledgeGap: hasData ? Math.floor(400 / (1 + fewestTrials)) : 0,
       familyGap: hasData ? Math.floor(200 / (1 + (stats.trialsByFamily[candidate.family] ?? 0))) : 0,
@@ -108,7 +116,7 @@ export async function gatherTaskCandidates(tx: Prisma.TransactionClient, limit =
     tx.historicalDataset.findMany({
       where: { instrumentKey: { in: instruments }, versionHash: { not: null }, barCount: { gt: 0 } },
       orderBy: { id: "asc" },
-      select: { id: true, instrumentKey: true, versionHash: true },
+      select: { id: true, instrumentKey: true, versionHash: true, barCount: true },
     }),
     // Measured experiments (TEST → CHALLENGE). The most recent 5 000 bound the read; older trials still count in
     // the programme totals recorded at VALIDATE.
@@ -131,7 +139,7 @@ export async function gatherTaskCandidates(tx: Prisma.TransactionClient, limit =
     hypothesisId: row.id,
     createdAt: row.createdAt.toISOString(),
     family: familyOfMarket(row.market),
-    datasets: datasets.filter((dataset) => row.instrumentIds.includes(dataset.instrumentKey)).map((dataset) => ({ datasetId: dataset.id, versionHash: dataset.versionHash! })),
+    datasets: datasets.filter((dataset) => row.instrumentIds.includes(dataset.instrumentKey)).map((dataset) => ({ datasetId: dataset.id, versionHash: dataset.versionHash!, barCount: dataset.barCount })),
     priorExperiments: experiments.filter((experiment) => experiment.hypothesisId === row.id).map((experiment) => ({ state: experiment.state, pinned: pinnedOf(experiment.context) })),
   }));
   return { candidates, stats };

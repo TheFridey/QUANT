@@ -11,7 +11,7 @@ import { hashEvidence } from "./lifecycle.js";
  *   different strategy name. Identity is the canonical source, never the name.
  * - HOLDOUT_REUSED: a `ResearchHoldoutAccess` row already exists for this candidate (name-independent key) or for
  *   its strategy name, on this dataset or any sibling dataset of the same instrument and interval (the
- *   SINGULARITY-00 holdout policy). The unique key (strategy × version × dataset) backs the exact case in the DB.
+ *   SINGULARITY-00 holdout policy), or the same hypothesis already measured this dataset version under any source. The unique key (strategy × version × dataset) backs the exact case in the DB.
  */
 
 export const CANDIDATE_IDENTITY_VERSION = "canonical-v1";
@@ -120,6 +120,7 @@ export async function checkRedundancy(
   reader: RedundancyReader,
   input: {
     experimentId: string;
+    hypothesisId: string;
     identity: CandidateIdentity;
     dataset: { datasetId: string; versionHash: string; instrumentKey: string; interval: string };
   },
@@ -161,6 +162,23 @@ export async function checkRedundancy(
   if (renamed) {
     const prior = ((renamed.evidence as Record<string, unknown>).candidate as Record<string, unknown>).strategyId;
     return { ok: false, code: "RENAMED_CANDIDATE", detail: `Same canonical source was measured on ${dataset.instrumentKey}/${dataset.interval} as ${String(prior)} (experiment ${renamed.experimentId})`, evidence: { ...base, priorExperimentId: renamed.experimentId, priorStrategyId: prior, strategyId: identity.strategyId } };
+  }
+  // One holdout look per hypothesis × dataset version: a model writes new source on every retry, so a fresh
+  // canonical hash must not buy the same hypothesis another look at the same bars.
+  const sameHypothesis = await reader.researchExperimentEvent.findFirst({
+    where: {
+      ...MEASURED,
+      experimentId: { not: input.experimentId },
+      experiment: { hypothesisId: input.hypothesisId },
+      AND: [
+        { evidence: { path: ["dataset", "datasetId"], equals: dataset.datasetId } },
+        { evidence: { path: ["dataset", "versionHash"], equals: dataset.versionHash } },
+      ],
+    },
+    select: { experimentId: true },
+  });
+  if (sameHypothesis) {
+    return { ok: false, code: "HOLDOUT_REUSED", detail: `Hypothesis ${input.hypothesisId} already looked at the holdout of dataset version ${dataset.versionHash.slice(0, 12)} (experiment ${sameHypothesis.experimentId})`, evidence: { ...base, scope: "HYPOTHESIS_DATASET_VERSION", priorExperimentId: sameHypothesis.experimentId } };
   }
   const siblings = await reader.historicalDataset.findMany({ where: { instrumentKey: dataset.instrumentKey, interval: dataset.interval }, select: { id: true } });
   const siblingIds = [...new Set([dataset.datasetId, ...siblings.map((row) => row.id)])];

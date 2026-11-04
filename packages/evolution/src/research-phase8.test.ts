@@ -11,7 +11,7 @@ import {
   type PinnedDataset,
 } from "./research-dataset.js";
 import { canonicalStrategySource, candidateIdentity } from "./research-redundancy.js";
-import { scoreResearchTasks, type TaskCandidate } from "./research-scheduler.js";
+import { choosePinnedDataset, scoreResearchTasks, type TaskCandidate } from "./research-scheduler.js";
 
 const HOUR = 3_600_000;
 const T0 = Date.UTC(2026, 0, 1);
@@ -148,7 +148,7 @@ describe("GENESIS task scorer", () => {
     hypothesisId: id,
     createdAt,
     family: "FORGED_SANDBOX:SPOT_CRYPTO_PAIR",
-    datasets: [{ datasetId: `ds_${id}`, versionHash: "v1" }],
+    datasets: [{ datasetId: `ds_${id}`, versionHash: "v1", barCount: 600 }],
     priorExperiments: [],
     ...extra,
   });
@@ -169,6 +169,23 @@ describe("GENESIS task scorer", () => {
     const second = scoreResearchTasks([...candidates].reverse(), stats);
     expect(second.ranked).toEqual(first.ranked);
     expect(first.ranked.map((row) => row.hypothesisId)).toEqual(["h_failed_new", "h_gap", "h_old", "h_nodata"]);
+  });
+
+  it("judges new evidence on the dataset the pin would choose, not on any dataset of the hypothesis (two datasets)", () => {
+    const two = (pinnedVersion: string, chosenVersion: string, otherVersion: string) =>
+      base("h_two", "2026-01-01T00:00:00.000Z", {
+        datasets: [
+          { datasetId: "ds_small", versionHash: otherVersion, barCount: 500 },
+          { datasetId: "ds_big", versionHash: chosenVersion, barCount: 900 },
+        ],
+        priorExperiments: [{ state: "FAILED", pinned: { datasetId: "ds_big", versionHash: pinnedVersion } }],
+      });
+    // The never-pinned smaller dataset is not new evidence, however often the scorer runs.
+    expect(scoreResearchTasks([two("v1", "v1", "v1")], { trialsByDataset: {}, trialsByFamily: {} }).skipped).toEqual([{ hypothesisId: "h_two", reason: "NO_NEW_EVIDENCE" }]);
+    expect(scoreResearchTasks([two("v1", "v1", "v9")], { trialsByDataset: {}, trialsByFamily: {} }).skipped).toEqual([{ hypothesisId: "h_two", reason: "NO_NEW_EVIDENCE" }]);
+    // A new version of the dataset that would be pinned is.
+    expect(scoreResearchTasks([two("v1", "v2", "v1")], { trialsByDataset: {}, trialsByFamily: {} }).ranked[0]).toEqual(expect.objectContaining({ hypothesisId: "h_two", components: expect.objectContaining({ newData: 300 }) }));
+    expect(choosePinnedDataset([{ datasetId: "b", barCount: 5 }, { datasetId: "a", barCount: 5 }])?.datasetId).toBe("a");
   });
 
   it("prioritises knowledge gaps and new data; retries failures only on new evidence; skips active, review and abandoned", () => {

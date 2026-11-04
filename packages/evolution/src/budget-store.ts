@@ -104,6 +104,8 @@ export const RESEARCH_BUDGET_LOCK = 8_080_802;
 export const RESERVED_COST_KIND = "RESERVED";
 /** Attempts the router may make per endpoint (one retry on TIMEOUT/UPSTREAM). */
 export const ROUTER_ATTEMPTS_PER_ENDPOINT = 2;
+/** The router records at most this many × the token limit as completion tokens, the bound a reservation covers. */
+export const COMPLETION_ESTIMATE_BOUND_FACTOR = 2;
 
 /**
  * Worst-case cost of one routed call: every endpoint in the chain, every attempt, the full prompt and twice the
@@ -119,7 +121,7 @@ export function reservationEstimateUsd(input: {
   let total = d("0");
   for (const endpoint of input.endpoints) {
     const one = d(String(input.promptTokens)).div(1000).mul(d(endpoint.costPer1kInputUsd))
-      .plus(d(String(input.maxCompletionTokens * 2)).div(1000).mul(d(endpoint.costPer1kOutputUsd)));
+      .plus(d(String(input.maxCompletionTokens * COMPLETION_ESTIMATE_BOUND_FACTOR)).div(1000).mul(d(endpoint.costPer1kOutputUsd)));
     total = total.plus(one.mul(attempts));
   }
   return total.toFixed(8);

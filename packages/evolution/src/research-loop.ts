@@ -181,6 +181,8 @@ export type ResearchLoopTickResult = {
   errors: Array<{ id: string; error: string }>;
   modelCalls: number;
   stoppedEarly: string | null;
+  /** Budget reservations kept (counted until the UTC day ends) because a call failed, its usage was not persisted, or settling failed. */
+  reservationsRetained: Array<{ id: string; experimentId: string; reason: string }>;
   /** Autonomous intake: the scored queue (rank, score) and the hypotheses skipped with the reason. */
   intake: { refused: string | null; queued: ScoredTask[]; skipped: TaskSkip[] } | null;
 };
@@ -217,7 +219,7 @@ type TickEnv = {
   deadline: number;
   startedAt: number;
   clock: () => number;
-  counters: { modelCalls: number };
+  counters: { modelCalls: number; reservationsRetained: Array<{ id: string; experimentId: string; reason: string }> };
 };
 
 class LeaseLostError extends Error {
@@ -330,6 +332,28 @@ export async function reserveResearchBudget(
     });
     return { ok: true as const, id, spentBeforeUsd: spend.spentUsd };
   });
+}
+
+/**
+ * Settles a reservation after its call. Only a call whose every attempt succeeded and was persisted deletes it
+ * (the usage rows are then the record). Otherwise (a failed attempt the provider may still bill up to the token
+ * limit, a usage row that was not written, a call that threw, or a delete that failed) the reservation is kept and
+ * counted until the UTC day ends (fail closed), marked with the reason, and reported in the tick result.
+ */
+async function settleReservation(env: TickEnv, reservationId: string, experimentId: string, retain: string | null): Promise<void> {
+  let reason = retain;
+  if (reason === null) {
+    try {
+      await env.prisma.modelUsageLog.deleteMany({ where: { id: reservationId, costKind: RESERVED_COST_KIND } });
+      return;
+    } catch (error) {
+      reason = `SETTLE_FAILED: ${errorMessage(error)}`;
+    }
+  }
+  env.counters.reservationsRetained.push({ id: reservationId, experimentId, reason });
+  await env.prisma.modelUsageLog
+    .updateMany({ where: { id: reservationId, costKind: RESERVED_COST_KIND }, data: { error: `RETAINED for research experiment ${experimentId}: ${reason}`.slice(0, 1_000) } })
+    .catch(() => undefined); // the row stays counted either way; the reason is already in the tick result
 }
 
 /** Programme-wide experiment counts: the denominator for multiple-testing accounting. */
@@ -583,6 +607,7 @@ export async function runResearchLoopTick(
     errors: [],
     modelCalls: 0,
     stoppedEarly: null,
+    reservationsRetained: [],
     intake: null,
   };
   const control = await readResearchLoopControl(prisma);
@@ -609,7 +634,7 @@ export async function runResearchLoopTick(
     deadline: clock() + control.tickRuntimeMs,
     startedAt: clock(),
     clock,
-    counters: { modelCalls: 0 },
+    counters: { modelCalls: 0, reservationsRetained: [] },
   };
 
   if (queueGate.allowed) {
@@ -648,6 +673,7 @@ export async function runResearchLoopTick(
       }
     }
     result.modelCalls = env.counters.modelCalls;
+    result.reservationsRetained = env.counters.reservationsRetained;
   }
   return result;
 }
@@ -987,6 +1013,7 @@ async function callModel<T>(
   experimentId: string,
 ): Promise<ModelCall<T> & { router: ModelRouter }> {
   const spend = await researchSpendToday(env.prisma, env.now);
+  const settle: { retain: string | null } = { retain: null };
   const router = new ModelRouter({
     ...env.deps.router,
     mode: "live",
@@ -994,7 +1021,15 @@ async function callModel<T>(
     budgetStore: new MemoryBudgetStore(spend.spentUsd),
     onUsage: async (usage) => {
       env.counters.modelCalls += 1;
-      await persistModelUsage(env.prisma, usage);
+      // A failed attempt (TIMEOUT/UPSTREAM) may still be billed up to the token limit: keep its reservation.
+      if (!usage.ok) settle.retain = settle.retain ?? `FAILED_ATTEMPT: ${usage.endpointId} ${usage.error ?? ""}`;
+      try {
+        await persistModelUsage(env.prisma, usage);
+      } catch (error) {
+        // The call happened but its usage row did not: the reservation is then the only record of it.
+        settle.retain = `USAGE_NOT_PERSISTED: ${errorMessage(error)}`;
+        throw error;
+      }
     },
   });
   const budget = router.budget();
@@ -1038,10 +1073,11 @@ async function callModel<T>(
       { purpose, maxTokens, timeoutMs: Math.max(1_000, Math.min(60_000, remainingMs - 1_000)), messages },
       schema,
     );
+  } catch (error) {
+    settle.retain = settle.retain ?? `CALL_THREW: ${errorMessage(error)}`;
+    throw error;
   } finally {
-    // Actual usage rows were written by onUsage; drop the reservation. If this fails the reservation stays
-    // counted for the rest of the UTC day (fail closed: over-counts, never under-counts).
-    await env.prisma.modelUsageLog.deleteMany({ where: { id: reservation.id, costKind: RESERVED_COST_KIND } }).catch(() => undefined);
+    await settleReservation(env, reservation.id, experimentId, settle.retain);
   }
   if (!reply.ok) {
     if (reply.error === "Model budget cap reached") return { status: "BUDGET_EXHAUSTED", detail: reply.error, router };
@@ -1226,6 +1262,7 @@ async function prepareTest(env: TickEnv, row: ExperimentRow): Promise<{ ok: true
   const identity = candidateIdentity({ source, family: familyOfMarket(hypothesis.market), params: candidateParams(), strategyId });
   const redundancy = await checkRedundancy(env.prisma, {
     experimentId: row.id,
+    hypothesisId: row.hypothesisId,
     identity,
     dataset: { datasetId: loaded.evidence.datasetId, versionHash: loaded.evidence.versionHash, instrumentKey: loaded.evidence.instrumentKey, interval: loaded.evidence.interval },
   });
@@ -1341,6 +1378,12 @@ async function testStage(env: TickEnv, row: ExperimentRow, gateEvidence: Record<
     // The untouched holdout was looked at: consume it under the candidate's name-independent key. The unique key
     // (strategy × version × dataset) refuses a concurrent second look; the transition then rolls back.
     sideEffects: async (tx) => {
+      // Serialise holdout consumption per candidate and re-check sibling datasets inside the commit, so two
+      // concurrent ticks cannot both consume this candidate's holdout on different datasets of one instrument.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${identity.holdoutStrategyId}))`;
+      const siblings = await tx.historicalDataset.findMany({ where: { instrumentKey: dataset.instrumentKey, interval: dataset.interval }, select: { id: true } });
+      const prior = await tx.researchHoldoutAccess.count({ where: { strategyId: identity.holdoutStrategyId, datasetId: { in: [dataset.datasetId, ...siblings.map((s) => s.id)] } } });
+      if (prior > 0) throw new Error(`HOLDOUT_REUSED: holdout for ${identity.holdoutStrategyId} consumed concurrently`);
       await tx.researchHoldoutAccess.create({
         data: { id: newId("rhoa"), strategyId: identity.holdoutStrategyId, strategyVersion: LOOP_HOLDOUT_STRATEGY_VERSION, datasetId: dataset.datasetId, runId: `rexp:${row.id}` },
       });

@@ -947,6 +947,50 @@ describe.skipIf(!enabled)("ASCEND-08 research loop (database)", () => {
     expect(((await state(id)).context as Record<string, Record<string, unknown>>).dataset?.datasetId).toBeTruthy();
   });
 
+  it("review M1: with two datasets per hypothesis, a failed hypothesis is not re-queued for the never-pinned dataset, and one hypothesis gets one holdout look per dataset version", async () => {
+    const now = await freshNow();
+    await control({ maxExperimentsPerDay: 10, maxConcurrentExperiments: 10 });
+    const hypothesisId = await hypothesis("OPEN");
+    // A second, smaller dataset of the same instrument: the pin never chooses it.
+    await seedDataset(instrumentOf(hypothesisId), { sourceId: "genesis-test-small", bars: 520 });
+    const first = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} } }, now);
+    expect(first.created).toHaveLength(1);
+    const pinned = await pinFor(hypothesisId, now);
+    expect(pinned.datasetId).toBe(datasetOf.get(hypothesisId)); // 600 bars beats 520
+    await prisma.researchExperiment.update({ where: { id: first.created[0]! }, data: { state: "FAILED", lastError: "test", context: toJson({ dataset: pinned }) } });
+    for (let tick = 0; tick < 2; tick += 1) {
+      const again = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} } }, now);
+      expect(again.created).toEqual([]);
+      expect(again.intake?.skipped).toEqual(expect.arrayContaining([{ hypothesisId, reason: "NO_NEW_EVIDENCE" }]));
+    }
+
+    // Even if it were queued, a new model-written source for the same hypothesis and dataset version is refused.
+    await setAutonomy(3);
+    await control();
+    const measured = await atTest({ hypothesisId });
+    await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} }, execute: holdExecutor });
+    expect((await state(measured.id)).state).toBe("CHALLENGE");
+    await prisma.researchExperiment.update({ where: { id: measured.id }, data: { state: "ABANDONED", lastError: "test" } });
+    const variant = await atTest({ hypothesisId, strategyId: "strat_variant", source: `export function onBar(input) {\n  return { intent: "HOLD", reasonCodes: ["VARIANT"] };\n}\n` });
+    const tick = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} }, execute: holdExecutor });
+    expect(tick.advanced).toEqual([expect.objectContaining({ id: variant.id, to: "REJECTED", reason: expect.stringMatching(/^REDUNDANT_HOLDOUT_REUSED: Hypothesis/) })]);
+  });
+
+  it("review M2/L1: a failed model attempt keeps its reservation counted (fail closed) and reports it", async () => {
+    await control();
+    const failing: ModelProvider = {
+      id: "fixture",
+      completeJson: async () => ({ ok: false, code: "UPSTREAM", error: "injected upstream failure", provider: "fixture" }),
+    };
+    const id = await experiment("HYPOTHESISE");
+    const tick = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {}, providers: new Map([["openai-primary", failing]]) } });
+    expect(tick.attemptsFailed).toEqual([expect.objectContaining({ id })]);
+    expect(tick.reservationsRetained).toEqual([expect.objectContaining({ experimentId: id, reason: expect.stringMatching(/^FAILED_ATTEMPT/) })]);
+    const kept = await prisma.modelUsageLog.findMany({ where: { costKind: "RESERVED" } });
+    expect(kept).toHaveLength(1);
+    expect(kept[0]!.error).toMatch(/^RETAINED for research experiment/);
+  });
+
   const researchSpend = async (now: Date) => {
     const windowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const sum = await prisma.modelUsageLog.aggregate({ _sum: { costUsdEst: true }, where: { createdAt: { gte: windowStart } } });
