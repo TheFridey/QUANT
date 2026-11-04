@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDrawdown, formatPct, formatPx, formatQty, formatUsd, formatUsdCompact } from "./format";
+import { formatAllHistoryWindow, formatDrawdown, formatPct, formatPx, formatQty, formatUsd, formatUsdCompact } from "./format";
 
 describe("shared number formatting (UI items 4 and 6)", () => {
   it("groups dollars with thousands separators", () => {
@@ -27,5 +27,12 @@ describe("shared number formatting (UI items 4 and 6)", () => {
     expect(formatDrawdown("-3.5")).toBe("-3.50%");
     expect(formatDrawdown("0")).toBe("0.00%");
     expect(formatPct("0.02")).toBe("+0.02%");
+  });
+
+  it("captions all-history metrics with their sample count and start", () => {
+    expect(formatAllHistoryWindow(12980, "2026-10-01T12:00:00.000Z")).toBe("All · 12,980 snapshots since 01 Oct 2026");
+    expect(formatAllHistoryWindow(1, null)).toBe("All · 1 snapshot");
+    expect(formatAllHistoryWindow(0, null)).toBe("All · no snapshots");
+    expect(formatAllHistoryWindow(undefined, undefined)).toBe("All · no snapshots");
   });
 });

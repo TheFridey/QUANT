@@ -21,6 +21,7 @@ export type SnapshotCostReport = {
 /** Default caps used by TerminalService.snapshot — keep in sync with call sites. */
 export const SNAPSHOT_BOUNDS = {
   closedTrades: 200,
+  /** No longer read by TerminalService.snapshot: max drawdown is an all-history SQL aggregate (historical-drawdown.ts). */
   equitySeries: 500,
   funnelEvents: 200,
   cycleDecisions: 120,

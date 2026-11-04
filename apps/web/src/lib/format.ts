@@ -75,6 +75,15 @@ export function formatDrawdown(value: string | null | undefined): string {
   return amount.isZero() ? "0.00%" : `-${amount.toFixed(2)}%`;
 }
 
+/** Window caption for an all-history metric, e.g. "All · 12,980 snapshots since 01 Oct 2026". */
+export function formatAllHistoryWindow(sampleCount: number | null | undefined, fromIso: string | null | undefined): string {
+  if (!sampleCount) return "All · no snapshots";
+  const count = `${new Intl.NumberFormat("en-GB").format(sampleCount)} snapshot${sampleCount === 1 ? "" : "s"}`;
+  if (!fromIso) return `All · ${count}`;
+  const since = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", day: "2-digit", month: "short", year: "numeric" }).format(new Date(fromIso));
+  return `All · ${count} since ${since}`;
+}
+
 export function formatRate(value: string | null | undefined): string {
   if (value === null || value === undefined || value === "") return "—";
   return formatPct(new Decimal(value).mul(100).toString());
