@@ -124,6 +124,21 @@ export type ActivityEvent = {
   details: Record<string, unknown>;
 };
 
+/** All-history drawdown measured in PostgreSQL over every EquitySnapshot. */
+export type HistoricalDrawdownView = {
+  range: "ALL";
+  source: string;
+  method: string;
+  maxDrawdownPct: string | null;
+  peakEquityUsd: string | null;
+  troughEquityUsd: string | null;
+  peakAt: string | null;
+  troughAt: string | null;
+  sampleCount: number;
+  firstAt: string | null;
+  lastAt: string | null;
+};
+
 export type EquityHistory = {
   range: string;
   startingBalanceUsd: string | null;
@@ -350,7 +365,11 @@ export type Snapshot = {
     avgLossUsd?: string | null;
     profitFactor?: string | null;
     expectancyUsd?: string | null;
+    /** Compatibility alias of historicalMaxDrawdownPct (all equity snapshots). */
     maxDrawdownPct?: string | null;
+    /** Worst peak-to-trough fall over ALL equity snapshots for the metrics account. */
+    historicalMaxDrawdownPct?: string | null;
+    historicalDrawdown?: HistoricalDrawdownView;
     sampleSize?: number;
     observed?: boolean;
     highWaterMarkUsd?: string | null;
@@ -360,6 +379,7 @@ export type Snapshot = {
     dayPnlUsd?: string | null;
     /** maxAggregateExposurePct of current equity. */
     openRiskCapUsd?: string | null;
+    /** Current equity below the account high-water mark (point in time). */
     currentDrawdownPct?: string | null;
     largestGainUsd?: string | null;
     largestLossUsd?: string | null;

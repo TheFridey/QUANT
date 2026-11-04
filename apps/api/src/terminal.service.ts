@@ -11,6 +11,7 @@ import {
   attributeNetPerformance,
   autopsyRoundTrip,
   closedRoundTrips,
+  drawdownBelowHwmPct,
   performanceReport,
   SNAPSHOT_BOUNDS,
   summariseAutopsies,
@@ -64,6 +65,7 @@ import {
   type StrategyConfig,
 } from "@odin/shared";
 import { PrismaClient, toJson } from "@odin/shared/db";
+import { queryHistoricalDrawdown } from "./historical-drawdown.js";
 import { resetPaperBalance } from "./paper-balance.js";
 import {
   allowedActions,
@@ -205,7 +207,6 @@ export class TerminalService {
       _sum: { amountUsd: true },
     });
     const closedTradeLimit = SNAPSHOT_BOUNDS.closedTrades;
-    const equitySeriesLimit = SNAPSHOT_BOUNDS.equitySeries;
     const funnelEventLimit = SNAPSHOT_BOUNDS.funnelEvents;
     const closed = await timed("closed_trades", true, () =>
       this.prisma.ledgerEntry.findMany({
@@ -214,48 +215,106 @@ export class TerminalService {
         take: closedTradeLimit, // analyticsWindows.closedTrades — latest N, not calendar ALL
       }),
     );
-    // D14: equity curve sample is earliest N snapshots (asc), not a calendar window.
-    const equitySeriesRows = await timed("equity_series", true, () =>
-      this.prisma.equitySnapshot.findMany({
-        where: { accountId: metricsAccountId, equityUsd: { not: null } },
-        orderBy: { createdAt: "asc" },
-        take: equitySeriesLimit,
-        select: { equityUsd: true },
-      }),
+    // Max drawdown is measured over ALL equity snapshots in PostgreSQL (single-row
+    // window-function aggregate). The former earliest-500 sample missed every later
+    // drawdown and reported 0.00% on a long-running account.
+    const historicalDrawdown = await timed("historical_drawdown", true, () =>
+      queryHistoricalDrawdown(this.prisma, metricsAccountId),
     );
     const report = performanceReport({
       valuation,
       startingBalanceUsd: account.startingBalanceUsd.toString(),
       feesUsd: usd(d(fees._sum.amountUsd?.toString() ?? "0").abs()),
       closedTradePnlUsd: closed.map((entry) => entry.amountUsd.toString()),
-      equitySeries: equitySeriesRows.map((row) => row.equityUsd!.toString()),
     });
+    const asOf = now.toISOString();
+    const valuationSource = "live valuation: PaperAccount.cashUsd + open positions at latest marks (null when any mark is missing)";
     const analyticsWindows = {
       closedTrades: {
         label: `latest_${closedTradeLimit}_realized_pnl_ledger`,
+        metrics: ["winRate", "wins", "losses", "closedTrades", "sampleSize", "avgWinUsd", "avgLossUsd", "profitFactor", "expectancyUsd", "largestGainUsd", "largestLossUsd", "tradeDistribution"],
         range: "SAMPLE_LATEST" as const,
         limit: closedTradeLimit,
         sampleSize: closed.length,
+        from: closed[closed.length - 1]?.createdAt.toISOString() ?? null,
+        to: closed[0]?.createdAt.toISOString() ?? null,
+        source: `LedgerEntry type=REALIZED_PNL, account ${account.id}`,
+        method: `win/loss counts and sums over the latest ${closedTradeLimit} realised P&L entries (not all-time)`,
       },
       fees: {
         label: "all_time_fee_ledger_sum",
+        metrics: ["feesUsd"],
         range: "ALL" as const,
         limit: null,
         sampleSize: null,
+        source: `LedgerEntry type=FEE, account ${account.id}`,
+        method: "abs(sum(amountUsd)) over every fee entry",
       },
-      equitySeries: {
-        label: `earliest_${equitySeriesLimit}_equity_snapshots`,
-        range: "SAMPLE_EARLIEST" as const,
-        limit: equitySeriesLimit,
-        sampleSize: equitySeriesRows.length,
+      historicalDrawdown: {
+        label: "all_equity_snapshots_running_peak",
+        metrics: ["historicalMaxDrawdownPct", "maxDrawdownPct"],
+        range: historicalDrawdown.range,
+        limit: null,
+        sampleSize: historicalDrawdown.sampleCount,
+        from: historicalDrawdown.firstAt,
+        to: historicalDrawdown.lastAt,
+        source: `${historicalDrawdown.source}, account ${metricsAccountId}`,
+        method: `${historicalDrawdown.method}: max((running_peak - equity) / running_peak * 100), running_peak = max(equity) over (order by createdAt) — computed in PostgreSQL`,
+        peakEquityUsd: historicalDrawdown.peakEquityUsd,
+        peakAt: historicalDrawdown.peakAt,
+        troughEquityUsd: historicalDrawdown.troughEquityUsd,
+        troughAt: historicalDrawdown.troughAt,
+      },
+      currentDrawdown: {
+        label: "current_equity_vs_account_hwm",
+        metrics: ["currentDrawdownPct"],
+        range: "POINT_IN_TIME" as const,
+        limit: null,
+        sampleSize: 1,
+        asOf,
+        source: `PaperAccount.highWaterMarkUsd (account ${account.id}) vs ${valuationSource}`,
+        method: "(highWaterMarkUsd - equity) / highWaterMarkUsd * 100",
+      },
+      returnPct: {
+        label: "equity_vs_starting_balance",
+        metrics: ["returnPct"],
+        range: "SINCE_START" as const,
+        limit: null,
+        sampleSize: 1,
+        asOf,
+        source: `PaperAccount.startingBalanceUsd (account ${account.id}) vs ${valuationSource}`,
+        method: "(equity - startingBalanceUsd) / startingBalanceUsd * 100",
+      },
+      dayPnl: {
+        label: "equity_vs_session_start",
+        metrics: ["dayPnlUsd"],
+        range: "SESSION" as const,
+        limit: null,
+        sampleSize: 1,
+        from: account.sessionStartedAt?.toISOString() ?? null,
+        to: asOf,
+        source: `PaperAccount.sessionStartEquityUsd (account ${account.id}) vs ${valuationSource}`,
+        method: "equity - sessionStartEquityUsd",
+      },
+      slippage: {
+        label: "latest_500_fills_all_accounts",
+        metrics: ["avgSlippageBps", "totalSlippageUsd", "fillCount"],
+        range: "SAMPLE_LATEST" as const,
+        limit: 500,
+        sampleSize: null as number | null,
+        source: "Fill (not account-scoped)",
+        method: "mean(slippageBps); sum(notionalUsd * slippageBps / 10000)",
       },
       funnel: {
         label: `latest_${funnelEventLimit}_funnel_events`,
+        metrics: ["funnel.summary"],
         range: "SAMPLE_LATEST" as const,
         limit: funnelEventLimit,
         sampleSize: null as number | null,
+        source: `OpportunityFunnelEvent, account ${metricsAccountId}`,
+        method: "stage counts over the latest events",
       },
-      note: "Portfolio win/loss/drawdown metrics mix these samples — not a single calendar window. Use equityHistory(range) for explicit 1H/24H/7D/30D/ALL charts.",
+      note: "Each portfolio metric names its own window above (range, sampleSize, source, method). maxDrawdownPct and historicalMaxDrawdownPct cover ALL equity snapshots; currentDrawdownPct is a point-in-time measure of live equity against the account high-water mark; returnPct compares live equity with the starting balance; closed-trade statistics use only the latest realised P&L sample; slippage uses the latest fills across all accounts. Use equityHistory(range) for explicit 1H/24H/7D/30D/ALL charts.",
     };
     const cycle = await this.prisma.cycleRun.findFirst({ orderBy: { startedAt: "desc" } });
     const decisions = cycle
@@ -310,14 +369,7 @@ export class TerminalService {
       report.valuation.equityUsd === null
         ? null
         : usd(d(report.valuation.equityUsd).minus(d(account.cashUsd.toString())));
-    const drawdownPct =
-      report.valuation.equityUsd === null || !account.highWaterMarkUsd || d(account.highWaterMarkUsd.toString()).lte(0)
-        ? null
-        : d(account.highWaterMarkUsd.toString())
-            .minus(d(report.valuation.equityUsd))
-            .div(d(account.highWaterMarkUsd.toString()))
-            .mul(100)
-            .toFixed(4);
+    const drawdownPct = drawdownBelowHwmPct(report.valuation.equityUsd, account.highWaterMarkUsd?.toString() ?? null);
     const states = pairs.map((pair) => pair.freshness);
     const activeStrategy = parseActiveStrategyIdentity(engineRow.activeStrategy);
     const liveGate = assertPaperOrSandboxOnly(process.env);
@@ -330,6 +382,7 @@ export class TerminalService {
       }),
     );
     analyticsWindows.funnel.sampleSize = funnelRows.length;
+    analyticsWindows.slippage.sampleSize = fillStats.fillCount;
     const funnelSummary = summarizeFunnel(
       funnelRows.map((row) => ({
         cycleId: row.cycleId,
@@ -663,7 +716,10 @@ export class TerminalService {
         avgLossUsd: report.avgLossUsd,
         profitFactor: report.profitFactor,
         expectancyUsd: report.expectancyUsd,
-        maxDrawdownPct: report.maxDrawdownPct,
+        /** Compatibility alias of historicalMaxDrawdownPct (ALL snapshots; see analyticsWindows.historicalDrawdown). */
+        maxDrawdownPct: historicalDrawdown.maxDrawdownPct,
+        historicalMaxDrawdownPct: historicalDrawdown.maxDrawdownPct,
+        historicalDrawdown,
         sampleSize: report.sampleSize,
         observed: report.observed,
         analyticsWindows,
