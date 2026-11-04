@@ -15,6 +15,33 @@ Durable checkpoint for Operation GENESIS (ASCEND-10, ASCEND-11 and the APEX cont
 | `BLOCKED` | Cannot proceed; the blocker and what unblocks it are named |
 | `NOT_VERIFIED` | Not checked; no claim is made |
 
+## Checkpoint 3: 4 Nov 2026, ~21:50 UTC (all GENESIS PRs merged; `7cdff36` deployed)
+
+Operator instruction, 4 Nov 2026: "merge all push to main and push live". Merging, the one migration and the deploy were approved by that instruction. The 15% daily limit stays **not applied** ("Leave it for now"). The shadow service and research loop stay **disabled**.
+
+| PR | Merged as | Before merge |
+| --- | --- | --- |
+| [#53](https://github.com/TheFridey/QUANT/pull/53) drawdown | `e5a0c21` (squash; the branch's last commit had a wrong message) | CI green; review notes fixed (single-pass SQL, 30 s cache) |
+| [#52](https://github.com/TheFridey/QUANT/pull/52) ML 2.0 | `0d489e1` | CI green; SPY session calendar and review fixes |
+| [#54](https://github.com/TheFridey/QUANT/pull/54) data quality | `b51b398` | CI green after fixing a real integration failure (counterfactual `BEYOND_DATA` used the bounded read's end) |
+| [#55](https://github.com/TheFridey/QUANT/pull/55) research loop 2.0 | `c816104` | quant-safety-reviewer APPROVE WITH NOTES; M1 (holdout re-queue) and M2 (reservation under-count) and L1–L4 fixed; CI green with the Postgres integration tests |
+| [#51](https://github.com/TheFridey/QUANT/pull/51) trade feedback | `0648c67` | main merged in (two trivial conflicts); first browser-e2e run failed at startup with `Unique constraint failed on the fields: (id)`, rerun passed (intermittent start-up race, not this PR; `NOT_VERIFIED` root cause) |
+| [#50](https://github.com/TheFridey/QUANT/pull/50) ledger, 15% tests | `0de81f4` | CI green |
+| [#56](https://github.com/TheFridey/QUANT/pull/56) registry and shadow | `7cdff36` | db-migration-reviewer REQUEST CHANGES → fixed → APPROVE WITH NOTES → notes fixed. CI found a real defect: hashes over float/JSONB columns did not re-verify after the Prisma round trip; fixed by storing hashed content as exact TEXT with `sha256` CHECKs. CI green (1,179 tests, Postgres integration included). The post-fix schema was not re-reviewed by the migration reviewer; I checked it is additive only |
+
+### Production deploy of `7cdff36`
+
+| Item | Value |
+| --- | --- |
+| Previous / rollback | `d2fc28a`; build snapshot `/srv/quant/releases/d2fc28a-20261104T214202Z` |
+| Backup | `/srv/quant/backups/quant-20261104T214108Z.dump` (522 MB, 62 `TABLE DATA` entries). Restore drill **not run** (no drill-role credentials) |
+| Preflight | fast-forward; no protected paths; lockfile unchanged; `.env` PAPER / false, `GENESIS_SHADOW_ENABLED` unset; `ResearchLoopControl` no row (disabled); main CI green on `7cdff36` |
+| Migration | `20261104100000_genesis_model_registry_shadow` applied before the new code started (5 new tables, 15 triggers, all `ENABLE ALWAYS`; only an FK to `Hypothesis` on an existing table) |
+| Restart | `quant-api`, `quant-worker`, `quant-web` at 21:48:01 UTC |
+| Smoke | health `ok`; SHA `7cdff36`; 168 observations in 2 min; `CycleRun` advancing; 0 error lines in API/worker logs; worker logs "genesis shadow disabled … nothing scheduled"; 0 `ShadowPrediction` rows; engine RUNNING with `maxDailyLossPct` 3 and `maxTotalDrawdownPct` 10 (unchanged); web 307; scalesmiths.co.uk and veteranfinder.co.uk 200 |
+| Not verified | authenticated endpoints (`/api/terminal/feedback/*`, `/api/research/data-quality*`, overview drawdown fields), UI in a browser, restore drill |
+| Before enabling shadow | the app role `quant_app` **owns** the tables, so it could disable the triggers with DDL; move ownership to a separate migration role and confirm NTP, per `DEPLOY_REGISTRY_SHADOW.md` |
+
 ## Checkpoint 2: 4 Nov 2026 (wave 1 PRs and first real ML runs)
 
 Operator: "Leave it for now" on the 15% daily limit (not applied). Then: implement the rest of GENESIS.
@@ -111,7 +138,7 @@ Tests: `apps/worker/src/daily-loss-15pct.test.ts` (10 cases, against the unmodif
 | 10 Command centre | Not started | 5, 6 | — |
 | 11 Quality and integrity | Ongoing per PR | — | — |
 | 12 Release control | Per PR | — | — |
-| 13 Final report | Not started | all | `docs/genesis/FINAL_REPORT.md` only when the phases above have evidence |
+| 13 Final report | [`FINAL_REPORT.md`](FINAL_REPORT.md) | all | Update as phases gain evidence |
 
 ## Blockers
 
