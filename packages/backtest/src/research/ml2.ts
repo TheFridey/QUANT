@@ -8,6 +8,7 @@ import { calibration, fitBoostedStumps, fitLogistic, predict, psi, type ModelArt
 import { aucScore, blockBootstrapInterval, innerCalibrationSplit, purgedWalkForwardSplits, topFractionPrecision, tradeSharpe, tradeSortino, type BootstrapInterval, type WalkForwardScheme } from "./ml2-eval.js";
 import { applyCalibrator, fitIsotonicCalibrator, fitPlattCalibrator, fitPreprocessor, fitRandomForest, predictForest, transformRow, type Calibrator, type ForestArtefact, type Preprocessor } from "./ml2-learners.js";
 import { inferBarMs, regimeConfigFor, type MarketCalendar } from "./regime.js";
+import { isContiguous, regimeCalendarFor, toSessionCalendar, type SessionCalendar } from "./sessions.js";
 import type { ResearchBar } from "./simulate.js";
 
 /**
@@ -27,6 +28,9 @@ import type { ResearchBar } from "./simulate.js";
  *  6. Out-of-sample metrics on the concatenated test folds, with stationary/moving block-bootstrap CIs
  *     (block ≥ horizon), cost sensitivity at 1×/2×/3×, and controls: base rate, always-enter, buy-and-hold,
  *     cash, and a random-selection control with the same selection frequency and clustering.
+ *     Known limitation: the walk-forward bootstrap resamples the concatenated test folds as one series, so a
+ *     block may straddle a fold boundary and join predictions from two differently fitted models. This mixes
+ *     model vintages inside a block; it does not leak labels.
  *  7. Every configuration is a trial (failures included); the champion's Sharpe is deflated by the
  *     programme-wide trial count.
  *  8. Only if walk-forward passes, and only through a `HoldoutGate` that allows one consumption per key, is
@@ -113,7 +117,7 @@ export const DEFAULT_ML2_CONFIG: Ml2Config = {
   brierWindow: 250,
   maxBrierDecay: 0.02,
   maxStalenessMs: 30 * 86_400_000,
-  prefixProbes: 3,
+  prefixProbes: 12,
   seed: 1,
 };
 
@@ -289,6 +293,7 @@ export type Ml2Report = {
   labelSpecHash: string;
   featureSet: { spec: FeatureSetSpec; hash: string };
   barMs: number;
+  calendar: SessionCalendar;
   config: Ml2Config;
   data: { bars: number; labelled: number; warmupDropped: number; droppedMissing: number; usable: number; preHoldout: number; purgedBeforeHoldout: number; holdoutRows: number; embargoBars: number; lookbackBars: number; blockLength: number | null };
   coverage: Array<{ feature: string; missingShare: number; ok: boolean }>;
@@ -312,7 +317,13 @@ export type Ml2Report = {
 export type Ml2Input = {
   bars: readonly ResearchBar[];
   barMs?: number;
-  calendar?: MarketCalendar;
+  /**
+   * Session calendar for bar alignment, label gaps and the regime engine. CRYPTO_24_7 (default; legacy
+   * "CONTINUOUS") uses one UTC grid; US_EQUITY (legacy "WEEKDAYS") uses NYSE sessions in New York time.
+   */
+  calendar?: SessionCalendar | MarketCalendar;
+  /** When each bar became available (aligned with `bars`, e.g. the warehouse `availableAt`). A feature row is never available before the bars it reads. */
+  barAvailableAt?: ReadonlyArray<number | null>;
   labelSpec: LabelSpec;
   target?: Ml2Target;
   featureSet?: FeatureSetSpec;
@@ -435,12 +446,23 @@ export function buildMl2Dataset(input: Ml2Input) {
   const barMs = input.barMs ?? inferBarMs(bars);
   const target = input.target ?? "NET_POSITIVE";
   const asOf = input.asOf ?? (bars.length ? bars.at(-1)!.t + barMs : 0);
-  const issues = validateResearchBars(bars, { barMs, asOf });
-  if (issues.length) throw new Ml2Refusal(`${issues.length} bar integrity issue(s); first: ${issues.slice(0, 3).map((i) => `#${i.index} ${i.code} ${i.detail}`).join("; ")}`);
+  const calendar = toSessionCalendar(input.calendar);
+  if (input.barAvailableAt && input.barAvailableAt.length !== bars.length) throw new Ml2Refusal("barAvailableAt must align with bars");
+  const issues = validateResearchBars(bars, { barMs, asOf, calendar, availableAt: input.barAvailableAt });
+  if (issues.length) {
+    const hint = calendar === "CRYPTO_24_7" && issues.some((i) => i.code === "MISALIGNED") ? " (equity bars open at New York midnight: use the US_EQUITY calendar)" : "";
+    throw new Ml2Refusal(`${issues.length} bar integrity issue(s) under the ${calendar} calendar; first: ${issues.slice(0, 3).map((i) => `#${i.index} ${i.code} ${i.detail}`).join("; ")}${hint}`);
+  }
   if (target === "TARGET_BEFORE_STOP" && (input.labelSpec.stopPct == null || input.labelSpec.targetPct == null)) throw new Ml2Refusal("TARGET_BEFORE_STOP needs both stopPct and targetPct");
   const spec = input.featureSet ?? defaultFeatureSetSpec(barMs);
-  const builder = input.featureBuilder ?? ((b: readonly ResearchBar[]) => buildDefaultFeatureRows(b, { barMs, calendar: input.calendar }));
-  const featureRows = builder(bars);
+  const builder = input.featureBuilder ?? ((b: readonly ResearchBar[]) => buildDefaultFeatureRows(b, { barMs, calendar: regimeCalendarFor(calendar) }));
+  // A row reading bars[0..i] is available no earlier than the latest availability among those bars.
+  const latestAvailable: number[] = [];
+  if (input.barAvailableAt) {
+    let m = Number.NEGATIVE_INFINITY;
+    for (const a of input.barAvailableAt) latestAvailable.push((m = Math.max(m, a ?? Number.NEGATIVE_INFINITY)));
+  }
+  const featureRows = builder(bars).map((r) => (input.barAvailableAt && latestAvailable[r.index]! > r.availableAt ? { ...r, availableAt: latestAvailable[r.index]! } : r));
   const unknown = spec.features.filter((f) => !featureRows.some((r) => f in r.values));
   if (unknown.length) throw new Ml2Refusal(`feature(s) not produced by the builder: ${unknown.join(", ")}`);
   const violations = causalViolations(featureRows, spec.features, (r) => bars[r.index]!.t + barMs);
@@ -448,11 +470,14 @@ export function buildMl2Dataset(input: Ml2Input) {
     const v = violations[0]!;
     throw new Ml2Refusal(`${violations.length} feature value(s) available after the decision time; first: ${v.feature} at bar ${v.index} available ${new Date(v.availableAt).toISOString()} > decision ${new Date(v.decisionTime).toISOString()}`);
   }
-  const labels = buildTradeLabels(bars, input.labelSpec, { barMs });
+  const labels = buildTradeLabels(bars, input.labelSpec, { barMs, isContiguous: (a, b) => isContiguous(a.t, b.t, barMs, calendar) });
   const lookbackBars = Math.max(0, ...spec.features.map((f) => featureLookbackBars(f, barMs)));
-  // Prefix audit at deterministic probes in the second half of the series.
-  const probeCount = Math.max(0, input.config?.prefixProbes ?? DEFAULT_ML2_CONFIG.prefixProbes);
-  const probes = Array.from({ length: probeCount }, (_, k) => Math.floor(bars.length * (0.5 + (0.5 * (k + 1)) / (probeCount + 1))));
+  // Prefix audit at deterministic probes spread evenly over the whole usable series: from the first bar with a
+  // full look-back to the second-to-last bar (the last bar's prefix is the full series, so it proves nothing).
+  const probeCount = Math.max(0, Math.floor(input.config?.prefixProbes ?? DEFAULT_ML2_CONFIG.prefixProbes));
+  const lo = Math.min(Math.max(0, bars.length - 2), lookbackBars);
+  const hi = Math.max(lo, bars.length - 2);
+  const probes = [...new Set(Array.from({ length: probeCount }, (_, k) => (probeCount === 1 ? hi : Math.round(lo + ((hi - lo) * k) / (probeCount - 1)))))];
   const audit = auditPrefixInvariance(bars, builder, spec.features, probes, featureRows);
   if (audit.violations.length) {
     const v = audit.violations[0]!;
@@ -482,7 +507,7 @@ export function buildMl2Dataset(input: Ml2Input) {
     return { feature, missingShare, ok: missingShare <= spec.maxMissingShare };
   });
   const rows = spec.nullPolicy === "DROP_ROW" ? post.filter((r) => r.x.every((v) => Number.isFinite(v))) : post;
-  return { bars, barMs, target, asOf, spec, specHash: featureSetSpecHash(spec), labels, rows, coverage, warmupDropped: labelled.length - post.length, droppedMissing: post.length - rows.length, labelledCount: labelled.length, lookbackBars, probes, availabilityViolations: violations.length };
+  return { bars, barMs, calendar, target, asOf, spec, specHash: featureSetSpecHash(spec), labels, rows, coverage, warmupDropped: labelled.length - post.length, droppedMissing: post.length - rows.length, labelledCount: labelled.length, lookbackBars, probes, availabilityViolations: violations.length };
 }
 
 /** Runs the full GENESIS Phase 4 protocol for one target/horizon and a list of learner configurations. */
@@ -518,6 +543,7 @@ export function runMlPipeline(input: Ml2Input): Ml2Report {
     labelSpecHash: lsHash,
     featureSet: { spec, hash: specHash },
     barMs,
+    calendar: ds.calendar,
     config: cfg,
     data: { bars: bars.length, labelled: ds.labelledCount, warmupDropped: ds.warmupDropped, droppedMissing: ds.droppedMissing, usable: rows.length, preHoldout: pre.length, purgedBeforeHoldout: preAll.length - pre.length, holdoutRows: holdoutRows.length, embargoBars, lookbackBars: ds.lookbackBars, blockLength },
     coverage: ds.coverage,
@@ -663,7 +689,11 @@ export function runMlPipeline(input: Ml2Input): Ml2Report {
     } else if (effSignals < cfg.minEffectiveSignals) {
       verdict = "INSUFFICIENT_EVIDENCE";
       reasons.push(`${champEval.signals} signals ≈ ${effSignals.toFixed(0)} independent (< ${cfg.minEffectiveSignals})`);
-    } else if (!ex1?.ci || !(ex1.ci.lower > 0) || !(ex1.mean! > (ex1.alwaysEnter ?? 0)) || !(ex1.mean! > (ex1.buyAndHoldPerHorizon ?? 0)) || !(champEval.randomControl.pValue !== null && champEval.randomControl.pValue <= 0.05)) {
+    } else if (ex1 && ex1.ci && ex1.ci.lower > 0 && (ex1.alwaysEnter === null || ex1.buyAndHoldPerHorizon === null)) {
+      // A missing baseline is never treated as 0: the comparison cannot be made, so no economic claim is made.
+      verdict = "INSUFFICIENT_EVIDENCE";
+      reasons.push(`baseline not computable: ${ex1.alwaysEnter === null ? "always-enter" : ""}${ex1.alwaysEnter === null && ex1.buyAndHoldPerHorizon === null ? " and " : ""}${ex1.buyAndHoldPerHorizon === null ? "buy-and-hold per horizon" : ""} unavailable over the walk-forward span, so beating it cannot be shown`);
+    } else if (!ex1?.ci || !(ex1.ci.lower > 0) || !(ex1.mean! > ex1.alwaysEnter!) || !(ex1.mean! > ex1.buyAndHoldPerHorizon!) || !(champEval.randomControl.pValue !== null && champEval.randomControl.pValue <= 0.05)) {
       verdict = "SKILL_NOT_ECONOMIC";
       reasons.push(`1× costs: selected mean ${pct(ex1?.mean)} (CI lower ${pct(ex1?.ci?.lower)}) vs always-enter ${pct(ex1?.alwaysEnter)}, buy-and-hold per horizon ${pct(ex1?.buyAndHoldPerHorizon)}, cash 0%, random-selection control p=${champEval.randomControl.pValue?.toFixed(3) ?? "n/a"}`);
     } else if (!ex2?.ci || !(ex2.ci.lower > 0)) {
@@ -727,7 +757,10 @@ export function runMlPipeline(input: Ml2Input): Ml2Report {
         } else if (!h2?.ci || !(h2.ci.lower > 0)) {
           verdict = h1?.mean !== null && h1?.mean !== undefined && h1.mean > 0 ? "REJECTED_COSTS" : "REJECTED_OVERFIT";
           reasons.push(`holdout 2× costs: mean ${pct(h2?.mean)}, CI lower ${pct(h2?.ci?.lower)} (must be > 0)`);
-        } else if (!(h1!.mean! > (h1!.alwaysEnter ?? 0)) || !(h1!.mean! > (h1!.buyAndHoldPerHorizon ?? 0))) {
+        } else if (h1!.alwaysEnter === null || h1!.buyAndHoldPerHorizon === null) {
+          verdict = "INSUFFICIENT_EVIDENCE";
+          reasons.push(`holdout baseline not computable (always-enter ${pct(h1!.alwaysEnter)}, buy-and-hold per horizon ${pct(h1!.buyAndHoldPerHorizon)}); never compared against 0`);
+        } else if (!(h1!.mean! > h1!.alwaysEnter) || !(h1!.mean! > h1!.buyAndHoldPerHorizon)) {
           verdict = "SKILL_NOT_ECONOMIC";
           reasons.push(`holdout selected mean ${pct(h1?.mean)} does not beat always-enter ${pct(h1?.alwaysEnter)} / buy-and-hold per horizon ${pct(h1?.buyAndHoldPerHorizon)}`);
         } else {
@@ -738,8 +771,11 @@ export function runMlPipeline(input: Ml2Input): Ml2Report {
     }
   }
 
-  // Drift: PSI of the most recent (holdout-period) features vs the final training rows (label-free), and
-  // rolling Brier of the champion on its out-of-sample predictions.
+  // Drift: PSI of the most recent (holdout-period) features vs the final training rows, and rolling Brier of the
+  // champion on its out-of-sample predictions. Holdout-period FEATURES are read here for drift PSI only: no holdout
+  // label or return is touched, and the result feeds the deployment abstention below, never the verdict (which is
+  // fixed above). Rolling Brier includes holdout predictions only when the holdout was already evaluated through
+  // the gate.
   const champArt = champion ? finalArtefacts[champion.trialId] : undefined;
   const fitX = finalFit.fitRows.map((r) => r.x);
   const recentX = holdoutRows.map((r) => r.x);

@@ -26,5 +26,26 @@ describe("ml-cli arguments", () => {
     expect(() => parseBarsCsv("time,open,high,low,close\n0,1,1,1,1")).toThrow(/volume/);
     expect(() => parseBarsCsv("time,open,high,low,close,volume\n2026-01-01 00:00,1,1,1,1,1")).toThrow(/line 2/);
     expect(() => parseBarsCsv("time,open,high,low,close,volume\n0,abc,1,1,1,1")).toThrow(/invalid open/);
+    expect(bars[0]!.availableAt).toBeNull();
+  });
+
+  it("reads an available_at column after time as each bar's availability", () => {
+    const csv = "time,available_at,open,high,low,close,volume\n2025-01-02T05:00:00.000Z,2025-01-03T05:00:00.000Z,1,2,0.5,1.5,10\n1735880400000,1735966800000,1.5,2,1,1.2,3\n";
+    const bars = parseBarsCsv(csv);
+    expect(bars.map((b) => [b.t, b.availableAt])).toEqual([
+      [Date.parse("2025-01-02T05:00:00Z"), Date.parse("2025-01-03T05:00:00Z")],
+      [1735880400000, 1735966800000],
+    ]);
+    expect(bars[0]!.open).toBe(1); // columns are read by name, not position
+    expect(() => parseBarsCsv("time,available_at,open,high,low,close,volume\n0,,1,1,1,1,1")).toThrow(/available_at is empty/);
+    expect(() => parseBarsCsv("time,available_at,open,high,low,close,volume\n0,soon,1,1,1,1,1")).toThrow(/available_at/);
+  });
+
+  it("accepts --calendar and leaves it unset by default", () => {
+    expect(parseMlArgs(["ds1"]).calendar).toBeNull();
+    expect(parseMlArgs(["--csv", "a.csv", "--fee-bps", "1", "--slippage-bps", "2", "--calendar", "US_EQUITY"]).calendar).toBe("US_EQUITY");
+    expect(() => parseMlArgs(["ds1", "--calendar", "LSE"])).toThrow(/must be one of/);
+    expect(parseMlArgs(["ds1", "--prefix-probes", "24"]).prefixProbes).toBe(24);
+    expect(() => parseMlArgs(["ds1", "--prefix-probes", "0"])).toThrow(/positive integer/);
   });
 });

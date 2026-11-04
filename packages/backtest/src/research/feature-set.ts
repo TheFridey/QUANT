@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { stdev } from "../stats.js";
 import { computeFeatures, FEATURE_DEFINITIONS, horizonsFor, type FeatureDefinition, type FeatureRow } from "./features.js";
 import { classifyRegimes, inferBarMs, type MarketCalendar } from "./regime.js";
+import { sessionAlignmentIssue, type SessionCalendar } from "./sessions.js";
 import type { ResearchBar } from "./simulate.js";
 
 /**
@@ -121,14 +122,20 @@ export function buildDefaultFeatureRows(bars: readonly ResearchBar[], options: {
   return base.map((row, i) => ({ ...row, values: { ...row.values, ...extra[i]! } }));
 }
 
-export type BarIssue = { index: number; code: "NON_FINITE_TIME" | "DUPLICATE_TIMESTAMP" | "UNORDERED" | "MISALIGNED" | "BAD_PRICE" | "INCONSISTENT_OHLC" | "BAD_VOLUME" | "NOT_YET_CLOSED"; detail: string };
+export type BarIssue = { index: number; code: "NON_FINITE_TIME" | "DUPLICATE_TIMESTAMP" | "UNORDERED" | "MISALIGNED" | "BAD_PRICE" | "INCONSISTENT_OHLC" | "BAD_VOLUME" | "NOT_YET_CLOSED" | "OFF_SESSION" | "BAD_AVAILABILITY"; detail: string };
 
-/** Integrity checks on raw bars. The ML pipeline refuses data with any issue rather than repairing it. */
-export function validateResearchBars(bars: readonly ResearchBar[], options: { barMs?: number; asOf?: number } = {}): BarIssue[] {
+/**
+ * Integrity checks on raw bars. The ML pipeline refuses data with any issue rather than repairing it. Alignment
+ * and session membership follow `calendar` (default CRYPTO_24_7: one fixed UTC grid from the first bar; US_EQUITY:
+ * NYSE sessions in New York time). When `availableAt` is given (aligned with bars) each must be finite and no
+ * earlier than the bar's close (open + interval).
+ */
+export function validateResearchBars(bars: readonly ResearchBar[], options: { barMs?: number; asOf?: number; calendar?: SessionCalendar; availableAt?: ReadonlyArray<number | null> } = {}): BarIssue[] {
   const issues: BarIssue[] = [];
   if (!bars.length) return issues;
   const barMs = options.barMs ?? inferBarMs(bars);
   const t0 = bars[0]!.t;
+  const calendar = options.calendar ?? "CRYPTO_24_7";
   bars.forEach((b, i) => {
     if (!Number.isFinite(b.t)) {
       issues.push({ index: i, code: "NON_FINITE_TIME", detail: `t=${String(b.t)}` });
@@ -139,7 +146,10 @@ export function validateResearchBars(bars: readonly ResearchBar[], options: { ba
       if (b.t === prev) issues.push({ index: i, code: "DUPLICATE_TIMESTAMP", detail: new Date(b.t).toISOString() });
       else if (b.t < prev) issues.push({ index: i, code: "UNORDERED", detail: `${new Date(b.t).toISOString()} after ${new Date(prev).toISOString()}` });
     }
-    if (barMs > 0 && (b.t - t0) % barMs !== 0) issues.push({ index: i, code: "MISALIGNED", detail: `offset ${(b.t - t0) % barMs} ms from the ${barMs} ms grid` });
+    const align = sessionAlignmentIssue(b.t, barMs, calendar, t0);
+    if (align) issues.push({ index: i, ...align });
+    const av = options.availableAt?.[i];
+    if (av !== undefined && av !== null && !(Number.isFinite(av) && av >= b.t + barMs)) issues.push({ index: i, code: "BAD_AVAILABILITY", detail: `available_at ${Number.isFinite(av) ? new Date(av).toISOString() : String(av)} is before the bar closes` });
     const prices = [b.open, b.high, b.low, b.close];
     if (prices.some((p) => !Number.isFinite(p) || !(p > 0))) issues.push({ index: i, code: "BAD_PRICE", detail: prices.join(",") });
     else if (b.high < Math.max(b.open, b.close, b.low) || b.low > Math.min(b.open, b.close)) issues.push({ index: i, code: "INCONSISTENT_OHLC", detail: prices.join(",") });

@@ -1,7 +1,7 @@
 import "../load-env.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { DEFAULT_ML2_CONFIG, horizonsFor, inferBarMs, ML2_PROTOCOL_VERSION, runMlPipeline, type Ml2Report, type ResearchBar } from "@odin/backtest";
+import { DEFAULT_ML2_CONFIG, horizonsFor, inferBarMs, ML2_PROTOCOL_VERSION, runMlPipeline, type Ml2Report, type ResearchBar, type SessionCalendar } from "@odin/backtest";
 import { INTERVAL_MS, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
 import { costPerSide } from "./cost-basis.js";
@@ -20,7 +20,16 @@ import { ML_CLI_USAGE, parseBarsCsv, parseMlArgs } from "./ml-args.js";
  * nothing, the holdout is always withheld here, so the best verdict it can print is INSUFFICIENT_EVIDENCE
  * ("walk-forward passed; holdout withheld"). Bars are passed through unrepaired; duplicates, disorder or
  * off-grid timestamps are refused by the pipeline.
+ *
+ * `--calendar CRYPTO_24_7|US_EQUITY` sets bar alignment and label-gap rules. Warehouse mode defaults to
+ * US_EQUITY for an EQUITY_ETF dataset (daily bars open at New York midnight; weekends and NYSE holidays are not
+ * gaps) and CRYPTO_24_7 otherwise; CSV mode has no instrument kind and defaults to CRYPTO_24_7, so pass
+ * `--calendar US_EQUITY` for an equity export. A CSV `available_at` column is honoured: bars not yet available
+ * are dropped (as in the warehouse read) and each bar's availability feeds the pipeline's causality check.
  */
+
+/** Upper bound on bars read from the warehouse (matches the dataset quota). */
+const MAX_WAREHOUSE_BARS = 200_000;
 
 function compact(report: Ml2Report) {
   const r6 = (x: number | null | undefined) => (x === null || x === undefined ? null : +x.toFixed(6));
@@ -83,12 +92,21 @@ async function main() {
   let slippageBps: number;
   let costBasis: string;
   let priorTrials: number;
+  let calendar: SessionCalendar;
+  let barAvailableAt: number[] | undefined;
   if (args.csvPath) {
     const text = readFileSync(args.csvPath, "utf8");
-    bars = parseBarsCsv(text);
+    const parsed = parseBarsCsv(text);
+    // Same rule as the warehouse read: a bar not yet available now is not used (only when the CSV says when).
+    const now = Date.now();
+    const usable = parsed.filter((b) => b.availableAt === null || b.availableAt <= now);
+    bars = usable.map(({ t, open, high, low, close, volume }) => ({ t, open, high, low, close, volume }));
+    const hasAvailability = usable.length > 0 && usable.every((b) => b.availableAt !== null);
+    barAvailableAt = hasAvailability ? usable.map((b) => b.availableAt!) : undefined;
     if (args.interval !== null && !(args.interval in INTERVAL_MS)) throw new Error(`unknown --interval ${args.interval}`);
     barMs = args.interval ? INTERVAL_MS[args.interval as HistoryInterval] : inferBarMs(bars);
-    source = { kind: "CSV", path: args.csvPath, sha256: createHash("sha256").update(text).digest("hex"), rows: bars.length };
+    calendar = args.calendar ?? "CRYPTO_24_7";
+    source = { kind: "CSV", path: args.csvPath, sha256: createHash("sha256").update(text).digest("hex"), rows: parsed.length, notYetAvailable: parsed.length - usable.length, availability: hasAvailability ? "available_at column" : "bar close (open + interval)" };
     feeBps = args.feeBps!;
     slippageBps = args.slippageBps!;
     costBasis = "operator-supplied --fee-bps and --slippage-bps per side";
@@ -97,9 +115,13 @@ async function main() {
     const prisma = new PrismaClient();
     try {
       const dataset = await prisma.historicalDataset.findUniqueOrThrow({ where: { id: args.datasetId! } });
-      const rows = await prisma.historicalBar.findMany({ where: { datasetId: dataset.id, availableAt: { lte: new Date() } }, orderBy: { openTime: "asc" } });
+      // Bounded read: one more than the quota, so an oversized dataset is refused rather than silently truncated.
+      const rows = await prisma.historicalBar.findMany({ where: { datasetId: dataset.id, availableAt: { lte: new Date() } }, orderBy: { openTime: "asc" }, take: MAX_WAREHOUSE_BARS + 1 });
+      if (rows.length > MAX_WAREHOUSE_BARS) throw new Error(`REFUSED: dataset ${dataset.id} has more than ${MAX_WAREHOUSE_BARS} available bars; this CLI reads at most ${MAX_WAREHOUSE_BARS}`);
       bars = rows.map((row) => ({ t: row.openTime.getTime(), open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close), volume: row.volume === null ? null : Number(row.volume) }));
+      barAvailableAt = rows.map((row) => row.availableAt.getTime());
       barMs = INTERVAL_MS[dataset.interval as HistoryInterval] ?? inferBarMs(bars);
+      calendar = args.calendar ?? (dataset.instrumentKind === "EQUITY_ETF" ? "US_EQUITY" : "CRYPTO_24_7");
       source = { kind: "WAREHOUSE", datasetId: dataset.id, instrument: dataset.instrumentKey, interval: dataset.interval, versionHash: dataset.versionHash, bars: bars.length };
       if (args.feeBps !== null || args.slippageBps !== null) {
         feeBps = args.feeBps ?? 0;
@@ -120,9 +142,11 @@ async function main() {
   const report = runMlPipeline({
     bars,
     barMs,
+    calendar,
+    barAvailableAt,
     labelSpec: { horizon, feeBpsPerSide: feeBps, slippageBpsPerSide: slippageBps, stopPct: args.stopPct, targetPct: args.targetPct },
     target: args.target,
-    config: { scheme: args.scheme, calibration: args.calibration, folds: args.folds ?? DEFAULT_ML2_CONFIG.folds, seed: args.seed ?? DEFAULT_ML2_CONFIG.seed },
+    config: { scheme: args.scheme, calibration: args.calibration, folds: args.folds ?? DEFAULT_ML2_CONFIG.folds, seed: args.seed ?? DEFAULT_ML2_CONFIG.seed, prefixProbes: args.prefixProbes ?? DEFAULT_ML2_CONFIG.prefixProbes },
     priorTrialCount: priorTrials,
   });
   const runtimeMs = Number(process.hrtime.bigint() - started) / 1e6;
@@ -135,6 +159,7 @@ async function main() {
         codeVersion: process.env.GIT_COMMIT ?? "unknown",
         source,
         barMs,
+        calendar,
         costBasis,
         priorTrials,
         report: compact(report),

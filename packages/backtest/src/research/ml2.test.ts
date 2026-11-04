@@ -276,6 +276,19 @@ describe("ML Engine 2.0 pipeline (GENESIS-4)", () => {
     expect(() => runMlPipeline(input(bars, { featureBuilder: builder, featureSet: spec }))).toThrow(/REFUSED: feature leak changes when later bars are removed/);
   });
 
+  it("spreads 12 prefix-audit probes over the whole series and catches look-ahead confined to the first half", () => {
+    const bars = noise.slice(0, 1500);
+    const ds = buildMl2Dataset(input(bars));
+    expect(ds.probes).toHaveLength(12);
+    expect(Math.min(...ds.probes)).toBeLessThan(bars.length / 4);
+    expect(Math.max(...ds.probes)).toBe(bars.length - 2);
+    // Reads the next bar only before bar 700: invisible to probes placed only in the second half.
+    const builder = (b: readonly ResearchBar[]) =>
+      buildDefaultFeatureRows(b, { barMs: H }).map((r) => ({ ...r, values: { ...r.values, early_leak: r.index < 700 ? (b[r.index + 1]?.close ?? null) : b[r.index]!.close } }));
+    const spec = { ...defaultFeatureSetSpec(H), features: [...defaultFeatureSetSpec(H).features, "early_leak"] };
+    expect(() => runMlPipeline(input(bars, { featureBuilder: builder, featureSet: spec }))).toThrow(/REFUSED: feature early_leak changes when later bars are removed/);
+  });
+
   it("fits preprocessing on each fold's inner training rows only (parameters differ by fold, never see test rows)", () => {
     const report = runMlPipeline(input(noise));
     const ds = buildMl2Dataset(input(noise));
