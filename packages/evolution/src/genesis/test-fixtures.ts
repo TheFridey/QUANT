@@ -46,7 +46,7 @@ export function fixtureArtefact(input: { barMs?: number; trainedThroughTime: num
 
 export const FIXTURE_DATASET_HASH = "a".repeat(64);
 
-export function fixtureRegistration(input: { family: string; version: string; artefact: unknown; instrumentKeys?: string[]; barMs?: number; horizon?: number; entryThreshold?: number }): RegisterModelInput {
+export function fixtureRegistration(input: { family: string; version: string; artefact: unknown; instrumentKeys?: string[]; barMs?: number; horizon?: number; entryThreshold?: number; validation?: Record<string, unknown> }): RegisterModelInput {
   return {
     family: input.family,
     version: input.version,
@@ -55,7 +55,7 @@ export function fixtureRegistration(input: { family: string; version: string; ar
     labelDefinition: { horizon: input.horizon ?? 2, feeBpsPerSide: 10, slippageBpsPerSide: 5, stopPct: null, targetPct: null },
     hyperparameters: { lambda: 0.01 },
     trainingProtocol: { protocol: ML2_PROTOCOL_VERSION, target: "NET_POSITIVE", shadow: { barMs: input.barMs ?? HOUR, instrumentKeys: input.instrumentKeys ?? ["TEST:GENESIS"], entryThreshold: input.entryThreshold ?? 0.55, lookbackBars: 600, maxAbsZ: 1e12 } },
-    validation: { verdict: "CANDIDATE", walkForwardBrier: 0.24, shadowPayoff: { meanNetIfPositive: 0.01, meanNetIfNotPositive: -0.008 } },
+    validation: { verdict: "CANDIDATE", walkForwardBrier: 0.24, shadowPayoff: { meanNetIfPositive: 0.01, meanNetIfNotPositive: -0.008 }, ...input.validation },
     evidenceLinks: ["docs/genesis/DEPLOY_REGISTRY_SHADOW.md"],
     codeCommit: "a4e7b52",
     hypothesisId: null,

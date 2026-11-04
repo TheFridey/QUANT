@@ -1,6 +1,6 @@
 import { labelSpecHash, type LabelSpec, type Ml2Artefact } from "@odin/backtest/ml2";
 import { Prisma, toJson, type PrismaClient } from "@odin/shared/db";
-import { canonicalHash, canonicalJson, HEX64 } from "./canonical.js";
+import { canonicalHash, canonicalJson, HEX64, roundNumbers, sha256Hex } from "./canonical.js";
 import { parseMl2Artefact } from "./model-artefact.js";
 import { checkModelTransition, isModelState, type ModelState } from "./model-lifecycle.js";
 
@@ -43,9 +43,12 @@ export type RegisterModelInput = {
 
 export type ModelVersionRow = Prisma.ModelVersionGetPayload<object>;
 
-/** Canonical SHA-256 of an artefact (key-sorted JSON). Not `ml2ArtefactHash`, which hashes insertion order. */
+/**
+ * SHA-256 of the artefact's canonical JSON text (key-sorted), which is exactly what ModelVersion.artefact
+ * stores. Not `ml2ArtefactHash`, which hashes insertion order.
+ */
 export function modelArtefactHash(artefact: Ml2Artefact | unknown): string {
-  return canonicalHash(artefact);
+  return sha256Hex(canonicalJson(artefact));
 }
 
 /** Validates and normalises a registration without touching the database. */
@@ -53,7 +56,7 @@ export function prepareModelRegistration(input: RegisterModelInput) {
   const artefact = parseMl2Artefact(input.artefact);
   const artefactJson = canonicalJson(artefact);
   if (Buffer.byteLength(artefactJson) > MAX_ARTEFACT_BYTES) throw new ModelRegistryError("ARTEFACT_TOO_LARGE", `artefact is ${Buffer.byteLength(artefactJson)} bytes (max ${MAX_ARTEFACT_BYTES})`);
-  const artefactHash = canonicalHash(artefact);
+  const artefactHash = sha256Hex(artefactJson);
   if (input.artefactHash !== undefined && input.artefactHash !== artefactHash) {
     throw new ModelRegistryError("HASH_MISMATCH", `claimed artefact hash ${input.artefactHash} differs from computed ${artefactHash}`);
   }
@@ -61,7 +64,8 @@ export function prepareModelRegistration(input: RegisterModelInput) {
   if (!/^[a-f0-9]{7,40}$/.test(input.codeCommit)) throw new ModelRegistryError("BAD_CODE_COMMIT", "codeCommit must be a git commit hash");
   if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(input.family) || !/^[A-Za-z0-9_.:+-]{1,64}$/.test(input.version)) throw new ModelRegistryError("BAD_IDENTITY", "family/version have invalid characters");
   if (!input.registeredBy.trim()) throw new ModelRegistryError("ACTOR_REQUIRED", "registeredBy is required");
-  const labelDefinition = { ...input.labelDefinition, stopPct: input.labelDefinition.stopPct ?? null, targetPct: input.labelDefinition.targetPct ?? null };
+  // Rounded to 12 significant digits so labelSpecHash re-verifies after a JSONB round trip.
+  const labelDefinition = roundNumbers({ ...input.labelDefinition, stopPct: input.labelDefinition.stopPct ?? null, targetPct: input.labelDefinition.targetPct ?? null });
   // Every JSON field must survive canonical JSON exactly (no NaN, Infinity, undefined or class instances).
   for (const [name, value] of Object.entries({ labelDefinition, hyperparameters: input.hyperparameters, trainingProtocol: input.trainingProtocol, validation: input.validation })) {
     try {
@@ -87,7 +91,8 @@ export function prepareModelRegistration(input: RegisterModelInput) {
       trainingProtocol: input.trainingProtocol,
       validation: input.validation,
       evidenceLinks: [...(input.evidenceLinks ?? [])],
-      artefact,
+      /** Exact canonical JSON text; stored as TEXT so the hashed bytes never change. */
+      artefact: artefactJson,
       artefactHash,
       hypothesisId: input.hypothesisId ?? null,
     },
@@ -96,9 +101,13 @@ export function prepareModelRegistration(input: RegisterModelInput) {
 
 type Prepared = ReturnType<typeof prepareModelRegistration>["data"];
 
-/** Fields that define a model version; a re-registration must match every one of them. */
+/**
+ * Fields that define a model version; a re-registration must match every one of them. JSONB-held fields
+ * are compared at 12 significant digits (a JSONB round trip can move a float by one ulp); the artefact is
+ * compared exactly through its hash.
+ */
 function registrationFingerprint(row: Pick<Prepared, "artefactHash" | "datasetHashes" | "labelSpecHash" | "codeCommit" | "hyperparameters" | "labelDefinition" | "trainingProtocol" | "validation" | "evidenceLinks" | "hypothesisId" | "protocol" | "featureSetHash">): string {
-  return canonicalHash({
+  return canonicalHash(roundNumbers({
     artefactHash: row.artefactHash,
     datasetHashes: row.datasetHashes,
     labelSpecHash: row.labelSpecHash,
@@ -111,7 +120,7 @@ function registrationFingerprint(row: Pick<Prepared, "artefactHash" | "datasetHa
     hypothesisId: row.hypothesisId,
     protocol: row.protocol,
     featureSetHash: row.featureSetHash,
-  });
+  }));
 }
 
 function fingerprintOfRow(row: ModelVersionRow): string {
@@ -160,7 +169,6 @@ export async function registerModel(prisma: PrismaClient, input: RegisterModelIn
           labelDefinition: toJson(data.labelDefinition),
           trainingProtocol: toJson(data.trainingProtocol),
           validation: toJson(data.validation),
-          artefact: toJson(data.artefact),
         },
       });
       const evidence = { artefactHash: row.artefactHash, labelSpecHash: row.labelSpecHash, featureSetHash: row.featureSetHash, datasetHashes: row.datasetHashes, codeCommit: row.codeCommit };
@@ -181,13 +189,21 @@ export async function registerModel(prisma: PrismaClient, input: RegisterModelIn
 
 /** Throws unless the stored artefact re-hashes to its artefactHash and matches its identity columns. */
 export function verifyStoredArtefact(row: Pick<ModelVersionRow, "id" | "artefact" | "artefactHash" | "featureSetHash" | "protocol" | "trainingCutoff" | "labelDefinition" | "labelSpecHash">): Ml2Artefact {
-  const recomputed = canonicalHash(row.artefact);
+  const recomputed = sha256Hex(row.artefact);
   if (recomputed !== row.artefactHash) throw new ModelRegistryError("HASH_MISMATCH", `model ${row.id}: stored artefact hashes to ${recomputed}, row says ${row.artefactHash}`);
-  const artefact = parseMl2Artefact(row.artefact);
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(row.artefact) as unknown;
+  } catch {
+    throw new ModelRegistryError("HASH_MISMATCH", `model ${row.id}: stored artefact is not JSON`);
+  }
+  // Only parsed as JSON data and checked against the strict schema; never evaluated.
+  const artefact = parseMl2Artefact(parsedJson);
+  if (canonicalJson(artefact) !== row.artefact) throw new ModelRegistryError("HASH_MISMATCH", `model ${row.id}: stored artefact is not in canonical form`);
   if (artefact.featureSetHash !== row.featureSetHash || artefact.protocol !== row.protocol || artefact.trainedThroughTime !== row.trainingCutoff.getTime()) {
     throw new ModelRegistryError("IDENTITY_MISMATCH", `model ${row.id}: artefact disagrees with its featureSetHash, protocol or training cutoff`);
   }
-  if (labelSpecHash(row.labelDefinition as LabelSpec) !== row.labelSpecHash) throw new ModelRegistryError("IDENTITY_MISMATCH", `model ${row.id}: labelDefinition does not hash to labelSpecHash`);
+  if (labelSpecHash(roundNumbers(row.labelDefinition as LabelSpec)) !== row.labelSpecHash) throw new ModelRegistryError("IDENTITY_MISMATCH", `model ${row.id}: labelDefinition does not hash to labelSpecHash`);
   return artefact;
 }
 
@@ -316,7 +332,7 @@ export async function compareModels(db: Db, aId: string, bId: string): Promise<M
   for (const f of fields) if (a.model[f] !== b.model[f]) differences.push(f);
   if (a.model.trainingCutoff.getTime() !== b.model.trainingCutoff.getTime()) differences.push("trainingCutoff");
   if (canonicalJson([...a.model.datasetHashes].sort()) !== canonicalJson([...b.model.datasetHashes].sort())) differences.push("datasetHashes");
-  for (const f of ["hyperparameters", "trainingProtocol", "validation", "labelDefinition"] as const) if (canonicalJson(a.model[f]) !== canonicalJson(b.model[f])) differences.push(f);
+  for (const f of ["hyperparameters", "trainingProtocol", "validation", "labelDefinition"] as const) if (canonicalJson(roundNumbers(a.model[f])) !== canonicalJson(roundNumbers(b.model[f]))) differences.push(f);
   const summary = (m: LoadedModel) => ({ id: m.model.id, family: m.model.family, version: m.model.version, trainingCutoff: m.model.trainingCutoff.toISOString(), artefactHash: m.model.artefactHash });
   return { a: summary(a), b: summary(b), comparable: a.model.labelSpecHash === b.model.labelSpecHash && a.model.featureSetHash === b.model.featureSetHash, differences };
 }

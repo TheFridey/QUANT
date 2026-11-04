@@ -1352,7 +1352,9 @@ model ModelVersion {
   trainingProtocol Json
   validation       Json
   evidenceLinks    String[]
-  artefact         Json
+  /// Exact canonical JSON text of the artefact (TEXT, not JSONB, so the hashed bytes never change).
+  artefact         String
+  /// SHA-256 of `artefact` (enforced by a CHECK).
   artefactHash     String
   /// Optional link to the research hypothesis the model tests.
   hypothesisId     String?
@@ -1434,6 +1436,8 @@ model ShadowPrediction {
   estimatedCostBps    Float
   abstainReasons      String[]
   inputHash           String
+  /// Exact canonical JSON of the record; recordHash = SHA-256 of it (CHECK). Typed columns are for queries.
+  recordCanonical     String
   recordHash          String
   /// Set from the database clock by the insert trigger.
   createdAt           DateTime @default(now())
@@ -1462,6 +1466,8 @@ model ShadowOutcome {
   costBpsApplied            Float
   source                    String   @default("HYPOTHETICAL_SHADOW")
   barsHash                  String
+  /// Exact canonical JSON of the outcome; recordHash = SHA-256 of it (CHECK).
+  recordCanonical           String
   recordHash                String
   /// Set from the database clock by the insert trigger.
   createdAt                 DateTime @default(now())

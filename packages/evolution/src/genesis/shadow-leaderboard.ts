@@ -2,7 +2,7 @@ import { blockBootstrapInterval, calibration } from "@odin/backtest/ml2";
 import type { PrismaClient } from "@odin/shared/db";
 import type { ModelState } from "./model-lifecycle.js";
 import { modelStates } from "./model-registry.js";
-import { parseShadowSpec, predictionRecordHash, type PredictionRecord } from "./shadow.js";
+import { parseShadowSpec, verifyStoredPrediction } from "./shadow.js";
 
 /**
  * GENESIS shadow leaderboard (read only). Evidence per model from hypothetical shadow outcomes only; never
@@ -145,15 +145,19 @@ export async function shadowLeaderboard(prisma: PrismaClient, input: { now?: Dat
     const horizonBars = rows[0]?.horizonBars ?? (model.labelDefinition as { horizon?: number }).horizon ?? 1;
     const barMs = rows[0]?.barMs ?? 0;
     const row = computeLeaderboardRow({
-      rows: rows.map((r) => ({
-        decisionTime: r.decisionTime.getTime(),
-        horizonEndsAt: r.horizonEndsAt.getTime(),
-        status: r.status as "PREDICTED" | "ABSTAINED",
-        probability: r.probability,
-        abstainReasons: r.abstainReasons,
-        hashOk: predictionRecordHash({ ...r, status: r.status as PredictionRecord["status"], features: r.features as Record<string, number | null> }) === r.recordHash,
-        outcome: r.outcome && { available: r.outcome.hypotheticalFillAvailable, net: r.outcome.realisedNetReturn, positive: r.outcome.positive },
-      })),
+      rows: rows.map((r) => {
+        const verified = verifyStoredPrediction(r);
+        return {
+          decisionTime: r.decisionTime.getTime(),
+          horizonEndsAt: r.horizonEndsAt.getTime(),
+          status: r.status as "PREDICTED" | "ABSTAINED",
+          // The exact hashed value, not the float column.
+          probability: verified ? verified.probability : r.probability,
+          abstainReasons: r.abstainReasons,
+          hashOk: verified !== null,
+          outcome: r.outcome && { available: r.outcome.hypotheticalFillAvailable, net: r.outcome.realisedNetReturn, positive: r.outcome.positive },
+        };
+      }),
       entryThreshold: threshold,
       horizonBars,
       now,

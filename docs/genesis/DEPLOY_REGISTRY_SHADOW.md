@@ -16,6 +16,12 @@ Status: **implemented; not deployed; off by default.** Stacked on GENESIS Phase 
 
 Lifecycle states (`EXPERIMENTAL` … `PAPER_APPROVED`, `RETIRED`, `FAILED`, `REJECTED`) are **evidence labels only**. None grants trading authority; nothing here writes `EngineControl`, risk configuration, strategy instances, promotions or execution permissions, or creates orders/trade intents. The operator promotion process (`packages/evolution/src/promotion.ts`, unchanged) stays the only route to a paper strategy. Shadow outcomes have `source = HYPOTHETICAL_SHADOW` and never enter the ledger or paper metrics.
 
+Hashed content is stored as exact text:
+- `ModelVersion.artefact` holds the canonical JSON text.
+- `ShadowPrediction.recordCanonical` and `ShadowOutcome.recordCanonical` hold the canonical record text.
+
+None of these is stored as JSONB: a JSONB round trip through the Prisma engine can move a float by one ulp, which broke hash re-verification in CI. CHECK constraints enforce `hash = sha256(text)` in the database. Typed and JSONB columns are kept for querying.
+
 ## Flag
 
 | Variable | Default | Effect |

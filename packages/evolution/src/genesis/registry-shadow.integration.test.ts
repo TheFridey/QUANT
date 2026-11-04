@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import type { ResearchBar } from "@odin/backtest/ml2";
 import { PrismaClient, toJson } from "@odin/shared/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { recordModelPaperApproval, registerModel, transitionModel, currentModelState } from "./model-registry.js";
-import { runShadowCycle, runShadowTick, type ShadowBarSource } from "./shadow.js";
+import { runMlPipeline } from "@odin/backtest";
+import { canonicalJson } from "./canonical.js";
+import { currentModelState, loadModel, modelArtefactHash, recordModelPaperApproval, registerModel, transitionModel } from "./model-registry.js";
+import { runShadowCycle, runShadowTick, verifyStoredPrediction, type ShadowBarSource } from "./shadow.js";
 import { shadowLeaderboard } from "./shadow-leaderboard.js";
 import { fixtureArtefact, fixtureRegistration, syntheticBars } from "./test-fixtures.js";
 
@@ -13,6 +15,9 @@ const enabled = Boolean(databaseUrl && databaseUrl.includes("odin_test"));
 /** 5-second bars keep the real-time timing rules (latency ≤ one bar, outcome after the horizon) testable. */
 const BAR = 5_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** A record text and its SHA-256, so hand-written rows pass the record-hash CHECK and hit the rule under test. */
+const FAKE_TEXT = '{"test":true}';
+const FAKE_HASH = createHash("sha256").update(FAKE_TEXT).digest("hex");
 
 function memorySource(bars: ResearchBar[]): ShadowBarSource {
   return {
@@ -70,6 +75,26 @@ describe.skipIf(!enabled)("GENESIS model registry and shadow predictions (databa
     await expect(prisma.$executeRawUnsafe(`TRUNCATE "ModelPaperApproval" CASCADE`)).rejects.toThrow(/append-only/);
   });
 
+  it("stores real full-precision artefacts so they re-verify on load, and the DB checks the artefact hash", async () => {
+    const bars = syntheticBars(1500, Date.now() - 2 * 86_400_000, 3_600_000, 9);
+    const report = runMlPipeline({ bars, barMs: 3_600_000, labelSpec: { horizon: 2, feeBpsPerSide: 5, slippageBpsPerSide: 5 }, config: { folds: 2, bootstrapResamples: 20, randomControls: 10 } });
+    for (const artefact of Object.values(report.finalArtefacts)) {
+      const { model } = await registerModel(prisma, fixtureRegistration({ family: `it-${suffix}`, version: `real-${artefact.family}`, artefact, validation: { walkForwardBrier: 0.2412345678901234 } }));
+      const loaded = await loadModel(prisma, model.id);
+      expect(loaded.model.artefactHash).toBe(modelArtefactHash(artefact));
+      await expect(registerModel(prisma, fixtureRegistration({ family: `it-${suffix}`, version: `real-${artefact.family}`, artefact, validation: { walkForwardBrier: 0.2412345678901234 } }))).resolves.toMatchObject({ status: "ALREADY_REGISTERED" });
+    }
+    const artefact = fixtureArtefact({ trainedThroughTime: Date.now() - 86_400_000, barMs: BAR, p: 0.62 });
+    const text = canonicalJson(artefact);
+    await expect(
+      prisma.$executeRawUnsafe(
+        `INSERT INTO "ModelVersion" ("id","family","version","protocol","trainingCutoff","registeredBy","datasetHashes","featureSetHash","labelSpecHash","codeCommit","hyperparameters","labelDefinition","trainingProtocol","validation","evidenceLinks","artefact","artefactHash")
+         VALUES ($1,$2,'forged','ml-wf-2.0.0',now() - interval '1 day','genesis-test',ARRAY[$3],$3,$3,'a4e7b52','{}','{}','{}','{}',ARRAY[]::text[],$4,$3)`,
+        `forged_${suffix}`, `it-${suffix}`, "a".repeat(64), text,
+      ),
+    ).rejects.toThrow(/ModelVersion_artefact_hash/);
+  });
+
   it("enforces the lifecycle in the database: chain, transition table, operator approval", async () => {
     const artefact = fixtureArtefact({ trainedThroughTime: Date.now() - 86_400_000, barMs: BAR, p: 0.61 });
     const { model } = await registerModel(prisma, fixtureRegistration({ family: `it-${suffix}`, version: "lifecycle", artefact, barMs: BAR, horizon: 1 }));
@@ -91,7 +116,8 @@ describe.skipIf(!enabled)("GENESIS model registry and shadow predictions (databa
     await expect(transitionModel(prisma, { modelVersionId: model.id, to: "PAPER_CANDIDATE", actor: "genesis-test", reason: "test" })).rejects.toThrow(/OPERATOR_REQUIRED/);
     await expect(raw(4, "SHADOW_VALIDATED", "PAPER_CANDIDATE")).rejects.toThrow(/ModelLifecycleEvent_operator_states/);
     await transitionModel(prisma, { modelVersionId: model.id, to: "PAPER_CANDIDATE", actor: "operator:ops@odin.local", reason: "operator review" });
-    await expect(raw(5, "PAPER_CANDIDATE", "PAPER_APPROVED", "operator:ops@odin.local")).rejects.toThrow(/ModelLifecycleEvent_operator_states/);
+    // The insert trigger refuses a missing approval before the CHECK on approvalId runs.
+    await expect(raw(5, "PAPER_CANDIDATE", "PAPER_APPROVED", "operator:ops@odin.local")).rejects.toThrow(/current operator approval|ModelLifecycleEvent_operator_states/);
     await expect(
       prisma.$executeRawUnsafe(`INSERT INTO "ModelPaperApproval" ("id","modelVersionId","approvedBy","expiresAt","subjectHash") VALUES ($1,$2,'operator:ops@odin.local', now() + interval '1 hour', $3)`, `apr_${suffix}`, model.id, "f".repeat(64)),
     ).rejects.toThrow(/subject does not match/);
@@ -123,6 +149,9 @@ describe.skipIf(!enabled)("GENESIS model registry and shadow predictions (databa
     const prediction = await prisma.shadowPrediction.findFirstOrThrow({ where: { modelVersionId: model.id } });
     expect(prediction.decisionBarOpenTime.getTime()).toBe(lastOpen);
     expect(prediction.createdAt.getTime()).toBeLessThan(prediction.horizonEndsAt.getTime());
+    // The stored record re-verifies after the database round trip.
+    expect(verifyStoredPrediction(prediction)).not.toBeNull();
+    await expect(prisma.$executeRawUnsafe(`INSERT INTO "ShadowOutcome" ("id","predictionId","resolvedAt","hypotheticalFillAvailable","costBpsApplied","barsHash","recordCanonical","recordHash") VALUES ($1,$2,now(),false,30,$3,'{}',$3)`, `bad_${suffix}`, prediction.id, "a".repeat(64))).rejects.toThrow(/before its horizon|ShadowOutcome_record_hash/);
 
     // Idempotent per decision bar.
     expect((await runShadowCycle(prisma, { bars: source, modelIds: [model.id] })).duplicates).toBe(1);
@@ -130,7 +159,7 @@ describe.skipIf(!enabled)("GENESIS model registry and shadow predictions (databa
     await expect(prisma.$executeRawUnsafe(`UPDATE "ShadowPrediction" SET "probability" = 0.99 WHERE "id" = $1`, prediction.id)).rejects.toThrow(/append-only/);
     await expect(prisma.$executeRawUnsafe(`DELETE FROM "ShadowPrediction" WHERE "id" = $1`, prediction.id)).rejects.toThrow(/append-only/);
     await expect(
-      prisma.shadowOutcome.create({ data: { predictionId: prediction.id, resolvedAt: prediction.horizonEndsAt, hypotheticalFillAvailable: false, costBpsApplied: 30, barsHash: "a".repeat(64), recordHash: "a".repeat(64) } }),
+      prisma.shadowOutcome.create({ data: { predictionId: prediction.id, resolvedAt: prediction.horizonEndsAt, hypotheticalFillAvailable: false, costBpsApplied: 30, barsHash: "a".repeat(64), recordCanonical: FAKE_TEXT, recordHash: FAKE_HASH } }),
     ).rejects.toThrow(/before its horizon ended/);
     const old = lastOpen - 100 * BAR;
     await expect(
@@ -149,12 +178,12 @@ describe.skipIf(!enabled)("GENESIS model registry and shadow predictions (databa
     expect(outcome.hypotheticalFillAvailable).toBe(true);
     expect(outcome.resolvedAt.getTime()).toBeGreaterThanOrEqual(prediction.horizonEndsAt.getTime());
     await expect(
-      prisma.shadowOutcome.create({ data: { predictionId: prediction.id, resolvedAt: new Date(), hypotheticalFillAvailable: false, costBpsApplied: 30, barsHash: "a".repeat(64), recordHash: "a".repeat(64) } }),
+      prisma.shadowOutcome.create({ data: { predictionId: prediction.id, resolvedAt: new Date(), hypotheticalFillAvailable: false, costBpsApplied: 30, barsHash: "a".repeat(64), recordCanonical: FAKE_TEXT, recordHash: FAKE_HASH } }),
     ).rejects.toThrow(/Unique constraint|P2002/);
     await expect(prisma.$executeRawUnsafe(`UPDATE "ShadowOutcome" SET "realisedNetReturn" = 1 WHERE "id" = $1`, outcome.id)).rejects.toThrow(/append-only/);
     // positive must agree with the realised net return (CHECK runs before the unique index).
     await expect(
-      prisma.shadowOutcome.create({ data: { predictionId: prediction.id, resolvedAt: new Date(), hypotheticalFillAvailable: true, realisedNetReturn: 0.01, positive: false, mae: -0.01, mfe: 0.02, exitReason: "HORIZON", costBpsApplied: 30, barsHash: "a".repeat(64), recordHash: "a".repeat(64) } }),
+      prisma.shadowOutcome.create({ data: { predictionId: prediction.id, resolvedAt: new Date(), hypotheticalFillAvailable: true, realisedNetReturn: 0.01, positive: false, mae: -0.01, mfe: 0.02, exitReason: "HORIZON", costBpsApplied: 30, barsHash: "a".repeat(64), recordCanonical: FAKE_TEXT, recordHash: FAKE_HASH } }),
     ).rejects.toThrow(/ShadowOutcome_fill/);
     // Guards are ENABLE ALWAYS: replica mode does not bypass them.
     await expect(

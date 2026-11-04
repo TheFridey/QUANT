@@ -14,7 +14,7 @@ import {
 } from "@odin/backtest/ml2";
 import { Prisma, toJson, type PrismaClient } from "@odin/shared/db";
 import { z } from "zod";
-import { canonicalHash } from "./canonical.js";
+import { canonicalHash, canonicalJson, sha256Hex } from "./canonical.js";
 import { canTransitionModel, SHADOW_STATES, type ModelState } from "./model-lifecycle.js";
 import { loadModel, ModelRegistryError, modelStates, transitionModel, type LoadedModel } from "./model-registry.js";
 import { clampBudget, shadowBudgetFromEnv, shadowEnabled, type ShadowBudget } from "./shadow-config.js";
@@ -105,7 +105,38 @@ export type PredictionRecord = {
 
 /** SHA-256 of the canonical prediction record (every field except id and createdAt). */
 export function predictionRecordHash(r: PredictionRecord): string {
-  return canonicalHash({
+  return sha256Hex(predictionCanonical(r));
+}
+
+/**
+ * Checks a stored prediction: recordHash must be the SHA-256 of the stored canonical text (the text, not the
+ * typed columns, is what was hashed, because a float column may differ by one ulp after the Prisma engine's
+ * round trip), and the typed columns the resolver and leaderboard read must agree with that text.
+ * Returns the record parsed from the text, or null when anything disagrees.
+ */
+export function verifyStoredPrediction(row: { recordCanonical: string; recordHash: string; modelVersionId: string; instrumentKey: string; status: string; decisionBarOpenTime: Date; horizonEndsAt: Date; barMs: number; horizonBars: number; probability: number | null }): { probability: number | null } | null {
+  if (sha256Hex(row.recordCanonical) !== row.recordHash) return null;
+  let r: Record<string, unknown>;
+  try {
+    r = JSON.parse(row.recordCanonical) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const close = (a: unknown, b: number | null) => (a === null || b === null ? a === b : typeof a === "number" && Math.abs(a - b) <= 1e-12 * Math.max(1, Math.abs(a)));
+  const same =
+    r.modelVersionId === row.modelVersionId &&
+    r.instrumentKey === row.instrumentKey &&
+    r.status === row.status &&
+    r.decisionBarOpenTime === row.decisionBarOpenTime.toISOString() &&
+    r.horizonEndsAt === row.horizonEndsAt.toISOString() &&
+    r.barMs === row.barMs &&
+    r.horizonBars === row.horizonBars &&
+    close(r.probability, row.probability);
+  return same ? { probability: (r.probability as number | null) ?? null } : null;
+}
+
+export function predictionCanonical(r: PredictionRecord): string {
+  return canonicalJson({
     modelVersionId: r.modelVersionId,
     instrumentKey: r.instrumentKey,
     status: r.status,
@@ -239,8 +270,12 @@ export type OutcomeRecord = {
   barsHash: string;
 };
 
+export function outcomeCanonical(o: OutcomeRecord): string {
+  return canonicalJson({ ...o });
+}
+
 export function outcomeRecordHash(o: OutcomeRecord): string {
-  return canonicalHash({ ...o });
+  return sha256Hex(outcomeCanonical(o));
 }
 
 export type ResolveResult = { kind: "OUTCOME"; outcome: OutcomeRecord; recordHash: string } | { kind: "PENDING"; reason: string };
@@ -456,7 +491,7 @@ export async function runShadowCycle(prisma: PrismaClient, deps: ShadowCycleDeps
         continue;
       }
       try {
-        await prisma.shadowPrediction.create({ data: { ...out.record, features: toJson(out.record.features), recordHash: out.recordHash } });
+        await prisma.shadowPrediction.create({ data: { ...out.record, features: toJson(out.record.features), recordCanonical: predictionCanonical(out.record), recordHash: out.recordHash } });
         if (out.record.status === "PREDICTED") result.predicted += 1;
         else result.abstained += 1;
       } catch (error) {
@@ -538,7 +573,7 @@ export async function resolveShadowPredictions(
       break;
     }
     attempted += 1;
-    if (predictionRecordHash({ ...p, status: p.status as PredictionRecord["status"], features: p.features as Record<string, number | null> }) !== p.recordHash) {
+    if (!verifyStoredPrediction(p)) {
       out.pending.push({ predictionId: p.id, reason: "RECORD_HASH_MISMATCH" });
       await exclude(p.modelVersionId, `prediction ${p.id} record hash mismatch`);
       continue;
@@ -563,7 +598,7 @@ export async function resolveShadowPredictions(
       continue;
     }
     try {
-      await prisma.shadowOutcome.create({ data: { ...r.outcome, recordHash: r.recordHash } });
+      await prisma.shadowOutcome.create({ data: { ...r.outcome, recordCanonical: outcomeCanonical(r.outcome), recordHash: r.recordHash } });
       if (r.outcome.hypotheticalFillAvailable) out.resolved += 1;
       else out.unavailable += 1;
     } catch (error) {
@@ -601,7 +636,13 @@ export async function monitorShadowModel(prisma: PrismaClient, modelVersionId: s
   const recent = await prisma.shadowPrediction.findMany({ where: { modelVersionId }, select: { status: true }, orderBy: { decisionTime: "desc" }, take: c.window });
   const validation = (model.validation ?? {}) as Record<string, unknown>;
   const referenceBrier = typeof validation.walkForwardBrier === "number" ? validation.walkForwardBrier : null;
-  const featureNames = Array.isArray((model.artefact as { features?: unknown }).features) ? ((model.artefact as { features: string[] }).features) : [];
+  let featureNames: string[] = [];
+  try {
+    const parsed = JSON.parse(model.artefact) as { features?: unknown };
+    if (Array.isArray(parsed.features)) featureNames = parsed.features.filter((f): f is string => typeof f === "string");
+  } catch {
+    // Integrity is judged by loadModel; without names, drift is simply not assessed.
+  }
   // The PSI windows must not overlap, or drift is understated.
   const totalPredicted = await prisma.shadowPrediction.count({ where: { modelVersionId, status: "PREDICTED" } });
   const assessment = assessShadowHealth({

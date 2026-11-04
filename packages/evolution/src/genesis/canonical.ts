@@ -20,6 +20,20 @@ export function canonicalHash(value: unknown): string {
 
 export const HEX64 = /^[a-f0-9]{64}$/;
 
+/**
+ * Rounds every number to `significant` digits. Used before hashing values that live in JSONB columns: the
+ * Prisma engine's JSON float parsing can move a value by one ulp on a round trip, which rounding to 12
+ * digits absorbs. Exact-hash content (artefacts, prediction records) is stored as text instead.
+ */
+export function roundNumbers<T>(value: T, significant = 12): T {
+  if (typeof value === "number") return (Number.isFinite(value) ? Number(value.toPrecision(significant)) : value) as T;
+  if (Array.isArray(value)) return value.map((v) => roundNumbers(v, significant)) as T;
+  if (value && typeof value === "object" && !(value instanceof Date)) {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, roundNumbers(v, significant)])) as T;
+  }
+  return value;
+}
+
 function normalise(value: unknown, path: string): unknown {
   if (value === null) return null;
   switch (typeof value) {

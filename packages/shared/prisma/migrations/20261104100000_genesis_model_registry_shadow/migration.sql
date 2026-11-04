@@ -20,7 +20,7 @@ CREATE TABLE "ModelVersion" (
     "trainingProtocol" JSONB NOT NULL,
     "validation" JSONB NOT NULL,
     "evidenceLinks" TEXT[],
-    "artefact" JSONB NOT NULL,
+    "artefact" TEXT NOT NULL,
     "artefactHash" TEXT NOT NULL,
     "hypothesisId" TEXT,
 
@@ -77,6 +77,7 @@ CREATE TABLE "ShadowPrediction" (
     "estimatedCostBps" DOUBLE PRECISION NOT NULL,
     "abstainReasons" TEXT[],
     "inputHash" TEXT NOT NULL,
+    "recordCanonical" TEXT NOT NULL,
     "recordHash" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -97,6 +98,7 @@ CREATE TABLE "ShadowOutcome" (
     "costBpsApplied" DOUBLE PRECISION NOT NULL,
     "source" TEXT NOT NULL DEFAULT 'HYPOTHETICAL_SHADOW',
     "barsHash" TEXT NOT NULL,
+    "recordCanonical" TEXT NOT NULL,
     "recordHash" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -173,14 +175,21 @@ ALTER TABLE "ModelVersion" ADD CONSTRAINT "ModelVersion_hashes" CHECK (
   AND array_to_string("datasetHashes", ',') ~ '^[a-f0-9]{64}(,[a-f0-9]{64})*$'
 );
 
--- The artefact is data (coefficients, trees, calibrator parameters), stored as a JSON object of bounded size.
+-- The artefact is data (coefficients, trees, calibrator parameters). It is stored as its exact canonical JSON
+-- text, not JSONB: a JSONB round trip through the Prisma engine can move a float by one ulp, which would
+-- break hash re-verification. The database checks that the text is a JSON object of bounded size and that
+-- artefactHash is the SHA-256 of exactly that text.
 ALTER TABLE "ModelVersion" ADD CONSTRAINT "ModelVersion_artefact_data" CHECK (
-  jsonb_typeof("artefact") = 'object'
+  octet_length("artefact") <= 8388608
+  AND jsonb_typeof("artefact"::jsonb) = 'object'
   AND jsonb_typeof("hyperparameters") = 'object'
   AND jsonb_typeof("labelDefinition") = 'object'
   AND jsonb_typeof("trainingProtocol") = 'object'
   AND jsonb_typeof("validation") = 'object'
-  AND octet_length("artefact"::text) <= 8388608
+);
+
+ALTER TABLE "ModelVersion" ADD CONSTRAINT "ModelVersion_artefact_hash" CHECK (
+  encode(sha256(convert_to("artefact", 'UTF8')), 'hex') = "artefactHash"
 );
 
 ALTER TABLE "ModelVersion" ADD CONSTRAINT "ModelVersion_cutoff" CHECK ("trainingCutoff" <= "createdAt");
@@ -246,6 +255,11 @@ ALTER TABLE "ShadowPrediction" ADD CONSTRAINT "ShadowPrediction_fields" CHECK (
   AND length("instrumentKey") BETWEEN 1 AND 200
 );
 
+-- recordCanonical is the exact canonical JSON the record hash covers (typed columns are for querying).
+ALTER TABLE "ShadowPrediction" ADD CONSTRAINT "ShadowPrediction_record_hash" CHECK (
+  encode(sha256(convert_to("recordCanonical", 'UTF8')), 'hex') = "recordHash"
+);
+
 -- Shadow outcomes are hypothetical and never mixed with paper fills.
 ALTER TABLE "ShadowOutcome" ADD CONSTRAINT "ShadowOutcome_source" CHECK ("source" = 'HYPOTHETICAL_SHADOW');
 
@@ -262,6 +276,10 @@ ALTER TABLE "ShadowOutcome" ADD CONSTRAINT "ShadowOutcome_fill" CHECK (
 
 ALTER TABLE "ShadowOutcome" ADD CONSTRAINT "ShadowOutcome_fields" CHECK (
   "costBpsApplied" >= 0 AND "costBpsApplied" < 'Infinity'::float8 AND "barsHash" ~ '^[a-f0-9]{64}$' AND "recordHash" ~ '^[a-f0-9]{64}$'
+);
+
+ALTER TABLE "ShadowOutcome" ADD CONSTRAINT "ShadowOutcome_record_hash" CHECK (
+  encode(sha256(convert_to("recordCanonical", 'UTF8')), 'hex') = "recordHash"
 );
 
 -- ---------------------------------------------------------------------------------------------------------

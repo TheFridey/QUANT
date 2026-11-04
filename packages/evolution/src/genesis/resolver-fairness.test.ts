@@ -1,14 +1,14 @@
 import type { PrismaClient } from "@odin/shared/db";
 import { describe, expect, it } from "vitest";
 import { MAX_APPROVAL_TTL_MS, prepareModelRegistration, recordModelPaperApproval } from "./model-registry.js";
-import { predictionRecordHash, resolveShadowPredictions, type PredictionRecord, type ShadowBarSource } from "./shadow.js";
+import { predictionCanonical, predictionRecordHash, resolveShadowPredictions, verifyStoredPrediction, type PredictionRecord, type ShadowBarSource } from "./shadow.js";
 import { fixtureArtefact, fixtureRegistration, HOUR, syntheticBars } from "./test-fixtures.js";
 
 /**
  * In-memory stand-in for the few Prisma calls the resolver makes, so head-of-queue fairness can be tested
  * without a database. It mirrors the filters the resolver passes (status, no outcome, horizon window, model).
  */
-type Row = PredictionRecord & { id: string; recordHash: string; createdAt: Date };
+type Row = PredictionRecord & { id: string; recordCanonical: string; recordHash: string; createdAt: Date };
 
 function fakeDb(input: { models: Array<{ id: string; state: string; row: Record<string, unknown> }>; predictions: Row[] }) {
   const events = new Map(input.models.map((m) => [m.id, [{ modelVersionId: m.id, seq: 0, toState: m.state }]]));
@@ -73,7 +73,7 @@ function prediction(modelVersionId: string, k: number, tamper = false): Row {
     abstainReasons: [],
     inputHash: "b".repeat(64),
   };
-  return { ...record, id: `${modelVersionId}_${String(k).padStart(4, "0")}`, recordHash: tamper ? "0".repeat(64) : predictionRecordHash(record), createdAt: record.predictedAt };
+  return { ...record, id: `${modelVersionId}_${String(k).padStart(4, "0")}`, recordCanonical: predictionCanonical(record), recordHash: tamper ? "0".repeat(64) : predictionRecordHash(record), createdAt: record.predictedAt };
 }
 
 function modelRow(id: string) {
@@ -110,6 +110,17 @@ describe("GENESIS resolver fairness", () => {
     expect(db.state("mv_stuck")).toBe("REJECTED");
     const again = await resolveShadowPredictions(db.prisma, { bars: source, now, maxResolutions: 10 });
     expect(again.resolved).toBe(3);
+  });
+});
+
+describe("GENESIS stored prediction verification", () => {
+  it("trusts the hashed text, tolerates a one-ulp float column, and refuses disagreeing columns", () => {
+    const row = prediction("mv_v", 1);
+    expect(verifyStoredPrediction(row)).toEqual({ probability: 0.6 });
+    expect(verifyStoredPrediction({ ...row, probability: 0.6 + Number.EPSILON })).toEqual({ probability: 0.6 });
+    expect(verifyStoredPrediction({ ...row, probability: 0.7 })).toBeNull();
+    expect(verifyStoredPrediction({ ...row, horizonBars: 3 })).toBeNull();
+    expect(verifyStoredPrediction({ ...row, recordCanonical: row.recordCanonical.replace('"f":1', '"f":2') })).toBeNull();
   });
 });
 

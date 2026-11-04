@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@odin/shared/db";
 import { describe, expect, it } from "vitest";
-import { canonicalHash, canonicalJson } from "./canonical.js";
+import { canonicalHash, canonicalJson, roundNumbers, sha256Hex } from "./canonical.js";
 import { parseMl2Artefact } from "./model-artefact.js";
 import { modelArtefactHash, prepareModelRegistration, registerModel, verifyStoredArtefact, type ModelVersionRow } from "./model-registry.js";
 import { fixtureArtefact, fixtureRegistration, HOUR, syntheticBars } from "./test-fixtures.js";
@@ -12,7 +12,8 @@ function storedRow(input = fixtureRegistration({ family: "lr", version: "1", art
   const { data } = prepareModelRegistration(input);
   // Simulate a jsonb round trip: key order is not preserved.
   const reorder = (v: unknown): unknown => (Array.isArray(v) ? v.map(reorder) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).reverse().map(([k, x]) => [k, reorder(x)])) : v);
-  return { ...data, id: "mv_1", createdAt: new Date(), artefact: reorder(JSON.parse(JSON.stringify(data.artefact))), labelDefinition: reorder(data.labelDefinition) } as unknown as ModelVersionRow;
+  // The artefact is stored as its exact canonical text; JSONB fields (labelDefinition) are reordered.
+  return { ...data, id: "mv_1", createdAt: new Date(), labelDefinition: reorder(data.labelDefinition) } as unknown as ModelVersionRow;
 }
 
 describe("GENESIS canonical hashing", () => {
@@ -24,6 +25,13 @@ describe("GENESIS canonical hashing", () => {
     expect(() => canonicalJson({ x: undefined })).toThrow(/undefined/);
     expect(() => canonicalJson({ f: () => 1 })).toThrow(/unsupported/);
     expect(() => canonicalJson({ m: new Map() })).toThrow(/plain object/);
+  });
+
+  it("rounding to 12 digits absorbs a one-ulp drift from a JSONB round trip", () => {
+    const x = 0.1 + 0.2;
+    const drifted = x + Number.EPSILON * x;
+    expect(drifted).not.toBe(x);
+    expect(canonicalHash(roundNumbers({ v: [x] }))).toBe(canonicalHash(roundNumbers({ v: [drifted] })));
   });
 });
 
@@ -77,12 +85,14 @@ describe("GENESIS registry hash verification", () => {
     expect(() => prepareModelRegistration({ ...input, validation: { brier: Number.NaN } })).toThrow(/BAD_JSON/);
   });
 
-  it("re-verifies on load: a jsonb round trip passes, any tampering fails", () => {
+  it("re-verifies on load: the stored text passes, any tampering fails", () => {
     const row = storedRow();
     expect(verifyStoredArtefact(row).family).toBe("LOGISTIC_L2");
-    const tampered = structuredClone(row) as unknown as { artefact: { calibrator: { a: number } } };
-    tampered.artefact.calibrator.a = 2;
-    expect(() => verifyStoredArtefact(tampered as unknown as ModelVersionRow)).toThrow(/HASH_MISMATCH/);
+    expect(row.artefactHash).toBe(sha256Hex(row.artefact));
+    expect(() => verifyStoredArtefact({ ...row, artefact: row.artefact.replace('"a":1', '"a":2') })).toThrow(/HASH_MISMATCH/);
+    // Same content, non-canonical text with a matching hash: refused (the text itself must be canonical).
+    const loose = JSON.stringify(JSON.parse(row.artefact), null, 1);
+    expect(() => verifyStoredArtefact({ ...row, artefact: loose, artefactHash: sha256Hex(loose) })).toThrow(/canonical/);
     expect(() => verifyStoredArtefact({ ...row, trainingCutoff: new Date(cutoff + 1) })).toThrow(/IDENTITY_MISMATCH/);
     expect(() => verifyStoredArtefact({ ...row, labelSpecHash: "d".repeat(64) })).toThrow(/IDENTITY_MISMATCH/);
   });
