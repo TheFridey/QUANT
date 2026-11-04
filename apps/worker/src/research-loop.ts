@@ -59,6 +59,9 @@ export class ResearchLoopProcessor extends WorkerHost {
         leaseLost: result.leaseLost.length,
         modelCalls: result.modelCalls,
         stoppedEarly: result.stoppedEarly,
+        intakeRefused: result.intake?.refused ?? null,
+        intakeQueued: result.intake?.queued.map((row) => `${row.hypothesisId}:rank${row.rank}:score${row.score}`) ?? [],
+        intakeSkipped: result.intake?.skipped.length ?? 0,
       },
       "research loop tick",
     );

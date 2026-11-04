@@ -20,3 +20,7 @@ export * from "./provenance.js";
 export { probeIsolation, type RunnerConfiguration } from "./sandbox-runner.js";
 export * from "./research-loop-states.js";
 export * from "./research-loop.js";
+export * from "./research-dataset.js";
+export * from "./research-redundancy.js";
+export * from "./research-adversary.js";
+export * from "./research-scheduler.js";

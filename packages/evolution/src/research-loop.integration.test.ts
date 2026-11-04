@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import type { LlmRequest, LlmResult, ModelProvider } from "@odin/agent-core";
-import type { BacktestObservation } from "@odin/backtest";
 import { chronologicalSplits } from "@odin/backtest";
-import { DEFAULT_STRATEGY, newId } from "@odin/shared";
+import { DEFAULT_STRATEGY, d, newId } from "@odin/shared";
 import { PrismaClient, toJson } from "@odin/shared/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { z } from "zod";
@@ -12,6 +11,7 @@ import type { forgeStrategyModule } from "./forge.js";
 import {
   approvalSubject,
   claimResearchExperiments,
+  reserveResearchBudget,
   enqueueResearchExperiment,
   listResearchExperiments,
   recordResearchApproval,
@@ -19,6 +19,7 @@ import {
   setResearchLoopControl,
   type ResearchLoopDeps,
 } from "./research-loop.js";
+import { pinResearchDataset, type PinnedDataset } from "./research-dataset.js";
 import { DEFAULT_ASSIGNMENTS } from "./router.js";
 import type { executeCompiledStrategy } from "./sandbox-runner.js";
 
@@ -93,26 +94,22 @@ const holdExecutor: typeof executeCompiledStrategy = async (input) => ({
   runner: {} as never,
 });
 
-function observations(now: Date, count: number): BacktestObservation[] {
-  return Array.from({ length: count }, (_, index) => ({
-    id: `obs_loop_${index}`,
-    pairAddress: "pairLoopTest0001",
-    baseSymbol: "TST",
-    quoteAddress: "So11111111111111111111111111111111111111112",
-    quoteSymbol: "SOL",
-    priceUsd: (1 + index / 100).toFixed(4),
-    liquidityUsd: "250000",
-    volume24hUsd: "900000",
-    volume5mUsd: "10000",
-    priceChangeM5Pct: "0.5",
-    priceChangeH1Pct: "1.0",
-    txnsM5Buys: 10,
-    txnsM5Sells: 8,
-    receivedAt: new Date(now.getTime() - (count - index) * 60_000).toISOString(),
-    freshness: "REPLAY" as const,
-    provenance: "test",
-  }));
-}
+const HOUR = 3_600_000;
+
+/** Forge context as FORGE records it, for experiments created directly at TEST. */
+const forgedContext = (strategyId = "strat_loop_test", source = SOURCE) => {
+  const compiled = compileStrategySource(source);
+  if (!compiled.ok) throw new Error("fixture source must compile");
+  return {
+    strategyId,
+    version: "0.1.0",
+    source,
+    sourceHash: createHash("sha256").update(source).digest("hex"),
+    artifactHash: compiled.artifactHash,
+    modelIdentifier: "FIXTURE",
+    endpointId: "anthropic-primary",
+  };
+};
 
 describe.skipIf(!enabled)("ASCEND-08 research loop (database)", () => {
   let prisma: PrismaClient;
@@ -148,14 +145,56 @@ describe.skipIf(!enabled)("ASCEND-08 research loop (database)", () => {
       update: { level, maxResearchBudgetUsd, allowRiskLimitMutation: false, realMoneyExecutionEnabled: false, allowUnreviewedCodeDeploy: false },
     });
 
-  const hypothesis = async (status = "OPEN") => {
+  /**
+   * A versioned warehouse dataset (bars are append-only, so every test seeds its own uniquely keyed dataset).
+   * EQUITY_ETF so the cost model needs no observation; hourly bars ending 48 h before the wall clock.
+   */
+  const seedDataset = async (instrumentKey: string, options: { bars?: number; sourceId?: string } = {}) => {
+    const id = newId("hds");
+    const count = options.bars ?? 600;
+    const end = Date.now() - 48 * HOUR;
+    const first = end - count * HOUR;
+    await prisma.historicalDataset.create({
+      data: {
+        id,
+        sourceId: options.sourceId ?? "genesis-test",
+        instrumentKey,
+        instrumentKind: "EQUITY_ETF",
+        cohort: "BROAD_ETF",
+        interval: "1h",
+        licence: toJson({ licence: "test fixture" }),
+        versionHash: createHash("sha256").update(`version:${id}`).digest("hex"),
+        barCount: count,
+        firstOpenTime: new Date(first),
+        lastOpenTime: new Date(end - HOUR),
+      },
+    });
+    await prisma.historicalBar.createMany({
+      data: Array.from({ length: count }, (_, i) => {
+        const openTime = new Date(first + i * HOUR);
+        const price = (100 + Math.sin(i / 9) * 3).toFixed(6);
+        return { datasetId: id, openTime, availableAt: new Date(openTime.getTime() + HOUR), open: price, high: price, low: price, close: price, volume: "1000", hash: createHash("sha256").update(`${id}:${i}`).digest("hex"), collectedAt: new Date() };
+      }),
+    });
+    return id;
+  };
+  const datasetOf = new Map<string, string>();
+  const instrumentOf = (hypothesisId: string) => `GTEST_${hypothesisId}`;
+  const pinFor = async (hypothesisId: string, asOf = new Date()): Promise<PinnedDataset> => {
+    const pin = await pinResearchDataset(prisma, { instrumentIds: [instrumentOf(hypothesisId)], asOf });
+    if (!pin.ok) throw new Error(pin.detail);
+    return pin.pinned;
+  };
+
+  const hypothesis = async (status = "OPEN", options: { withDataset?: boolean } = {}) => {
     const id = newId("hyp");
+    if (options.withDataset !== false) datasetOf.set(id, await seedDataset(instrumentOf(id)));
     await prisma.hypothesis.create({
       data: {
         id,
         title: `Loop test ${id.slice(-6)}`,
         market: "SPOT_CRYPTO_PAIR",
-        instrumentIds: ["solana:spot:universe"],
+        instrumentIds: [instrumentOf(id)],
         conditions: "Volume spike on a liquid pair",
         claimedAdvantage: "Short-horizon momentum after spikes",
         entryRules: "Enter after a confirmed spike",
@@ -238,6 +277,10 @@ describe.skipIf(!enabled)("ASCEND-08 research loop (database)", () => {
     const deps: ResearchLoopDeps = { owner: "t1", router: { env: {}, providers: fx.providers } };
 
     expect((await runResearchLoopTick(prisma, deps)).status).toBe("DISABLED"); // no control row
+    // A control row created with schema defaults is off: the loop stays disabled by default.
+    await prisma.researchLoopControl.create({ data: { id: "primary", maxExperimentsPerDay: 10 } });
+    expect((await prisma.researchLoopControl.findUniqueOrThrow({ where: { id: "primary" } })).enabled).toBe(false);
+    expect((await runResearchLoopTick(prisma, deps)).reason).toBe("Kill switch is off");
     await control({ enabled: false, maxExperimentsPerDay: 10 });
     const off = await runResearchLoopTick(prisma, deps);
     expect(off.status).toBe("DISABLED");
@@ -347,17 +390,22 @@ describe.skipIf(!enabled)("ASCEND-08 research loop (database)", () => {
       router: { env: {}, providers: fx.providers },
       forge: forge.fn,
       execute: holdExecutor,
-      loadObservations: async () => observations(now, 40),
     };
-    const id = await experiment("FORGE", { context: { hypothesis: restated } });
+    const hypothesisId = await hypothesis("TESTING");
+    const id = await experiment("FORGE", { hypothesisId, context: { hypothesis: restated, dataset: await pinFor(hypothesisId, now) } });
     expect((await runResearchLoopTick(prisma, deps, now)).advanced).toEqual([expect.objectContaining({ id, from: "FORGE", to: "TEST" })]);
     expect((await runResearchLoopTick(prisma, deps, now)).advanced).toEqual([expect.objectContaining({ id, from: "TEST", to: "CHALLENGE" })]);
     const measured = (await state(id)).context as Record<string, Record<string, unknown>>;
-    expect(measured.test!.observationCount).toBe(40);
+    expect(measured.test!.observationCount).toBe(600);
+    expect(measured.test!.dataset).toEqual(expect.objectContaining({ datasetId: datasetOf.get(hypothesisId), barCount: 600, instrumentKey: instrumentOf(hypothesisId) }));
+    expect((measured.test!.cost as Record<string, unknown>).bpsPerSide).toBeGreaterThan(0);
     expect(measured.test!.measuredReturnPct).toBeNull(); // HOLD-only: no closed trades, nothing invented
     expect(measured.test!.measuredSampleSize).toBe(0);
+    // The untouched holdout was looked at once: consumed under the candidate's name-independent key.
+    expect(await prisma.researchHoldoutAccess.count({ where: { runId: `rexp:${id}`, datasetId: datasetOf.get(hypothesisId) } })).toBe(1);
     const challenged = await runResearchLoopTick(prisma, deps, now);
-    expect(challenged.advanced).toEqual([expect.objectContaining({ id, from: "CHALLENGE", to: "REJECTED" })]);
+    expect(challenged.advanced).toEqual([expect.objectContaining({ id, from: "CHALLENGE", to: "REJECTED", reason: expect.stringMatching(/^CHALLENGE_ADVERSARY_REJECT: .*INSUFFICIENT_SAMPLE/) })]);
+    expect(await prisma.researchExperimentEvent.count({ where: { experimentId: id, kind: "ADVERSARY_REJECTED" } })).toBe(1);
     expect(fx.challenge.calls).toBe(0);
     expect((await runResearchLoopTick(prisma, deps, now)).claimed).toEqual([]);
   });
@@ -389,6 +437,14 @@ describe.skipIf(!enabled)("ASCEND-08 research loop (database)", () => {
         untouchedSampleSize: 40,
         splits: chronologicalSplits(startAt, endAt),
         statisticsRecorded: true,
+        // GENESIS Phase 8 fields the adversarial reviewer requires.
+        measuredAt: new Date().toISOString(),
+        dataset: { datasetId: "hds_fixture", versionHash: "f".repeat(64), instrumentKey: "GTEST_fixture", interval: "1h", asOf: endAt, maxAvailableAt: endAt, barCount: 600, adapter: "genesis-pit-1" },
+        cost: { bpsPerSide: 10, roundTripBps: 20, basis: "test fixture cost", isProxy: true, model: "QUOTED_SPREAD_FEE" },
+        folds: [1, 2, 3, 4].map((fold) => ({ fold, trades: 10, netReturn: 0.02 })),
+        fullNetReturnDoubleCost: 0.05,
+        candidate: { fingerprint: "a".repeat(64), holdoutStrategyId: `rlc_${newId("x")}`, strategyId: "strat_loop_challenge" },
+        redundancy: { checked: ["DUPLICATE_EXPERIMENT", "RENAMED_CANDIDATE", "HOLDOUT_REUSED"] },
       },
     };
   };
@@ -714,4 +770,186 @@ describe.skipIf(!enabled)("ASCEND-08 research loop (database)", () => {
       prisma.researchApproval.create({ data: { id: newId("rapr"), experimentId: id, action: "forge_code", approvedBy: "op", expiresAt: new Date(Date.now() + 60_000), subjectHash: "not-a-hash" } }),
     ).rejects.toThrow();
   });
+
+  // -------------------------------------------------------------------------------------------------
+  // GENESIS Phase 8
+  // -------------------------------------------------------------------------------------------------
+
+  /** An experiment ready for TEST on the hypothesis' own seeded dataset (level 3: no approval needed). */
+  const atTest = async (options: { hypothesisId?: string; pin?: Partial<PinnedDataset>; strategyId?: string; source?: string; now?: Date } = {}) => {
+    const hypothesisId = options.hypothesisId ?? (await hypothesis("TESTING"));
+    const pinned = { ...(await pinFor(hypothesisId, options.now ?? new Date())), ...(options.pin ?? {}) };
+    const id = await experiment("TEST", { hypothesisId, context: { hypothesis: restated, dataset: pinned, forge: forgedContext(options.strategyId, options.source) } });
+    return { id, hypothesisId, pinned };
+  };
+  const recordingExecutor = () => {
+    const seen: Array<{ bars: number; maxReceivedAt: number }> = [];
+    const fn: typeof executeCompiledStrategy = async (input) => {
+      seen.push({ bars: input.bars.length, maxReceivedAt: Math.max(...input.bars.map((bar) => Date.parse(bar.receivedAt))) });
+      return holdExecutor(input);
+    };
+    return { fn, seen };
+  };
+  const eventsOf = (id: string, kind: string) => prisma.researchExperimentEvent.findMany({ where: { experimentId: id, kind } });
+
+  it("TEST reads only bars available at or before the pinned as-of time and records dataset id, version, window and count", async () => {
+    await setAutonomy(3);
+    await control();
+    const hypothesisId = await hypothesis("TESTING");
+    const dataset = await prisma.historicalDataset.findUniqueOrThrow({ where: { id: datasetOf.get(hypothesisId)! } });
+    // As of the close of bar 549: 550 bars usable, 50 later bars must never reach the sandbox.
+    const asOf = new Date(dataset.firstOpenTime!.getTime() + 550 * HOUR);
+    const { id } = await atTest({ hypothesisId, pin: { asOf: asOf.toISOString() } });
+    const exec = recordingExecutor();
+    const tick = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} }, execute: exec.fn });
+    expect(tick.advanced).toEqual([expect.objectContaining({ id, from: "TEST", to: "CHALLENGE" })]);
+    expect(exec.seen).toEqual([{ bars: 550, maxReceivedAt: asOf.getTime() }]);
+    const test = ((await state(id)).context as Record<string, Record<string, unknown>>).test!;
+    expect(test.dataset).toEqual(expect.objectContaining({ datasetId: dataset.id, versionHash: dataset.versionHash, barCount: 550, excludedAfterAsOf: 50, maxAvailableAt: asOf.toISOString(), asOf: asOf.toISOString() }));
+    const event = (await transitions(id)).find((row) => row.toState === "CHALLENGE");
+    expect(((event?.evidence as Record<string, Record<string, unknown>>).dataset)?.windowHash).toBe((test.dataset as Record<string, unknown>).windowHash);
+  });
+
+  it("refuses a stale dataset version and an instrument mismatch with typed, recorded failures (nothing executed)", async () => {
+    await setAutonomy(3);
+    await control();
+    const exec = recordingExecutor();
+    const stale = await atTest({ pin: { versionHash: "0".repeat(64) } });
+    const otherHypothesis = await hypothesis("TESTING");
+    const foreign = await pinFor(otherHypothesis);
+    const mismatch = await atTest({ pin: { datasetId: foreign.datasetId, versionHash: foreign.versionHash, instrumentKey: foreign.instrumentKey } });
+    const tick = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} }, execute: exec.fn });
+    expect(tick.advanced).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: stale.id, from: "TEST", to: "FAILED", reason: expect.stringMatching(/^DATASET_VERSION_STALE/) }),
+        expect.objectContaining({ id: mismatch.id, from: "TEST", to: "FAILED", reason: expect.stringMatching(/^INSTRUMENT_MISMATCH/) }),
+      ]),
+    );
+    expect(exec.seen).toEqual([]);
+    expect((await eventsOf(stale.id, "DATASET_REFUSED"))[0]?.evidence).toEqual(expect.objectContaining({ code: "DATASET_VERSION_STALE", stage: "TEST" }));
+    expect((await eventsOf(mismatch.id, "DATASET_REFUSED"))[0]?.evidence).toEqual(expect.objectContaining({ code: "INSTRUMENT_MISMATCH" }));
+  });
+
+  it("HYPOTHESISE records DATASET_UNAVAILABLE without a model call when the hypothesis has no dataset", async () => {
+    await control();
+    const fx = fixtureProviders();
+    const id = await experiment("HYPOTHESISE", { hypothesisId: await hypothesis("TESTING", { withDataset: false }) });
+    const tick = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {}, providers: fx.providers } });
+    expect(tick.advanced).toEqual([expect.objectContaining({ id, to: "FAILED", reason: expect.stringMatching(/^DATASET_UNAVAILABLE/) })]);
+    expect(fx.total()).toBe(0);
+    expect(await eventsOf(id, "DATASET_REFUSED")).toHaveLength(1);
+  });
+
+  it("refuses a near-duplicate before TEST, even before asking for approval, and records REDUNDANCY_REFUSED", async () => {
+    await setAutonomy(3);
+    await control();
+    const first = await atTest();
+    await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} }, execute: holdExecutor });
+    expect((await state(first.id)).state).toBe("CHALLENGE");
+    await prisma.researchExperiment.update({ where: { id: first.id }, data: { state: "ABANDONED", lastError: "test" } });
+
+    await setAutonomy(2); // level 2 would ask for run_backtest approval; the duplicate is refused first
+    const exec = recordingExecutor();
+    const duplicate = await atTest({ hypothesisId: first.hypothesisId });
+    const tick = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} }, execute: exec.fn });
+    expect(tick.advanced).toEqual([expect.objectContaining({ id: duplicate.id, from: "TEST", to: "REJECTED", reason: expect.stringMatching(/^REDUNDANT_DUPLICATE_EXPERIMENT/) })]);
+    expect(exec.seen).toEqual([]);
+    expect((await eventsOf(duplicate.id, "REDUNDANCY_REFUSED"))[0]?.evidence).toEqual(expect.objectContaining({ code: "DUPLICATE_EXPERIMENT", priorExperimentId: first.id }));
+  });
+
+  it("refuses a renamed candidate (same canonical source on a new dataset version) and a reused holdout", async () => {
+    await setAutonomy(3);
+    await control();
+    const first = await atTest();
+    await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} }, execute: holdExecutor });
+    expect((await state(first.id)).state).toBe("CHALLENGE");
+    await prisma.researchExperiment.update({ where: { id: first.id }, data: { state: "ABANDONED", lastError: "test" } });
+
+    // Same instrument and interval, another source: a new dataset version, so not a duplicate.
+    const sibling = await seedDataset(instrumentOf(first.hypothesisId), { sourceId: "genesis-test-sibling", bars: 700 });
+    const reformatted = `/* the same code under a new name */\nexport function onBar( input ) { return { intent: "HOLD", reasonCodes: ["LOOP_TEST"] }; }\n`;
+    const renamed = await atTest({ hypothesisId: first.hypothesisId, strategyId: "strat_renamed_copy", source: reformatted });
+    expect(renamed.pinned.datasetId).toBe(sibling); // most bars wins the pin
+    const tick = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} }, execute: holdExecutor });
+    expect(tick.advanced).toEqual([expect.objectContaining({ id: renamed.id, to: "REJECTED", reason: expect.stringMatching(/^REDUNDANT_RENAMED_CANDIDATE/) })]);
+
+    // A holdout the registry already consumed for this strategy (here by the ASCEND-03 CLI) is never looked at again.
+    const fresh = await hypothesis("TESTING");
+    await prisma.researchHoldoutAccess.create({ data: { id: newId("rhoa"), strategyId: "strat_cli_owned", strategyVersion: "1.0.0", datasetId: datasetOf.get(fresh)!, runId: "run_cli" } });
+    const reused = await atTest({ hypothesisId: fresh, strategyId: "strat_cli_owned", source: `export function onBar(input) {\n  return { intent: "HOLD", reasonCodes: ["CLI"] };\n}\n` });
+    const second = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} }, execute: holdExecutor });
+    expect(second.advanced).toEqual([expect.objectContaining({ id: reused.id, to: "REJECTED", reason: expect.stringMatching(/^REDUNDANT_HOLDOUT_REUSED/) })]);
+    expect((await eventsOf(reused.id, "REDUNDANCY_REFUSED"))[0]?.evidence).toEqual(expect.objectContaining({ code: "HOLDOUT_REUSED" }));
+  });
+
+  it("autonomous intake follows the deterministic scorer and retries a failed hypothesis only on new data", async () => {
+    const now = await freshNow();
+    await control({ maxExperimentsPerDay: 10, maxConcurrentExperiments: 10 });
+    const noData = await hypothesis("OPEN", { withDataset: false });
+    const withData = await hypothesis("OPEN");
+    const first = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} } }, now);
+    expect(first.intake?.queued.map((row) => row.hypothesisId)).toEqual([withData, noData]); // data first, then the 0-score gap
+    const created = await prisma.researchExperimentEvent.findFirst({ where: { kind: "CREATED", experiment: { hypothesisId: withData } } });
+    expect((created?.evidence as Record<string, Record<string, unknown>>).selection).toEqual(expect.objectContaining({ rank: 1 }));
+
+    // End the experiment after it pinned the dataset; with the same data it is not queued again.
+    const rows = await prisma.researchExperiment.findMany({ where: { hypothesisId: { in: [withData, noData] } } });
+    const pinned = await pinFor(withData, now);
+    for (const row of rows) {
+      await prisma.researchExperiment.update({ where: { id: row.id }, data: { state: "FAILED", lastError: "test", context: toJson(row.hypothesisId === withData ? { dataset: pinned } : {}) } });
+    }
+    const again = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} } }, now);
+    expect(again.created).toEqual([]);
+    expect(Object.fromEntries((again.intake?.skipped ?? []).map((row) => [row.hypothesisId, row.reason]))).toEqual(expect.objectContaining({ [withData]: "NO_NEW_EVIDENCE", [noData]: "NO_NEW_EVIDENCE" }));
+
+    // New data (re-import changed the versionHash): the failed hypothesis is queued again, scored for new data.
+    await prisma.historicalDataset.update({ where: { id: datasetOf.get(withData)! }, data: { versionHash: createHash("sha256").update(newId("v")).digest("hex") } });
+    const retried = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {} } }, now);
+    expect(retried.intake?.queued).toEqual([expect.objectContaining({ hypothesisId: withData, components: expect.objectContaining({ newData: 300 }) })]);
+  });
+
+  it("budget reservations serialise across connections and fail closed; an orphaned reservation still counts", async () => {
+    await setAutonomy(2, "1");
+    const other = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+    try {
+      const now = new Date();
+      const reserve = (client: PrismaClient, experimentId: string) =>
+        reserveResearchBudget(client, { now, capUsd: "1", reserveUsd: "0.99990000", agent: "ORACLE", endpointId: "openai-primary", tier: "DEEP_RESEARCHERS", experimentId });
+      const [a, b] = await Promise.all([reserve(prisma, "rexp_a"), reserve(other, "rexp_b")]);
+      expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1); // 0.9999 twice > 1: only one may hold it
+      expect(await prisma.modelUsageLog.count({ where: { costKind: "RESERVED" } })).toBe(1);
+
+      // The holder "crashed": its reservation stays counted, so a tick makes no call (BUDGET_EXHAUSTED, HELD event).
+      await control();
+      const fx = fixtureProviders();
+      const id = await experiment("HYPOTHESISE");
+      const tick = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {}, providers: fx.providers } }, now);
+      expect(tick.held).toEqual([expect.objectContaining({ id, reason: expect.stringMatching(/^BUDGET_EXHAUSTED: RESERVATION_REFUSED/) })]);
+      expect(fx.total()).toBe(0);
+      expect(await eventsOf(id, "HELD")).toHaveLength(1);
+      // The same hold on the next tick is not logged again.
+      await runResearchLoopTick(prisma, { owner: "t1", router: { env: {}, providers: fx.providers } }, now);
+      expect(await eventsOf(id, "HELD")).toHaveLength(1);
+      expect(d((await researchSpend(now))).gte("0.9999")).toBe(true);
+    } finally {
+      await other.$disconnect();
+    }
+  });
+
+  it("a successful model call settles its reservation (no RESERVED row remains; usage is recorded)", async () => {
+    await control();
+    const fx = fixtureProviders();
+    const id = await experiment("HYPOTHESISE");
+    const tick = await runResearchLoopTick(prisma, { owner: "t1", router: { env: {}, providers: fx.providers } });
+    expect(tick.advanced).toEqual([expect.objectContaining({ id, from: "HYPOTHESISE", to: "FORGE" })]);
+    expect(await prisma.modelUsageLog.count({ where: { costKind: "RESERVED" } })).toBe(0);
+    expect(await prisma.modelUsageLog.count()).toBe(1);
+    expect(((await state(id)).context as Record<string, Record<string, unknown>>).dataset?.datasetId).toBeTruthy();
+  });
+
+  const researchSpend = async (now: Date) => {
+    const windowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const sum = await prisma.modelUsageLog.aggregate({ _sum: { costUsdEst: true }, where: { createdAt: { gte: windowStart } } });
+    return sum._sum.costUsdEst?.toFixed(8) ?? "0";
+  };
 });
