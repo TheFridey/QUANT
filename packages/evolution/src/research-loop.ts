@@ -1,8 +1,5 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { LlmRequest, ModelProvider } from "@odin/agent-core";
-import type { BacktestObservation } from "@odin/backtest";
-import { chronologicalSplits } from "@odin/backtest";
 import {
   DEFAULT_AUTONOMY,
   DEFAULT_STRATEGY,
@@ -15,14 +12,41 @@ import {
 } from "@odin/shared";
 import { toJson, type Prisma, type PrismaClient } from "@odin/shared/db";
 import { assertActionAllowed, parseAutonomyPolicy } from "./autonomy.js";
-import { MemoryBudgetStore, researchBudgetWindowStart } from "./budget-store.js";
+import {
+  MemoryBudgetStore,
+  RESEARCH_BUDGET_LOCK,
+  RESERVED_COST_KIND,
+  researchBudgetWindowStart,
+  reservationDecision,
+  reservationEstimateUsd,
+} from "./budget-store.js";
 import { runChallengeReview, type ChallengeReport } from "./challenge.js";
 import { compileStrategySource } from "./compile-strategy.js";
 import { forgeStrategyModule } from "./forge.js";
 import { hashEvidence, transitionLifecycle } from "./lifecycle.js";
 import { classifyResearchOutcomes } from "./outcomes.js";
 import { EVALUATION_PROTOCOLS, finaliseEvaluation, type ReportExecutable } from "./provenance.js";
-import { scoreWindow, simulateResearchPath } from "./research-backtest.js";
+import { reviewResearchEvidence } from "./research-adversary.js";
+import {
+  RESEARCH_DATASET_ADAPTER_VERSION,
+  RESEARCH_LOOP_FOLDS,
+  RESEARCH_LOOP_HOLDOUT_FRACTION,
+  RESEARCH_LOOP_MIN_BARS,
+  loadPointInTimeDataset,
+  measureSignalsOnBars,
+  parsePinnedDataset,
+  periodsPerYearFor,
+  pinResearchDataset,
+  researchCostPerSide,
+  returnPctOrNull,
+  type DatasetRefusal,
+  type DatasetEvidence,
+  type HistoricalPoint,
+  type PinnedDataset,
+  type ResearchCost,
+} from "./research-dataset.js";
+import { LOOP_HOLDOUT_STRATEGY_VERSION, candidateIdentity, checkRedundancy, type CandidateIdentity } from "./research-redundancy.js";
+import { TASK_SCORER_VERSION, familyOfMarket, gatherTaskCandidates, scoreResearchTasks, type ScoredTask, type TaskSkip } from "./research-scheduler.js";
 import {
   APPROVABLE_ACTIONS,
   CLAIMABLE_EXPERIMENT_STATES,
@@ -36,7 +60,6 @@ import {
 } from "./research-loop-states.js";
 import { ModelRouter, type ModelAssignment, type ModelEndpoint, type UsageRecord } from "./router.js";
 import { executeCompiledStrategy } from "./sandbox-runner.js";
-import { summariseStatistics } from "./statistics.js";
 import { buildExperimentReport } from "./validate.js";
 
 /**
@@ -53,6 +76,14 @@ import { buildExperimentReport } from "./validate.js";
  * - The loop never calls promotion code, never writes EngineControl, StrategyPromotion, PromotionApproval or
  *   any risk configuration, and never marks a report approved. PAPER means a PAPER_CANDIDATE lifecycle
  *   label only; an operator still decides everything after REVIEW.
+ *
+ * GENESIS Phase 8 additions (same contract; see docs/apex/ASCEND-08.md, "GENESIS Phase 8"):
+ * - Autonomous intake ranks OPEN hypotheses with a deterministic scorer (`research-scheduler.ts`).
+ * - HYPOTHESISE pins one instrument-scoped, versioned warehouse dataset and an as-of time; TEST reads only bars
+ *   available at or before it (`research-dataset.ts`) and refuses stale, mismatched or short datasets.
+ * - Before TEST runs or asks for approval, the redundancy guard refuses duplicates, renamed candidates and reused
+ *   holdouts (`research-redundancy.ts`); CHALLENGE adds a deterministic adversarial review (`research-adversary.ts`).
+ * - Every model call reserves its worst-case cost durably first (advisory lock + RESERVED usage row), fail closed.
  */
 
 export const RESEARCH_LOOP_CONTROL_ID = "primary";
@@ -127,8 +158,6 @@ export type ResearchLoopDeps = {
   forge?: typeof forgeStrategyModule;
   /** Defaults to the real isolated runner. */
   execute?: typeof executeCompiledStrategy;
-  /** Defaults to persisted MarketObservation rows received at or before `now`. */
-  loadObservations?: (prisma: PrismaClient, now: Date) => Promise<BacktestObservation[]>;
   /** Wall clock for the per-tick runtime limit. Defaults to Date.now. */
   clock?: () => number;
   /** Test seam: awaited after the claim and before any experiment is advanced. */
@@ -152,6 +181,10 @@ export type ResearchLoopTickResult = {
   errors: Array<{ id: string; error: string }>;
   modelCalls: number;
   stoppedEarly: string | null;
+  /** Budget reservations kept (counted until the UTC day ends) because a call failed, its usage was not persisted, or settling failed. */
+  reservationsRetained: Array<{ id: string; experimentId: string; reason: string }>;
+  /** Autonomous intake: the scored queue (rank, score) and the hypotheses skipped with the reason. */
+  intake: { refused: string | null; queued: ScoredTask[]; skipped: TaskSkip[] } | null;
 };
 
 type ExperimentRow = Prisma.ResearchExperimentGetPayload<object>;
@@ -167,9 +200,15 @@ type StageOutcome =
       contextPatch?: Context;
       blockedState?: GatedStage | null;
       sideEffects?: (tx: Tx) => Promise<void>;
+      /** Typed outcome events (DATASET_REFUSED, REDUNDANCY_REFUSED, ...) committed with the transition. */
+      extraEvents?: OutcomeEvent[];
     }
   | { kind: "attempt_failed"; reason: string; evidence?: Record<string, unknown> }
-  | { kind: "hold"; reason: string };
+  | { kind: "hold"; reason: string; evidence?: Record<string, unknown> };
+
+/** Event kinds added by GENESIS Phase 8 (the event table's `kind` is free text; no migration). */
+export type OutcomeEventKind = "DATASET_REFUSED" | "REDUNDANCY_REFUSED" | "ADVERSARY_REJECTED" | "HELD";
+type OutcomeEvent = { kind: OutcomeEventKind; reason: string; evidence: Record<string, unknown> };
 
 type TickEnv = {
   prisma: PrismaClient;
@@ -180,7 +219,7 @@ type TickEnv = {
   deadline: number;
   startedAt: number;
   clock: () => number;
-  counters: { modelCalls: number };
+  counters: { modelCalls: number; reservationsRetained: Array<{ id: string; experimentId: string; reason: string }> };
 };
 
 class LeaseLostError extends Error {
@@ -256,6 +295,67 @@ async function persistModelUsage(prisma: PrismaClient, usage: UsageRecord): Prom
   });
 }
 
+/**
+ * Reservation-then-settle for one model call (closes the accepted multi-process budget race for loop calls; no
+ * migration). Inside a transaction holding `pg_advisory_xact_lock(RESEARCH_BUDGET_LOCK)` it reads today's spend
+ * (settled usage plus every other in-flight or orphaned reservation), refuses unless spent + worst case fits the
+ * cap, and inserts a RESERVED `ModelUsageLog` row that every other reader counts until it is settled. A reservation
+ * orphaned by a crash stays counted for the rest of the UTC day (fail closed).
+ */
+export async function reserveResearchBudget(
+  prisma: PrismaClient,
+  input: { now: Date; capUsd: string; reserveUsd: string; agent: string; endpointId: string; tier: string; experimentId: string },
+): Promise<{ ok: true; id: string; spentBeforeUsd: string } | { ok: false; detail: string }> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${RESEARCH_BUDGET_LOCK})`;
+    const spend = await researchSpendToday(tx, input.now);
+    const decision = reservationDecision({ capUsd: input.capUsd, spentUsd: spend.spentUsd, reserveUsd: input.reserveUsd });
+    if (!decision.ok) return { ok: false as const, detail: decision.detail };
+    const id = newId("mulr");
+    await tx.modelUsageLog.create({
+      data: {
+        id,
+        agentOrTask: input.agent,
+        endpointId: input.endpointId,
+        provider: "reservation",
+        model: "RESERVATION",
+        tier: input.tier,
+        ok: false,
+        latencyMs: 0,
+        promptTokensEst: 0,
+        completionTokensEst: 0,
+        costUsdEst: input.reserveUsd,
+        costKind: RESERVED_COST_KIND,
+        provenance: "RESERVATION",
+        error: `RESERVED for research experiment ${input.experimentId}`,
+      },
+    });
+    return { ok: true as const, id, spentBeforeUsd: spend.spentUsd };
+  });
+}
+
+/**
+ * Settles a reservation after its call. Only a call whose every attempt succeeded and was persisted deletes it
+ * (the usage rows are then the record). Otherwise (a failed attempt the provider may still bill up to the token
+ * limit, a usage row that was not written, a call that threw, or a delete that failed) the reservation is kept and
+ * counted until the UTC day ends (fail closed), marked with the reason, and reported in the tick result.
+ */
+async function settleReservation(env: TickEnv, reservationId: string, experimentId: string, retain: string | null): Promise<void> {
+  let reason = retain;
+  if (reason === null) {
+    try {
+      await env.prisma.modelUsageLog.deleteMany({ where: { id: reservationId, costKind: RESERVED_COST_KIND } });
+      return;
+    } catch (error) {
+      reason = `SETTLE_FAILED: ${errorMessage(error)}`;
+    }
+  }
+  env.counters.reservationsRetained.push({ id: reservationId, experimentId, reason });
+  await env.prisma.modelUsageLog
+    .updateMany({ where: { id: reservationId, costKind: RESERVED_COST_KIND }, data: { error: `RETAINED for research experiment ${experimentId}: ${reason}`.slice(0, 1_000) } })
+    .catch(() => undefined); // the row stays counted either way; the reason is already in the tick result
+}
+
 /** Programme-wide experiment counts: the denominator for multiple-testing accounting. */
 export async function researchProgrammeCounts(prisma: PrismaClient | Tx) {
   const [total, byState, tested] = await Promise.all([
@@ -275,7 +375,7 @@ export async function researchProgrammeCounts(prisma: PrismaClient | Tx) {
 // Intake (daily cap and concurrency cap, serialised by an advisory transaction lock)
 // ---------------------------------------------------------------------------------------------------
 
-export type IntakeResult = { created: string[]; refused: string | null };
+export type IntakeResult = { created: string[]; refused: string | null; queued?: ScoredTask[]; skipped?: TaskSkip[] };
 
 export async function createResearchExperiments(
   prisma: PrismaClient,
@@ -296,6 +396,8 @@ export async function createResearchExperiments(
     const room = Math.min(dailyRoom, concurrentRoom);
 
     let hypothesisIds: string[];
+    let scored: Map<string, ScoredTask> | null = null;
+    let skipped: TaskSkip[] | undefined;
     if (input.hypothesisIds) {
       const rows = await tx.hypothesis.findMany({ where: { id: { in: input.hypothesisIds } }, select: { id: true } });
       const known = new Set(rows.map((row) => row.id));
@@ -303,11 +405,13 @@ export async function createResearchExperiments(
       if (missing.length > 0) return { created: [], refused: `UNKNOWN_HYPOTHESIS: ${missing.join(", ")}` };
       hypothesisIds = input.hypothesisIds;
     } else {
-      // Autonomous intake: OPEN hypotheses that have never had a loop experiment, oldest first.
-      const existing = await tx.researchExperiment.findMany({ select: { hypothesisId: true }, distinct: ["hypothesisId"] });
-      const taken = new Set(existing.map((row) => row.hypothesisId));
-      const open = await tx.hypothesis.findMany({ where: { status: "OPEN" }, orderBy: { createdAt: "asc" }, take: 100, select: { id: true } });
-      hypothesisIds = open.map((row) => row.id).filter((id) => !taken.has(id));
+      // Autonomous intake (GENESIS Phase 8): up to 100 OPEN hypotheses, ranked by the deterministic task scorer.
+      // Untried hypotheses and knowledge gaps first; a hypothesis that already ended is retried only on new data.
+      const { candidates, stats } = await gatherTaskCandidates(tx, 100);
+      const ranking = scoreResearchTasks(candidates, stats);
+      scored = new Map(ranking.ranked.map((row) => [row.hypothesisId, row]));
+      skipped = ranking.skipped;
+      hypothesisIds = ranking.ranked.map((row) => row.hypothesisId);
     }
     const created: string[] = [];
     for (const hypothesisId of hypothesisIds.slice(0, room)) {
@@ -315,7 +419,13 @@ export async function createResearchExperiments(
       await tx.researchExperiment.create({
         data: { id, hypothesisId, state: "OBSERVE", createdBy: input.createdBy, createdAt: input.now },
       });
-      const evidence = { hypothesisId, createdBy: input.createdBy, createdToday: createdToday + created.length + 1 };
+      const score = scored?.get(hypothesisId);
+      const evidence = {
+        hypothesisId,
+        createdBy: input.createdBy,
+        createdToday: createdToday + created.length + 1,
+        ...(score ? { selection: { scorer: TASK_SCORER_VERSION, rank: score.rank, score: score.score, components: score.components } } : {}),
+      };
       await tx.researchExperimentEvent.create({
         data: {
           id: newId("rxev"),
@@ -332,7 +442,7 @@ export async function createResearchExperiments(
       created.push(id);
     }
     const refused = hypothesisIds.length > room ? `CAP_REACHED: ${hypothesisIds.length - room} hypothesis(es) not queued` : null;
-    return { created, refused };
+    return { created, refused, ...(scored ? { queued: [...scored.values()].filter((row) => row.rank <= room), skipped } : {}) };
   });
 }
 
@@ -497,6 +607,8 @@ export async function runResearchLoopTick(
     errors: [],
     modelCalls: 0,
     stoppedEarly: null,
+    reservationsRetained: [],
+    intake: null,
   };
   const control = await readResearchLoopControl(prisma);
   if (!control.enabled) {
@@ -522,12 +634,13 @@ export async function runResearchLoopTick(
     deadline: clock() + control.tickRuntimeMs,
     startedAt: clock(),
     clock,
-    counters: { modelCalls: 0 },
+    counters: { modelCalls: 0, reservationsRetained: [] },
   };
 
   if (queueGate.allowed) {
     const intake = await createResearchExperiments(prisma, { now, createdBy: RESEARCH_LOOP_ACTOR, control });
     result.created = intake.created;
+    result.intake = { refused: intake.refused, queued: intake.queued ?? [], skipped: intake.skipped ?? [] };
   }
 
   const { claimed, reclaimed } = await claimResearchExperiments(prisma, {
@@ -560,6 +673,7 @@ export async function runResearchLoopTick(
       }
     }
     result.modelCalls = env.counters.modelCalls;
+    result.reservationsRetained = env.counters.reservationsRetained;
   }
   return result;
 }
@@ -658,7 +772,7 @@ async function advanceOne(env: TickEnv, row: ExperimentRow, result: ResearchLoop
   }
 
   if (outcome.kind === "hold") {
-    const kept = await releaseLease(env.prisma, row, env.deps.owner, outcome.reason);
+    const kept = await holdWithEvent(env, row, outcome.reason, outcome.evidence ?? {});
     if (kept) result.held.push({ id: row.id, state: row.state, reason: outcome.reason });
     else result.leaseLost.push(row.id);
     return;
@@ -669,6 +783,28 @@ async function advanceOne(env: TickEnv, row: ExperimentRow, result: ResearchLoop
   }
 
   return commitAdvance(env, row, outcome, result, row.attempts);
+}
+
+/**
+ * Releases the lease with the hold reason and, when the reason changed since the last tick, appends a HELD event
+ * (budget exhaustion, awaiting approval, denied, runtime limit), so every hold is in the durable log once without
+ * one row per tick.
+ */
+async function holdWithEvent(env: TickEnv, row: ExperimentRow, reason: string, evidence: Record<string, unknown>): Promise<boolean> {
+  return env.prisma.$transaction(async (tx) => {
+    const updated = await tx.researchExperiment.updateMany({
+      where: { id: row.id, leaseOwner: env.deps.owner, version: row.version },
+      data: { leaseOwner: null, leaseExpiresAt: null, version: { increment: 1 }, lastError: reason },
+    });
+    if (updated.count !== 1) return false;
+    if (row.lastError !== reason) {
+      const recorded = { ...evidence, code: reason.split(":")[0], experimentVersion: row.version, tickAt: env.now.toISOString() };
+      await tx.researchExperimentEvent.create({
+        data: { id: newId("rxev"), experimentId: row.id, kind: "HELD", fromState: row.state, toState: row.state, actor: env.deps.owner, reason, evidence: toJson(recorded), evidenceHash: hashEvidence(recorded) },
+      });
+    }
+    return true;
+  });
 }
 
 /** Lease time left, on the tick's logical clock (`now` plus the wall time elapsed since the tick began). */
@@ -724,6 +860,12 @@ async function commitAdvance(
           evidenceHash: hashEvidence(evidence),
         },
       });
+      for (const extra of outcome.extraEvents ?? []) {
+        const recorded = { ...extra.evidence, experimentVersion: row.version, tickAt: env.now.toISOString() };
+        await tx.researchExperimentEvent.create({
+          data: { id: newId("rxev"), experimentId: row.id, kind: extra.kind, fromState: row.state, toState: outcome.to, actor: env.deps.owner, reason: extra.reason, evidence: toJson(recorded), evidenceHash: hashEvidence(recorded) },
+        });
+      }
       if (outcome.sideEffects) await outcome.sideEffects(tx);
       if (env.deps.beforeCommit) await env.deps.beforeCommit(row.id, outcome.to);
     });
@@ -742,6 +884,14 @@ async function runStage(env: TickEnv, row: ExperimentRow): Promise<StageOutcome>
   const state = row.state as ResearchExperimentState;
   if (state === "BLOCKED_APPROVAL") return unblock(env, row);
   if (isGatedStage(state)) {
+    // TEST inputs are prepared (dataset, cost, redundancy) before the gate: a duplicate, a stale dataset or a
+    // reused holdout is refused without running anything and without asking the operator to approve it.
+    let prepared: PreparedTest | null = null;
+    if (state === "TEST") {
+      const preflight = await prepareTest(env, row);
+      if (!preflight.ok) return preflight.outcome;
+      prepared = preflight.prepared;
+    }
     const decision = await gateAction(env, row, GATED_STAGE_ACTIONS[state]);
     if (!decision.proceed) {
       if ("deny" in decision) return { kind: "hold", reason: `DENIED: ${decision.deny}` };
@@ -755,7 +905,7 @@ async function runStage(env: TickEnv, row: ExperimentRow): Promise<StageOutcome>
     }
     const gateEvidence = { action: GATED_STAGE_ACTIONS[state], approvalId: decision.approvalId, autonomyLevel: env.policy.level };
     if (state === "FORGE") return forgeStage(env, row, gateEvidence);
-    if (state === "TEST") return testStage(env, row, gateEvidence);
+    if (state === "TEST") return testStage(env, row, gateEvidence, prepared!);
     return paperStage(env, row, gateEvidence);
   }
   switch (state) {
@@ -815,14 +965,17 @@ async function observeStage(env: TickEnv, row: ExperimentRow): Promise<StageOutc
   if (!hypothesis) {
     return { kind: "advance", to: "ABANDONED", reason: "HYPOTHESIS_MISSING", evidence: { hypothesisId: row.hypothesisId } };
   }
-  const [count, latest] = await Promise.all([
+  const [count, latest, datasets] = await Promise.all([
     env.prisma.marketObservation.count({ where: { receivedAt: { lte: env.now } } }),
     env.prisma.marketObservation.findFirst({ where: { receivedAt: { lte: env.now } }, orderBy: { receivedAt: "desc" }, select: { receivedAt: true } }),
+    env.prisma.historicalDataset.count({ where: { instrumentKey: { in: hypothesis.instrumentIds }, versionHash: { not: null }, barCount: { gt: 0 } } }),
   ]);
   const observe = {
     hypothesisHash: hashEvidence(hypothesis as unknown as Record<string, unknown>),
     observationCount: count,
     latestObservationAt: latest?.receivedAt.toISOString() ?? null,
+    /** Versioned warehouse datasets for the hypothesis instruments (HYPOTHESISE pins one). */
+    warehouseDatasets: datasets,
     observedAt: env.now.toISOString(),
   };
   return { kind: "advance", to: "HYPOTHESISE", reason: "Observation recorded", evidence: observe, contextPatch: { observe } };
@@ -857,8 +1010,10 @@ async function callModel<T>(
   purpose: LlmRequest["purpose"],
   schema: z.ZodType<T>,
   prompt: string,
+  experimentId: string,
 ): Promise<ModelCall<T> & { router: ModelRouter }> {
   const spend = await researchSpendToday(env.prisma, env.now);
+  const settle: { retain: string | null } = { retain: null };
   const router = new ModelRouter({
     ...env.deps.router,
     mode: "live",
@@ -866,7 +1021,15 @@ async function callModel<T>(
     budgetStore: new MemoryBudgetStore(spend.spentUsd),
     onUsage: async (usage) => {
       env.counters.modelCalls += 1;
-      await persistModelUsage(env.prisma, usage);
+      // A failed attempt (TIMEOUT/UPSTREAM) may still be billed up to the token limit: keep its reservation.
+      if (!usage.ok) settle.retain = settle.retain ?? `FAILED_ATTEMPT: ${usage.endpointId} ${usage.error ?? ""}`;
+      try {
+        await persistModelUsage(env.prisma, usage);
+      } catch (error) {
+        // The call happened but its usage row did not: the reservation is then the only record of it.
+        settle.retain = `USAGE_NOT_PERSISTED: ${errorMessage(error)}`;
+        throw error;
+      }
     },
   });
   const budget = router.budget();
@@ -880,19 +1043,42 @@ async function callModel<T>(
   const health = router.health();
   const configured = chain.some((id) => health.find((row) => row.id === id)?.availability === "CONFIGURED");
   if (!configured) return { status: "UNAVAILABLE", detail: `No configured model endpoint for ${agent} (${chain.join(", ")})`, router };
-  const reply = await router.completeJson(
+  const maxTokens = purpose === "engineering_source" ? 1_200 : 600;
+  const messages: LlmRequest["messages"] = [
+    { role: "system", content: "You are a research assistant for a paper-only research lab. Reply with one JSON object only." },
+    { role: "user", content: prompt },
+  ];
+  // Durable reservation (multi-process budget race): reserve the worst case under an advisory lock, then settle.
+  const chainEndpoints = chain.flatMap((id) => router.endpoints.filter((endpoint) => endpoint.id === id));
+  const reserveUsd = reservationEstimateUsd({
+    endpoints: chainEndpoints,
+    promptTokens: Math.max(1, Math.ceil(messages.map((message) => message.content).join(" ").length / 4)),
+    maxCompletionTokens: maxTokens,
+  });
+  const primary = chainEndpoints[0];
+  const reservation = await reserveResearchBudget(env.prisma, {
+    now: env.now,
+    capUsd: env.policy.maxResearchBudgetUsd,
+    reserveUsd,
     agent,
-    {
-      purpose,
-      maxTokens: purpose === "engineering_source" ? 1_200 : 600,
-      timeoutMs: Math.max(1_000, Math.min(60_000, remainingMs - 1_000)),
-      messages: [
-        { role: "system", content: "You are a research assistant for a paper-only research lab. Reply with one JSON object only." },
-        { role: "user", content: prompt },
-      ],
-    },
-    schema,
-  );
+    endpointId: primary?.id ?? assignment.primaryEndpointId,
+    tier: primary?.tier ?? assignment.tier,
+    experimentId,
+  });
+  if (!reservation.ok) return { status: "BUDGET_EXHAUSTED", detail: `RESERVATION_REFUSED: ${reservation.detail}`, router };
+  let reply: Awaited<ReturnType<typeof router.completeJson<T>>>;
+  try {
+    reply = await router.completeJson(
+      agent,
+      { purpose, maxTokens, timeoutMs: Math.max(1_000, Math.min(60_000, remainingMs - 1_000)), messages },
+      schema,
+    );
+  } catch (error) {
+    settle.retain = settle.retain ?? `CALL_THREW: ${errorMessage(error)}`;
+    throw error;
+  } finally {
+    await settleReservation(env, reservation.id, experimentId, settle.retain);
+  }
   if (!reply.ok) {
     if (reply.error === "Model budget cap reached") return { status: "BUDGET_EXHAUSTED", detail: reply.error, router };
     return { status: "UNAVAILABLE", detail: `${reply.code}: ${reply.error}`, router };
@@ -909,6 +1095,9 @@ function modelFailure(call: Exclude<ModelCall<unknown>, { status: "OK" }>, step:
 async function hypothesiseStage(env: TickEnv, row: ExperimentRow): Promise<StageOutcome> {
   const hypothesis = await loadHypothesis(env, row);
   if (!hypothesis) return { kind: "advance", to: "ABANDONED", reason: "HYPOTHESIS_MISSING", evidence: { hypothesisId: row.hypothesisId } };
+  // Pin the TEST dataset first: with no usable dataset nothing is spent on a model call.
+  const pin = await pinResearchDataset(env.prisma, { instrumentIds: hypothesis.instrumentIds, asOf: env.now });
+  if (!pin.ok) return datasetRefusalOutcome(pin, "HYPOTHESISE", null);
   const call = await callModel(
     env,
     "ORACLE",
@@ -923,10 +1112,17 @@ async function hypothesiseStage(env: TickEnv, row: ExperimentRow): Promise<Stage
       successCriteria: hypothesis.successCriteria,
       failureModes: hypothesis.failureModes,
     })}`,
+    row.id,
   );
   if (call.status !== "OK") return modelFailure(call, "HYPOTHESISE");
   const restated = { ...call.data, model: call.model, endpointId: call.endpointId };
-  return { kind: "advance", to: "FORGE", reason: "Falsifiable hypothesis recorded", evidence: { hypothesis: restated }, contextPatch: { hypothesis: restated } };
+  return {
+    kind: "advance",
+    to: "FORGE",
+    reason: `Falsifiable hypothesis recorded; dataset ${pin.pinned.datasetId}@${pin.pinned.versionHash.slice(0, 12)} pinned as of ${pin.pinned.asOf}`,
+    evidence: { hypothesis: restated, dataset: pin.pinned },
+    contextPatch: { hypothesis: restated, dataset: pin.pinned },
+  };
 }
 
 const FORGE_REJECT_CODES = new Set(["STATIC_REJECT", "COMPILE_FAIL", "CONTRACT_FAIL", "INVALID"]);
@@ -949,6 +1145,7 @@ async function forgeStage(env: TickEnv, row: ExperimentRow, gateEvidence: Record
       entryRules: hypothesis.entryRules,
       exitRules: hypothesis.exitRules,
     })}`,
+    row.id,
   );
   if (call.status !== "OK") return modelFailure(call, "FORGE");
   const forge = env.deps.forge ?? forgeStrategyModule;
@@ -990,42 +1187,109 @@ async function forgeStage(env: TickEnv, row: ExperimentRow, gateEvidence: Record
   };
 }
 
-/** Persisted observations received at or before the tick time (no look-ahead), most recent 400, in time order. */
-export async function loadResearchObservations(prisma: PrismaClient, now: Date): Promise<BacktestObservation[]> {
-  const rows = await prisma.marketObservation.findMany({
-    where: { receivedAt: { lte: now } },
-    orderBy: { receivedAt: "desc" },
-    take: 400,
+type PreparedTest = {
+  pinned: PinnedDataset;
+  bars: HistoricalPoint[];
+  dataset: DatasetEvidence;
+  cost: ResearchCost;
+  periodsPerYear: number;
+  identity: CandidateIdentity;
+  redundancy: Record<string, unknown>;
+};
+
+/**
+ * Typed dataset refusal, recorded as a transition plus a DATASET_REFUSED event. Too few bars rejects the candidate
+ * (there is no evidence for it); anything else (unavailable, stale version, instrument mismatch, no cost basis)
+ * fails the work, and the task scorer may queue the hypothesis again once new data exists.
+ */
+function datasetRefusalOutcome(
+  refusal: DatasetRefusal,
+  stage: "HYPOTHESISE" | "TEST",
+  lifecycle: { strategyId: string; experimentId: string } | null,
+): StageOutcome {
+  const reason = `${refusal.code}: ${refusal.detail}`;
+  const to: ResearchExperimentState = stage === "TEST" && refusal.code === "INSUFFICIENT_BARS" ? "REJECTED" : "FAILED";
+  const evidence = { stage, ...refusal.evidence };
+  return {
+    kind: "advance",
+    to,
+    reason,
+    evidence,
+    extraEvents: [{ kind: "DATASET_REFUSED", reason, evidence }],
+    ...(lifecycle && to === "REJECTED"
+      ? { sideEffects: (tx: Tx) => writeLifecycle(tx, lifecycle.strategyId, lifecycle.experimentId, [["TESTING", "REJECTED", "TEST", { reason }]]) }
+      : {}),
+  };
+}
+
+/** Loop candidates are measured with the engine defaults; the parameter hash covers them and the protocol. */
+function candidateParams(): Record<string, unknown> {
+  return {
+    configHash: configHashOf(parseStrategyConfig(DEFAULT_STRATEGY)),
+    adapter: RESEARCH_DATASET_ADAPTER_VERSION,
+    folds: RESEARCH_LOOP_FOLDS,
+    holdoutFraction: RESEARCH_LOOP_HOLDOUT_FRACTION,
+  };
+}
+
+/**
+ * Everything TEST needs before it runs or asks for approval: the pinned dataset loaded point-in-time, the cost
+ * basis at the as-of time, and the candidate's canonical identity cleared by the redundancy guard.
+ */
+async function prepareTest(env: TickEnv, row: ExperimentRow): Promise<{ ok: true; prepared: PreparedTest } | { ok: false; outcome: StageOutcome }> {
+  const context = asContext(row.context);
+  const forgeContext = asContext(context.forge);
+  const source = forgeContext.source;
+  const strategyId = forgeContext.strategyId;
+  if (typeof source !== "string" || typeof strategyId !== "string" || typeof forgeContext.artifactHash !== "string") {
+    return { ok: false, outcome: { kind: "advance", to: "FAILED", reason: "CONTEXT_MISSING: no forged artifact recorded", evidence: {} } };
+  }
+  const lifecycle = { strategyId, experimentId: row.id };
+  const pinned = parsePinnedDataset(context.dataset);
+  if (!pinned) {
+    return { ok: false, outcome: datasetRefusalOutcome({ ok: false, code: "DATASET_UNAVAILABLE", detail: "No dataset was pinned at HYPOTHESISE", evidence: { code: "DATASET_UNAVAILABLE" } }, "TEST", lifecycle) };
+  }
+  const hypothesis = await loadHypothesis(env, row);
+  if (!hypothesis) return { ok: false, outcome: { kind: "advance", to: "ABANDONED", reason: "HYPOTHESIS_MISSING", evidence: { hypothesisId: row.hypothesisId } } };
+  const loaded = await loadPointInTimeDataset(env.prisma, { pinned, hypothesisInstrumentIds: hypothesis.instrumentIds });
+  if (!loaded.ok) return { ok: false, outcome: datasetRefusalOutcome(loaded, "TEST", lifecycle) };
+  const periodsPerYear = periodsPerYearFor(loaded.evidence.interval, loaded.evidence.instrumentKind);
+  if (periodsPerYear === null) {
+    return { ok: false, outcome: datasetRefusalOutcome({ ok: false, code: "INTERVAL_UNSUPPORTED", detail: loaded.evidence.interval, evidence: { code: "INTERVAL_UNSUPPORTED" } }, "TEST", lifecycle) };
+  }
+  const cost = await researchCostPerSide(env.prisma, loaded.evidence, new Date(pinned.asOf));
+  if (!cost.ok) return { ok: false, outcome: datasetRefusalOutcome(cost, "TEST", lifecycle) };
+  const identity = candidateIdentity({ source, family: familyOfMarket(hypothesis.market), params: candidateParams(), strategyId });
+  const redundancy = await checkRedundancy(env.prisma, {
+    experimentId: row.id,
+    hypothesisId: row.hypothesisId,
+    identity,
+    dataset: { datasetId: loaded.evidence.datasetId, versionHash: loaded.evidence.versionHash, instrumentKey: loaded.evidence.instrumentKey, interval: loaded.evidence.interval },
   });
-  return rows.reverse().map((row) => ({
-    id: row.id,
-    pairAddress: row.pairAddress,
-    baseSymbol: row.baseSymbol,
-    quoteAddress: row.quoteAddress,
-    quoteSymbol: row.quoteSymbol,
-    priceUsd: row.priceUsd?.toString() ?? null,
-    liquidityUsd: row.liquidityUsd?.toString() ?? null,
-    volume24hUsd: row.volume24hUsd?.toString() ?? null,
-    volume5mUsd: row.volume5mUsd?.toString() ?? null,
-    priceChangeM5Pct: row.priceChangeM5?.toString() ?? null,
-    priceChangeH1Pct: row.priceChangeH1?.toString() ?? null,
-    txnsM5Buys: row.txnsM5Buys,
-    txnsM5Sells: row.txnsM5Sells,
-    receivedAt: row.receivedAt.toISOString(),
-    freshness: (["LIVE", "DELAYED", "STALE", "REPLAY", "DEMO"].includes(row.freshness) ? row.freshness : "STALE") as BacktestObservation["freshness"],
-    provenance: `MarketObservation:${row.id}`,
-  }));
+  if (!redundancy.ok) {
+    const reason = `REDUNDANT_${redundancy.code}: ${redundancy.detail}`;
+    const evidence = { code: redundancy.code, candidate: identity, ...redundancy.evidence };
+    return {
+      ok: false,
+      outcome: {
+        kind: "advance",
+        to: "REJECTED",
+        reason,
+        evidence: { redundancy: evidence },
+        extraEvents: [{ kind: "REDUNDANCY_REFUSED", reason, evidence }],
+        sideEffects: (tx) => writeLifecycle(tx, strategyId, row.id, [["TESTING", "REJECTED", "TEST", { reason }]]),
+      },
+    };
+  }
+  return { ok: true, prepared: { pinned, bars: loaded.bars, dataset: loaded.evidence, cost: cost.cost, periodsPerYear, identity, redundancy: redundancy.evidence } };
 }
 
 const SANDBOX_RETRY_CODES = new Set(["ISOLATION_DISABLED", "SECCOMP_INTEGRITY", "SANDBOX_TIMEOUT", "SANDBOX_EXIT"]);
 
-async function testStage(env: TickEnv, row: ExperimentRow, gateEvidence: Record<string, unknown>): Promise<StageOutcome> {
+async function testStage(env: TickEnv, row: ExperimentRow, gateEvidence: Record<string, unknown>, prepared: PreparedTest): Promise<StageOutcome> {
   const forgeContext = asContext(asContext(row.context).forge);
-  const source = forgeContext.source;
-  const strategyId = forgeContext.strategyId;
-  if (typeof source !== "string" || typeof strategyId !== "string" || typeof forgeContext.artifactHash !== "string") {
-    return { kind: "advance", to: "FAILED", reason: "CONTEXT_MISSING: no forged artifact recorded", evidence: gateEvidence };
-  }
+  const source = String(forgeContext.source);
+  const strategyId = String(forgeContext.strategyId);
   const reject = (reason: string, evidence: Record<string, unknown>): StageOutcome => ({
     kind: "advance",
     to: "REJECTED",
@@ -1037,93 +1301,106 @@ async function testStage(env: TickEnv, row: ExperimentRow, gateEvidence: Record<
   if (!compiled.ok || compiled.artifactHash !== forgeContext.artifactHash) {
     return reject("ARTIFACT_MISMATCH: recompiled source does not match the forged artifact", { expected: forgeContext.artifactHash });
   }
-  const observations = await (env.deps.loadObservations ?? loadResearchObservations)(env.prisma, env.now);
-  const usable = observations.filter((row) => Date.parse(row.receivedAt) <= env.now.getTime());
-  if (usable.length === 0) return reject("INSUFFICIENT_EVIDENCE: no observations at or before the tick time", { observationCount: 0 });
-  const hypothesisId = row.hypothesisId;
-  const instrumentId = (await loadHypothesis(env, row))?.instrumentIds[0];
+  const { bars, pinned, dataset, cost, identity } = prepared;
   const execute = env.deps.execute ?? executeCompiledStrategy;
+  // Only point-in-time bars reach the sandbox; each bar is delivered at its availableAt (bar close).
   const execution = await execute({
     javascript: compiled.javascript,
     artifactHash: compiled.artifactHash,
-    bars: usable.map((obs) => ({
-      instrumentId: instrumentId ?? obs.pairAddress,
-      pairAddress: obs.pairAddress,
-      receivedAt: obs.receivedAt,
-      priceUsd: obs.priceUsd,
-      liquidityUsd: obs.liquidityUsd,
-      volume24hUsd: obs.volume24hUsd,
-      priceChangeM5Pct: obs.priceChangeM5Pct,
-      priceChangeH1Pct: obs.priceChangeH1Pct,
-      txnsM5Buys: obs.txnsM5Buys,
-      txnsM5Sells: obs.txnsM5Sells,
-      dataState: obs.freshness,
+    bars: bars.map((bar) => ({
+      instrumentId: pinned.instrumentKey,
+      pairAddress: pinned.instrumentKey,
+      receivedAt: new Date(bar.availableAt).toISOString(),
+      priceUsd: bar.closeText,
+      liquidityUsd: null,
+      volume24hUsd: null,
+      priceChangeM5Pct: null,
+      priceChangeH1Pct: null,
+      txnsM5Buys: null,
+      txnsM5Sells: null,
+      dataState: "REPLAY",
     })),
-    metadata: { strategyId, version: String(forgeContext.version ?? "0.1.0"), hypothesisId },
+    metadata: { strategyId, version: String(forgeContext.version ?? "0.1.0"), hypothesisId: row.hypothesisId },
   });
-  if (!execution.signalsClaimed || execution.signals.length !== usable.length) {
-    const evidence = { code: execution.code, error: execution.error, signals: execution.signals.length, bars: usable.length };
+  if (!execution.signalsClaimed || execution.signals.length !== bars.length) {
+    const evidence = { code: execution.code, error: execution.error, signals: execution.signals.length, bars: bars.length };
     if (SANDBOX_RETRY_CODES.has(execution.code)) {
       return { kind: "attempt_failed", reason: `SANDBOX_${execution.code}: ${execution.error ?? "isolated run did not complete"}`, evidence };
     }
     return reject(`SANDBOX_${execution.code}: ${execution.error ?? "signals not claimed for every bar"}`, evidence);
   }
-  // Same measurement path as runResearchPipeline: paper simulation, statistics, untouched test window.
+  const measured = measureSignalsOnBars({
+    bars,
+    intents: execution.signals.map((signal) => signal.intent),
+    costBpsPerSide: cost.bpsPerSide,
+    periodsPerYear: prepared.periodsPerYear,
+  });
   const config = parseStrategyConfig(DEFAULT_STRATEGY);
-  const simulation = simulateResearchPath({
-    observations: usable,
-    signals: usable.map((obs, index) => ({ observationId: obs.id, intent: execution.signals[index]?.intent ?? "HOLD" })),
-    config,
-    initialCashUsd: config.startingBalanceUsd,
-    latencyMs: config.paperLatencyMs,
-  });
-  const statistics = summariseStatistics({
-    startingEquityUsd: config.startingBalanceUsd,
-    endingEquityUsd: simulation.endingEquityUsd,
-    netProfitUsd:
-      simulation.closedPnls.length === 0
-        ? null
-        : simulation.closedPnls.reduce((total, pnl) => total.plus(d(pnl)), d("0")).toFixed(8),
-    closedPnls: simulation.closedPnls,
-    equitySeries: simulation.equitySeries,
-    exposureSeries: simulation.exposureSeries,
-    observationSpanMs: simulation.observationSpanMs,
-    feeBps: config.feeBps,
-    alternativeFeeReturns: null,
-    parameterReturns: null,
-  });
-  const startAt = usable[0]!.receivedAt;
-  const endAt = usable.at(-1)!.receivedAt;
-  const splits = startAt !== endAt ? chronologicalSplits(startAt, endAt) : null;
-  const untouched = splits
-    ? scoreWindow(simulation, Date.parse(splits.testStart), Date.parse(splits.testEnd))
-    : { returnPct: null, sampleSize: 0, closedPnls: [] };
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const startAt = iso(bars[0]!.openTime);
+  const endAt = iso(bars.at(-1)!.openTime);
+  const testStart = iso(bars[Math.min(measured.holdoutStartIndex, bars.length - 1)]!.openTime);
+  const firstFold = measured.folds[0]?.startAt ?? testStart;
   const test = {
-    datasetHash: createHash("sha256").update(usable.map((obs) => `${obs.id}:${obs.receivedAt}:${obs.priceUsd ?? ""}`).join("|")).digest("hex"),
+    adapter: RESEARCH_DATASET_ADAPTER_VERSION,
+    dataset,
+    cost,
+    candidate: identity,
+    redundancy: prepared.redundancy,
+    measuredAt: env.now.toISOString(),
+    datasetHash: dataset.windowHash,
     startAt,
     endAt,
-    observationCount: usable.length,
-    blocked: simulation.blocked,
-    blockReason: simulation.blockReason,
-    measuredReturnPct: simulation.blocked ? null : simulation.returnPct,
-    measuredSampleSize: simulation.blocked ? 0 : simulation.closedPnls.length,
-    maxDrawdownPct: statistics.maxDrawdownPct.value,
-    untouchedReturnPct: untouched.returnPct,
-    untouchedSampleSize: untouched.sampleSize,
-    splits,
+    observationCount: bars.length,
+    blocked: false,
+    blockReason: null,
+    measuredReturnPct: returnPctOrNull(measured.full),
+    measuredSampleSize: measured.full.trades,
+    maxDrawdownPct: (measured.full.maxDrawdown * 100).toFixed(6),
+    untouchedReturnPct: returnPctOrNull(measured.holdout),
+    untouchedSampleSize: measured.holdout.trades,
+    fullNetReturnDoubleCost: measured.fullNetReturnDoubleCost,
+    folds: measured.folds,
+    holdout: measured.holdout,
+    splits: { trainStart: startAt, trainEnd: firstFold, validationStart: firstFold, validationEnd: testStart, testStart, testEnd: endAt },
     statisticsRecorded: true,
+    periodsPerYear: measured.periodsPerYear,
+    costBpsPerSide: cost.bpsPerSide,
     configHash: configHashOf(config),
-    feeBps: config.feeBps,
-    latencyMs: config.paperLatencyMs,
     executedHash: execution.executedHash,
   };
   return {
     kind: "advance",
     to: "CHALLENGE",
-    reason: `Measured: return ${test.measuredReturnPct ?? "unavailable"}, n=${test.measuredSampleSize}, untouched n=${test.untouchedSampleSize}`,
+    reason: `Measured on ${dataset.datasetId}@${dataset.versionHash.slice(0, 12)} (${bars.length} bars as of ${dataset.asOf}): return ${test.measuredReturnPct ?? "unavailable"}, n=${test.measuredSampleSize}, holdout n=${test.untouchedSampleSize}`,
     evidence: { ...gateEvidence, ...test },
     contextPatch: { test },
+    // The untouched holdout was looked at: consume it under the candidate's name-independent key. The unique key
+    // (strategy × version × dataset) refuses a concurrent second look; the transition then rolls back.
+    sideEffects: async (tx) => {
+      // Serialise holdout consumption per candidate and re-check sibling datasets inside the commit, so two
+      // concurrent ticks cannot both consume this candidate's holdout on different datasets of one instrument.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${identity.holdoutStrategyId}))`;
+      const siblings = await tx.historicalDataset.findMany({ where: { instrumentKey: dataset.instrumentKey, interval: dataset.interval }, select: { id: true } });
+      const prior = await tx.researchHoldoutAccess.count({ where: { strategyId: identity.holdoutStrategyId, datasetId: { in: [dataset.datasetId, ...siblings.map((s) => s.id)] } } });
+      if (prior > 0) throw new Error(`HOLDOUT_REUSED: holdout for ${identity.holdoutStrategyId} consumed concurrently`);
+      await tx.researchHoldoutAccess.create({
+        data: { id: newId("rhoa"), strategyId: identity.holdoutStrategyId, strategyVersion: LOOP_HOLDOUT_STRATEGY_VERSION, datasetId: dataset.datasetId, runId: `rexp:${row.id}` },
+      });
+    },
   };
+}
+
+/** True when this candidate's holdout (name-independent key) was consumed on this instrument and interval by another run. */
+async function holdoutConsumedByOtherRun(env: TickEnv, row: ExperimentRow, test: Context): Promise<boolean> {
+  const holdoutKey = asContext(test.candidate).holdoutStrategyId;
+  const dataset = asContext(test.dataset);
+  if (typeof holdoutKey !== "string" || typeof dataset.instrumentKey !== "string" || typeof dataset.interval !== "string") return false;
+  const siblings = await env.prisma.historicalDataset.findMany({ where: { instrumentKey: dataset.instrumentKey, interval: dataset.interval }, select: { id: true } });
+  const other = await env.prisma.researchHoldoutAccess.count({
+    where: { strategyId: holdoutKey, datasetId: { in: siblings.map((s) => s.id) }, runId: { not: `rexp:${row.id}` } },
+  });
+  return other > 0;
 }
 
 async function challengeStage(env: TickEnv, row: ExperimentRow): Promise<StageOutcome> {
@@ -1137,6 +1414,28 @@ async function challengeStage(env: TickEnv, row: ExperimentRow): Promise<StageOu
   const hypothesisTrials = await env.prisma.researchExperimentEvent.count({
     where: { kind: "TRANSITION", fromState: "TEST", toState: "CHALLENGE", experiment: { hypothesisId: row.hypothesisId } },
   });
+  const rejectOutcome = (reason: string, evidence: Record<string, unknown>, extraEvents?: OutcomeEvent[]): StageOutcome => ({
+    kind: "advance",
+    to: "REJECTED",
+    reason,
+    evidence,
+    contextPatch: { challenge: evidence },
+    ...(extraEvents ? { extraEvents } : {}),
+    sideEffects: (tx) => writeLifecycle(tx, strategyId, row.id, [["TESTING", "REJECTED", "CHALLENGE", { reason }]]),
+  });
+  // GENESIS Phase 8 adversarial reviewer: leakage, sample, costs, fold stability and reused data, before anything else.
+  const holdoutConsumedElsewhere = await holdoutConsumedByOtherRun(env, row, test);
+  const adversary = reviewResearchEvidence({
+    test,
+    minBars: RESEARCH_LOOP_MIN_BARS,
+    minSampleTrades: parseStrategyConfig(DEFAULT_STRATEGY).minSampleTrades,
+    holdoutConsumedElsewhere,
+  });
+  if (!adversary.passed) {
+    const reason = `CHALLENGE_ADVERSARY_REJECT: ${adversary.reasonCodes.join(",")}`;
+    return rejectOutcome(reason, { adversary }, [{ kind: "ADVERSARY_REJECTED", reason, evidence: { ...adversary } }]);
+  }
+  const costRecorded = typeof asContext(test.cost).bpsPerSide === "number";
   const deterministic: ChallengeReport = runChallengeReview({
     sampleSize: test.measuredSampleSize,
     oosSampleSize: typeof test.untouchedSampleSize === "number" && test.untouchedSampleSize > 0 ? test.untouchedSampleSize : null,
@@ -1148,20 +1447,13 @@ async function challengeStage(env: TickEnv, row: ExperimentRow): Promise<StageOu
     parameterTrials: Math.max(1, hypothesisTrials),
     usedFutureBars: false,
     usedPostExitMemoryInEntry: false,
-    costModelPresent: true,
+    costModelPresent: costRecorded,
     monteCarloRan: false,
     correlatedSiblingStrategies: 0,
   });
-  const rejectOutcome = (reason: string, evidence: Record<string, unknown>): StageOutcome => ({
-    kind: "advance",
-    to: "REJECTED",
-    reason,
-    evidence,
-    contextPatch: { challenge: evidence },
-    sideEffects: (tx) => writeLifecycle(tx, strategyId, row.id, [["TESTING", "REJECTED", "CHALLENGE", { reason }]]),
-  });
   if (!deterministic.passed) {
     return rejectOutcome(`CHALLENGE_REJECT: ${deterministic.summary}`, {
+      adversary,
       deterministic: { passed: false, summary: deterministic.summary, findingCodes: deterministic.findings.map((f) => f.code) },
     });
   }
@@ -1187,12 +1479,14 @@ async function challengeStage(env: TickEnv, row: ExperimentRow): Promise<StageOu
       },
       deterministicFindings: deterministic.findings.map((f) => `${f.code}: ${f.detail}`),
     })}`,
+    row.id,
   );
   if (call.status !== "OK") return modelFailure(call, "CHALLENGE");
   if (call.endpointId !== null && call.endpointId === forgeContext.endpointId) {
     return { kind: "advance", to: "FAILED", reason: `REVIEWER_NOT_SEPARATED: challenge answered by forge endpoint ${call.endpointId}`, evidence: separated };
   }
   const challenge = {
+    adversary,
     deterministic: { passed: deterministic.passed, summary: deterministic.summary, findingCodes: deterministic.findings.map((f) => f.code) },
     report: deterministic,
     model: { verdict: call.data.verdict, findings: call.data.findings, model: call.model, endpointId: call.endpointId },
@@ -1258,15 +1552,19 @@ async function validateStage(env: TickEnv, row: ExperimentRow): Promise<StageOut
     runtimeLoadable: false,
   };
   const measuredFull = test.blocked !== true;
+  const datasetEv = typeof asContext(test.dataset).datasetId === "string" ? asContext(test.dataset) : null;
+  const costEv = typeof asContext(test.cost).bpsPerSide === "number" ? asContext(test.cost) : null;
   const evaluation = finaliseEvaluation(
     {
       protocol: EVALUATION_PROTOCOLS.PIPELINE_SANDBOX_V1,
       config,
       configHash: configHashOf(config),
       dataset: {
-        id: `observations:${String(test.startAt)}..${String(test.endAt)}`,
+        id: datasetEv ? `historical:${String(datasetEv.datasetId)}@${String(datasetEv.versionHash)}` : `observations:${String(test.startAt)}..${String(test.endAt)}`,
         hash: test.datasetHash,
-        basis: "MarketObservation id:receivedAt:priceUsd",
+        basis: datasetEv
+          ? `HistoricalBar availableAt <= ${String(datasetEv.asOf)} (${String(datasetEv.adapter)}); sha256 of openTime:hash per bar`
+          : "MarketObservation id:receivedAt:priceUsd",
         startAt: (test.startAt as string | null) ?? null,
         endAt: (test.endAt as string | null) ?? null,
         observationCount: Number(test.observationCount ?? 0),
@@ -1298,7 +1596,9 @@ async function validateStage(env: TickEnv, row: ExperimentRow): Promise<StageOut
         basis: "Research-loop experiment; prior reports for this hypothesis over the test window count as selection",
         history: overlapping.map((prior) => ({ ref: prior.id, at: prior.createdAt.toISOString(), detail: "Earlier evaluation of this hypothesis overlapping the test window" })),
       },
-      costs: { feeBps: config.feeBps, slippageModel: "research-backtest simulateResearchPath fills", latencyMs: config.paperLatencyMs },
+      costs: costEv
+        ? { feeBps: Number(costEv.bpsPerSide).toFixed(4), slippageModel: `Per-side conservative cost, next-bar open fill: ${String(costEv.basis)}`, latencyMs: null }
+        : { feeBps: config.feeBps, slippageModel: "research-backtest simulateResearchPath fills", latencyMs: config.paperLatencyMs },
       forwardPaper: { status: "NONE", resultIds: [], closedTradeCount: 0, returnPct: null },
     },
     executable,
@@ -1317,7 +1617,7 @@ async function validateStage(env: TickEnv, row: ExperimentRow): Promise<StageOut
       observationCount: Number(test.observationCount ?? 0),
       startAt: (test.startAt as string | null) ?? null,
       endAt: (test.endAt as string | null) ?? null,
-      sources: ["persisted_observations"],
+      sources: datasetEv ? [`historical_warehouse:${String(datasetEv.datasetId)}@${String(datasetEv.versionHash)}`] : ["persisted_observations"],
       contentHash: test.datasetHash,
     },
     periods: { train: splits.trainStart ?? null, validation: splits.validationStart ?? null, test: splits.testStart ?? null },
