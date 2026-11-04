@@ -254,6 +254,7 @@ ALTER TABLE "ShadowOutcome" ADD CONSTRAINT "ShadowOutcome_fill" CHECK (
      AND "mae" IS NOT NULL AND "mfe" IS NOT NULL AND "mae" <= 0 AND "mae" > '-Infinity'::float8
      AND "mfe" >= 0 AND "mfe" < 'Infinity'::float8
      AND "realisedNetReturn" > '-Infinity'::float8 AND "realisedNetReturn" < 'Infinity'::float8
+     AND "positive" = ("realisedNetReturn" > 0)
      AND "exitReason" IN ('HORIZON', 'STOP', 'TARGET'))
   OR (NOT "hypotheticalFillAvailable" AND "realisedNetReturn" IS NULL AND "positive" IS NULL
      AND "mae" IS NULL AND "mfe" IS NULL AND "exitReason" IS NULL)
@@ -438,3 +439,21 @@ $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER "ShadowOutcome_insert_guard" BEFORE INSERT ON "ShadowOutcome"
   FOR EACH ROW EXECUTE FUNCTION odin_genesis_outcome_insert();
+
+-- Fire every guard even under session_replication_role = replica, so a session cannot bypass them by
+-- switching to replica mode. Only the table owner or a superuser can still disable them explicitly.
+ALTER TABLE "ModelVersion" ENABLE ALWAYS TRIGGER "ModelVersion_append_only";
+ALTER TABLE "ModelVersion" ENABLE ALWAYS TRIGGER "ModelVersion_no_truncate";
+ALTER TABLE "ModelVersion" ENABLE ALWAYS TRIGGER "ModelVersion_insert_guard";
+ALTER TABLE "ModelPaperApproval" ENABLE ALWAYS TRIGGER "ModelPaperApproval_append_only";
+ALTER TABLE "ModelPaperApproval" ENABLE ALWAYS TRIGGER "ModelPaperApproval_no_truncate";
+ALTER TABLE "ModelPaperApproval" ENABLE ALWAYS TRIGGER "ModelPaperApproval_insert_guard";
+ALTER TABLE "ModelLifecycleEvent" ENABLE ALWAYS TRIGGER "ModelLifecycleEvent_append_only";
+ALTER TABLE "ModelLifecycleEvent" ENABLE ALWAYS TRIGGER "ModelLifecycleEvent_no_truncate";
+ALTER TABLE "ModelLifecycleEvent" ENABLE ALWAYS TRIGGER "ModelLifecycleEvent_insert_guard";
+ALTER TABLE "ShadowPrediction" ENABLE ALWAYS TRIGGER "ShadowPrediction_append_only";
+ALTER TABLE "ShadowPrediction" ENABLE ALWAYS TRIGGER "ShadowPrediction_no_truncate";
+ALTER TABLE "ShadowPrediction" ENABLE ALWAYS TRIGGER "ShadowPrediction_insert_guard";
+ALTER TABLE "ShadowOutcome" ENABLE ALWAYS TRIGGER "ShadowOutcome_append_only";
+ALTER TABLE "ShadowOutcome" ENABLE ALWAYS TRIGGER "ShadowOutcome_no_truncate";
+ALTER TABLE "ShadowOutcome" ENABLE ALWAYS TRIGGER "ShadowOutcome_insert_guard";

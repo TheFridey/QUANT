@@ -278,7 +278,12 @@ export async function retireModel(db: Db, input: { modelVersionId: string; actor
   return transitionModel(db, { ...input, to: "RETIRED" });
 }
 
-const MAX_APPROVAL_TTL_MS = 7 * 86_400_000;
+/**
+ * The database CHECK allows expiresAt ≤ approvedAt + 7 days, with approvedAt taken from the database clock.
+ * The app computes expiresAt from its own clock, so the TTL is capped one hour short of 7 days: up to an
+ * hour of app-ahead-of-DB skew cannot push an approval past the CHECK.
+ */
+export const MAX_APPROVAL_TTL_MS = 7 * 86_400_000 - 3_600_000;
 
 /**
  * Operator approval for the PAPER_APPROVED evidence label, bound to the model's artefact hash. It grants no

@@ -1441,7 +1441,7 @@ model ShadowPrediction {
   modelVersion ModelVersion   @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
   outcome      ShadowOutcome?
 
-  @@unique([modelVersionId, instrumentKey, decisionBarOpenTime])
+  @@unique([modelVersionId, instrumentKey, decisionBarOpenTime], map: "ShadowPrediction_modelVersionId_instrumentKey_decisionBarOp_key")
   @@index([modelVersionId, decisionTime])
   @@index([status, horizonEndsAt])
 }

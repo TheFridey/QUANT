@@ -54,7 +54,17 @@ Worker log lines: `genesis shadow disabled … nothing scheduled` at boot while 
 ## Operational prerequisites
 
 - **Clock sync.** Insert triggers date rows by the database clock and refuse a prediction dated more than 5 s ahead of it or more than 5 min behind it. Keep NTP running on the worker host and the database host. Skew fails safe: rows are refused, never accepted wrongly.
-- **Database role.** The append-only guarantee holds against the application role only. A table owner or superuser can disable triggers (`ALTER TABLE … DISABLE TRIGGER`, `session_replication_role = replica`). Confirm the role the app connects with does not own the tables or hold superuser. Not verified for production.
+- **Database role.** The append-only guarantee holds against the application role only.
+  - The guards are `ENABLE ALWAYS`, so `session_replication_role = replica` does not bypass them.
+  - A table owner or a superuser can still run `ALTER TABLE … DISABLE TRIGGER` or `DROP TRIGGER`.
+  - Confirm the role the app connects with does not own the tables, does not hold superuser, and cannot `CREATE` in the schema (otherwise it could create look-alike objects): `SELECT has_schema_privilege(current_user, 'public', 'CREATE');` must be false. Not verified for production.
+- **Restores.** Use a full restore (schema and data), as `scripts/restore-verify.mjs` does. `pg_dump` creates the triggers after it loads the data, so a full restore keeps every row and its `createdAt` unchanged. A data-only restore into an existing schema fires the insert guards:
+  - `createdAt` is rewritten to the restore time;
+  - ShadowPrediction and ShadowOutcome rows are refused because their horizon has already passed;
+  - ModelVersion and approval timestamps change.
+
+  A data-only restore of these tables is only possible as a superuser with `--disable-triggers`, and must be recorded.
+- **Retention.** There is none: all five tables are append-only and are never pruned. At the default budget, writes are bounded by about 200 predictions per cycle. Every 5 minutes, that is at most about 58 000 rows a day while enabled. Watch table size (`pg_total_relation_size('"ShadowPrediction"')`). Any pruning or archiving needs its own reviewed migration and operator approval.
 
 ## Rollback
 

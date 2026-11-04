@@ -15,7 +15,7 @@ import {
 import { Prisma, toJson, type PrismaClient } from "@odin/shared/db";
 import { z } from "zod";
 import { canonicalHash } from "./canonical.js";
-import { SHADOW_STATES, type ModelState } from "./model-lifecycle.js";
+import { canTransitionModel, SHADOW_STATES, type ModelState } from "./model-lifecycle.js";
 import { loadModel, ModelRegistryError, modelStates, transitionModel, type LoadedModel } from "./model-registry.js";
 import { clampBudget, shadowBudgetFromEnv, shadowEnabled, type ShadowBudget } from "./shadow-config.js";
 
@@ -494,19 +494,42 @@ async function failModel(prisma: PrismaClient, id: string, from: ModelState, rea
 export async function resolveShadowPredictions(
   prisma: PrismaClient,
   input: { bars: ShadowBarSource; now: Date; maxResolutions: number; overTime?: () => boolean; graceBars?: number; modelIds?: string[]; lookbackMs?: number },
-): Promise<{ resolved: number; unavailable: number; pending: Array<{ predictionId: string; reason: string }>; stoppedEarly: null | "MAX_MS" | "MAX_RESOLUTIONS" }> {
-  // Bounded window: rows that can never resolve (hash or model integrity failures) age out instead of
-  // blocking the head of the queue forever, and the scan does not grow with resolved history.
+): Promise<{ resolved: number; unavailable: number; pending: Array<{ predictionId: string; reason: string }>; stoppedEarly: null | "MAX_MS" | "MAX_RESOLUTIONS"; excludedModels: string[] }> {
+  // Bounded window: the scan does not grow with resolved history, and stuck rows eventually age out.
   const since = new Date(input.now.getTime() - (input.lookbackMs ?? RESOLVER_LOOKBACK_MS));
-  const due = await prisma.shadowPrediction.findMany({
-    where: { status: "PREDICTED", outcome: { is: null }, horizonEndsAt: { lte: input.now, gte: since }, ...(input.modelIds ? { modelVersionId: { in: input.modelIds } } : {}) },
-    orderBy: { horizonEndsAt: "asc" },
-    take: input.maxResolutions + 1,
-  });
-  const out = { resolved: 0, unavailable: 0, pending: [] as Array<{ predictionId: string; reason: string }>, stoppedEarly: null as null | "MAX_MS" | "MAX_RESOLUTIONS" };
+  const where = { status: "PREDICTED", outcome: { is: null }, horizonEndsAt: { lte: input.now, gte: since }, ...(input.modelIds ? { modelVersionId: { in: input.modelIds } } : {}) } satisfies Prisma.ShadowPredictionWhereInput;
+  const out = { resolved: 0, unavailable: 0, pending: [] as Array<{ predictionId: string; reason: string }>, stoppedEarly: null as null | "MAX_MS" | "MAX_RESOLUTIONS", excludedModels: [] as string[] };
+  if (input.maxResolutions < 1) return out;
+
+  // Fair share per model, interleaved round-robin, so one model whose rows never resolve (integrity failure,
+  // refused inserts, missing bars) cannot starve the others. FAILED models (integrity) are left out.
+  const withDue = await prisma.shadowPrediction.findMany({ where, distinct: ["modelVersionId"], select: { modelVersionId: true }, orderBy: { modelVersionId: "asc" } });
+  const states = await modelStates(prisma, withDue.map((m) => m.modelVersionId));
+  let ids = withDue.map((m) => m.modelVersionId).filter((id) => states.get(id)?.state !== "FAILED");
+  if (ids.length > input.maxResolutions) {
+    const offset = Math.floor(input.now.getTime() / 60_000) % ids.length;
+    ids = [...ids.slice(offset), ...ids.slice(0, offset)].slice(0, input.maxResolutions);
+  }
+  if (!ids.length) return out;
+  const cap = Math.max(1, Math.ceil(input.maxResolutions / ids.length));
+  const queues = await Promise.all(ids.map((id) => prisma.shadowPrediction.findMany({ where: { ...where, modelVersionId: id }, orderBy: [{ horizonEndsAt: "asc" }, { id: "asc" }], take: cap })));
+  const due: (typeof queues)[number] = [];
+  for (let round = 0; round < cap; round += 1) for (const q of queues) if (q[round]) due.push(q[round]!);
+
   const labelSpecs = new Map<string, LabelSpec | null>();
-  for (const [index, p] of due.entries()) {
-    if (index >= input.maxResolutions) {
+  const excluded = new Set<string>();
+  const exclude = async (modelVersionId: string, reason: string) => {
+    if (excluded.has(modelVersionId)) return;
+    excluded.add(modelVersionId);
+    out.excludedModels.push(modelVersionId);
+    // Integrity failures retire the model from shadow (FAILED, history kept), so its rows leave the queue.
+    const head = states.get(modelVersionId);
+    if (head && canTransitionModel(head.state, "FAILED")) await failModel(prisma, modelVersionId, head.state, `INTEGRITY: ${reason}`);
+  };
+  let attempted = 0;
+  for (const p of due) {
+    if (excluded.has(p.modelVersionId)) continue;
+    if (attempted >= input.maxResolutions) {
       out.stoppedEarly = "MAX_RESOLUTIONS";
       break;
     }
@@ -514,22 +537,24 @@ export async function resolveShadowPredictions(
       out.stoppedEarly = "MAX_MS";
       break;
     }
+    attempted += 1;
     if (predictionRecordHash({ ...p, status: p.status as PredictionRecord["status"], features: p.features as Record<string, number | null> }) !== p.recordHash) {
       out.pending.push({ predictionId: p.id, reason: "RECORD_HASH_MISMATCH" });
+      await exclude(p.modelVersionId, `prediction ${p.id} record hash mismatch`);
       continue;
     }
     if (!labelSpecs.has(p.modelVersionId)) {
       try {
         labelSpecs.set(p.modelVersionId, (await loadModel(prisma, p.modelVersionId)).labelSpec);
-      } catch {
+      } catch (error) {
         labelSpecs.set(p.modelVersionId, null);
+        out.pending.push({ predictionId: p.id, reason: "MODEL_INTEGRITY" });
+        await exclude(p.modelVersionId, error instanceof Error ? error.message : String(error));
+        continue;
       }
     }
     const labelSpec = labelSpecs.get(p.modelVersionId);
-    if (!labelSpec) {
-      out.pending.push({ predictionId: p.id, reason: "MODEL_INTEGRITY" });
-      continue;
-    }
+    if (!labelSpec) continue;
     const now = input.now;
     const bars = await input.bars.barsBetween(p.instrumentKey, p.barMs, p.decisionBarOpenTime, new Date(p.decisionBarOpenTime.getTime() + p.horizonBars * p.barMs), now);
     const r = resolvePrediction({ prediction: p, labelSpec, bars, now, graceBars: input.graceBars });

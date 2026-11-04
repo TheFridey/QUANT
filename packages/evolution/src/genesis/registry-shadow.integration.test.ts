@@ -81,7 +81,9 @@ describe.skipIf(!enabled)("GENESIS model registry and shadow predictions (databa
     await expect(raw(1, "EXPERIMENTAL", "SHADOW_CANDIDATE")).rejects.toThrow(/not allowed/);
     await expect(raw(1, "HISTORICALLY_ELIGIBLE", "SHADOW_CANDIDATE")).rejects.toThrow(/starts from/);
     await expect(raw(5, "EXPERIMENTAL", "HISTORICALLY_ELIGIBLE")).rejects.toThrow(/no predecessor/);
-    await expect(raw(1, "EXPERIMENTAL", "BOGUS")).rejects.toThrow(/ModelLifecycleEvent_state_known/);
+    // The insert trigger runs before CHECKs, so an unknown state is refused by the transition table first.
+    await expect(raw(1, "EXPERIMENTAL", "BOGUS")).rejects.toThrow(/not allowed|ModelLifecycleEvent_state_known/);
+    await expect(raw(0, null as unknown as string, "BOGUS")).rejects.toThrow(/ModelLifecycleEvent_state_known|ModelLifecycleEvent_sequence/);
 
     await transitionModel(prisma, { modelVersionId: model.id, to: "HISTORICALLY_ELIGIBLE", actor: "genesis-test", reason: "walk-forward CANDIDATE" });
     await expect(raw(1, "EXPERIMENTAL", "REJECTED")).rejects.toThrow(/Unique constraint|duplicate key|23505/);
@@ -141,7 +143,7 @@ describe.skipIf(!enabled)("GENESIS model registry and shadow predictions (databa
     await sleep(Math.max(0, prediction.horizonEndsAt.getTime() - Date.now()) + 300);
     bars.push(...syntheticBars(1, lastOpen + BAR, BAR, 12));
     const second = await runShadowCycle(prisma, { bars: source, modelIds: [model.id], monitor: { minResolved: 1, maxEce: 0.0001 } });
-    expect(second.resolved).toBe(1);
+    expect({ resolved: second.resolved, pending: second.pending, skipped: second.skipped, failed: second.failed, stoppedEarly: second.stoppedEarly }).toMatchObject({ resolved: 1, pending: [] });
     const outcome = await prisma.shadowOutcome.findUniqueOrThrow({ where: { predictionId: prediction.id } });
     expect(outcome.source).toBe("HYPOTHETICAL_SHADOW");
     expect(outcome.hypotheticalFillAvailable).toBe(true);
@@ -150,6 +152,17 @@ describe.skipIf(!enabled)("GENESIS model registry and shadow predictions (databa
       prisma.shadowOutcome.create({ data: { predictionId: prediction.id, resolvedAt: new Date(), hypotheticalFillAvailable: false, costBpsApplied: 30, barsHash: "a".repeat(64), recordHash: "a".repeat(64) } }),
     ).rejects.toThrow(/Unique constraint|P2002/);
     await expect(prisma.$executeRawUnsafe(`UPDATE "ShadowOutcome" SET "realisedNetReturn" = 1 WHERE "id" = $1`, outcome.id)).rejects.toThrow(/append-only/);
+    // positive must agree with the realised net return (CHECK runs before the unique index).
+    await expect(
+      prisma.shadowOutcome.create({ data: { predictionId: prediction.id, resolvedAt: new Date(), hypotheticalFillAvailable: true, realisedNetReturn: 0.01, positive: false, mae: -0.01, mfe: 0.02, exitReason: "HORIZON", costBpsApplied: 30, barsHash: "a".repeat(64), recordHash: "a".repeat(64) } }),
+    ).rejects.toThrow(/ShadowOutcome_fill/);
+    // Guards are ENABLE ALWAYS: replica mode does not bypass them.
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = replica`);
+        await tx.$executeRawUnsafe(`UPDATE "ShadowOutcome" SET "realisedNetReturn" = 1 WHERE "id" = $1`, outcome.id);
+      }),
+    ).rejects.toThrow(/append-only/);
 
     expect(second.suspended.map((s) => s.modelVersionId)).toEqual([model.id]);
     const head = await currentModelState(prisma, model.id);
