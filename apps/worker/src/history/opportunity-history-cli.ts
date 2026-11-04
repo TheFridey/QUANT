@@ -3,7 +3,7 @@ import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { OpportunityManifestBuilder, opportunityCsvHeader, opportunityRowToCsv } from "@odin/backtest";
 import { PrismaClient } from "@odin/shared/db";
-import { loadOpportunityWindow } from "./opportunity-loader.js";
+import { iterateOpportunityBatches } from "./opportunity-loader.js";
 
 /**
  * GENESIS Phase 3 Opportunity History export, read-only against the database (SELECTs only):
@@ -68,10 +68,14 @@ async function main() {
   try {
     for (let start = from.getTime(); start < to.getTime() && !stop; start += windowHours * HOUR) {
       const end = Math.min(start + windowHours * HOUR, to.getTime());
-      const rows = await loadOpportunityWindow(prisma, { from: new Date(start), to: new Date(end), accountId, maxCycleSpanMs, counterfactualHorizonsMs: horizonsMs });
-      for (const row of rows) {
-        manifest.add(row);
-        stream.write(`${format === "csv" ? opportunityRowToCsv(row) : JSON.stringify(row)}\n`);
+      // Each batch is written and dropped before the next is read, so memory does not grow with the window.
+      for await (const rows of iterateOpportunityBatches(prisma, { from: new Date(start), to: new Date(end), accountId, maxCycleSpanMs, counterfactualHorizonsMs: horizonsMs })) {
+        for (const row of rows) {
+          manifest.add(row);
+          const line = `${format === "csv" ? opportunityRowToCsv(row) : JSON.stringify(row)}\n`;
+          if (!stream.write(line)) await new Promise<void>((r) => stream.once("drain", () => r()));
+        }
+        if (stop) break;
       }
       windows += 1;
       if (pauseMs > 0) await new Promise((r) => setTimeout(r, pauseMs));

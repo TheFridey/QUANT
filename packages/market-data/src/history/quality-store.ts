@@ -14,22 +14,27 @@ type Reader = Pick<PrismaClient, "historicalDataset" | "historicalBar" | "histor
 export async function loadDatasetQualityInput(prisma: Reader, datasetId: string, asOf: Date, options?: DatasetQualityInput["options"]): Promise<DatasetQualityInput | null> {
   const dataset = await prisma.historicalDataset.findUnique({
     where: { id: datasetId },
-    select: { id: true, sourceId: true, instrumentKey: true, instrumentKind: true, cohort: true, interval: true, versionHash: true },
+    select: { id: true, sourceId: true, instrumentKey: true, instrumentKind: true, cohort: true, interval: true, versionHash: true, lastOpenTime: true },
   });
   if (!dataset) return null;
+  // A window is pushed into the query (openTime bounds) rather than filtered in memory.
+  const window = options?.window;
+  const openTime = window ? { gte: new Date(window.fromOpenTime), lte: new Date(window.toOpenTime) } : undefined;
+  const scoped = openTime ? { datasetId, openTime } : { datasetId };
   const [rows, revisions, rejections] = await Promise.all([
     prisma.historicalBar.findMany({
-      where: { datasetId },
+      where: scoped,
       select: { openTime: true, availableAt: true, open: true, high: true, low: true, close: true, volume: true },
       orderBy: { openTime: "asc" },
       take: MAX_QUALITY_BARS + 1,
     }),
-    prisma.historicalBarRevision.count({ where: { datasetId } }),
-    prisma.historicalBarRejection.groupBy({ by: ["reason"], where: { datasetId }, _count: { _all: true } }),
+    prisma.historicalBarRevision.count({ where: scoped }),
+    prisma.historicalBarRejection.groupBy({ by: ["reason"], where: scoped, _count: { _all: true } }),
   ]);
   if (rows.length > MAX_QUALITY_BARS) throw new Error(`dataset ${datasetId} has more than ${MAX_QUALITY_BARS} bars; refusing an unbounded read`);
+  const { lastOpenTime, ...meta } = dataset;
   return {
-    dataset,
+    dataset: { ...meta, lastOpenTime: lastOpenTime?.getTime() ?? null },
     bars: rows.map((row) => ({
       openTime: row.openTime.getTime(),
       availableAt: row.availableAt.getTime(),

@@ -5,7 +5,8 @@ import { PrismaClient } from "@odin/shared/db";
 /**
  * GENESIS Phase 3 read-only dataset quality. Behind the global JWT guard like every non-@Public route;
  * GET only, SELECTs only (the shared loader in @odin/market-data). The list reads dataset metadata, never
- * bars; the detail reads one dataset's bars, bounded by the ASCEND-01 per-dataset quota.
+ * bars; the detail reads one dataset's bars, bounded by the ASCEND-01 per-dataset quota. `from`/`to` become
+ * openTime bounds in the query itself (see quality-store), so a window never loads the whole dataset.
  */
 @Controller("research/data-quality")
 export class DataQualityController {

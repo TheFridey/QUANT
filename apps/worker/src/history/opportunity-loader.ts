@@ -13,8 +13,9 @@ import type { PrismaClient } from "@odin/shared/db";
  */
 
 export const MAX_CYCLES_PER_WINDOW = 5_000;
-export const CYCLE_BATCH = 50;
-export const MAX_ROWS_PER_BATCH = 50_000;
+/** Small on purpose: each AgentDecision row carries its input/output JSON. */
+export const CYCLE_BATCH = 10;
+export const MAX_ROWS_PER_BATCH = 20_000;
 const MAX_COUNTERFACTUAL_BARS = 50_000;
 
 type Reader = Pick<PrismaClient, "cycleRun" | "opportunityFunnelEvent" | "agentDecision" | "tradeIntent" | "historicalDataset" | "historicalBar">;
@@ -36,7 +37,11 @@ function capped<T>(rows: T[], cap: number, what: string): T[] {
 
 const dec = (v: { toString(): string } | null) => (v === null ? null : v.toString());
 
-export async function loadOpportunityWindow(prisma: Reader, input: OpportunityWindowInput): Promise<OpportunityRow[]> {
+/**
+ * Rows for one window, yielded per batch of CYCLE_BATCH cycles so the caller can write and drop each batch:
+ * memory is bounded by one batch (AgentDecision input/output JSON included), not by the window.
+ */
+export async function* iterateOpportunityBatches(prisma: Reader, input: OpportunityWindowInput): AsyncGenerator<OpportunityRow[]> {
   const cycles = capped(
     await prisma.cycleRun.findMany({
       where: { startedAt: { gte: input.from, lt: input.to }, ...(input.accountId ? { accountId: input.accountId } : {}) },
@@ -47,13 +52,11 @@ export async function loadOpportunityWindow(prisma: Reader, input: OpportunityWi
     MAX_CYCLES_PER_WINDOW,
     "CycleRun window",
   );
-  if (cycles.length === 0) return [];
+  if (cycles.length === 0) return;
 
-  const funnel = [];
-  const decisions = [];
-  const intents = [];
   for (let i = 0; i < cycles.length; i += CYCLE_BATCH) {
-    const ids = cycles.slice(i, i + CYCLE_BATCH).map((c) => c.id);
+    const batch = cycles.slice(i, i + CYCLE_BATCH);
+    const ids = batch.map((c) => c.id);
     const [f, d, t] = await Promise.all([
       prisma.opportunityFunnelEvent.findMany({
         where: { cycleId: { in: ids } },
@@ -74,33 +77,41 @@ export async function loadOpportunityWindow(prisma: Reader, input: OpportunityWi
         take: MAX_ROWS_PER_BATCH + 1,
       }),
     ]);
-    funnel.push(...capped(f, MAX_ROWS_PER_BATCH, "OpportunityFunnelEvent batch"));
-    decisions.push(...capped(d, MAX_ROWS_PER_BATCH, "AgentDecision batch").map((r) => ({ ...r, confidence: r.confidence.toString() })));
-    intents.push(
-      ...capped(t, MAX_ROWS_PER_BATCH, "TradeIntent batch").map((r) => ({
-        ...r,
-        requestedQty: dec(r.requestedQty),
-        sizedQty: dec(r.sizedQty),
-        sizedNotionalUsd: dec(r.sizedNotionalUsd),
-      })),
-    );
-  }
+    const funnel = capped(f, MAX_ROWS_PER_BATCH, "OpportunityFunnelEvent batch");
+    const decisions = capped(d, MAX_ROWS_PER_BATCH, "AgentDecision batch").map((r) => ({ ...r, confidence: r.confidence.toString() }));
+    const intents = capped(t, MAX_ROWS_PER_BATCH, "TradeIntent batch").map((r) => ({
+      ...r,
+      requestedQty: dec(r.requestedQty),
+      sizedQty: dec(r.sizedQty),
+      sizedNotionalUsd: dec(r.sizedNotionalUsd),
+    }));
 
-  let counterfactual: { series: Map<string, CounterfactualSeries>; horizonsMs: number[] } | undefined;
-  const horizons = input.counterfactualHorizonsMs;
-  if (horizons && horizons.length > 0) {
-    const pairs = [...new Set([...funnel, ...decisions, ...intents].map((r) => r.pairAddress).filter(Boolean))];
-    const series = await loadCounterfactualSeries(prisma, pairs, input.from, new Date(input.to.getTime() + Math.max(...horizons) + (input.maxCycleSpanMs ?? 600_000)));
-    counterfactual = { series, horizonsMs: horizons };
-  }
+    let counterfactual: { series: Map<string, CounterfactualSeries>; horizonsMs: number[] } | undefined;
+    const horizons = input.counterfactualHorizonsMs;
+    if (horizons && horizons.length > 0) {
+      const pairs = [...new Set([...funnel, ...decisions, ...intents].map((r) => r.pairAddress).filter(Boolean))];
+      const first = batch[0]!.startedAt;
+      const last = batch.at(-1)!.startedAt.getTime();
+      const series = await loadCounterfactualSeries(prisma, pairs, first, new Date(last + Math.max(...horizons) + (input.maxCycleSpanMs ?? 600_000)));
+      counterfactual = { series, horizonsMs: horizons };
+    }
 
-  return buildOpportunityRows({
-    cycles: cycles.map((c) => ({ cycleId: c.id, startedAt: c.startedAt, accountId: c.accountId, tradingEnvironment: c.tradingEnvironment, dataMode: c.dataMode })),
-    funnel,
-    decisions,
-    intents,
-    options: { maxCycleSpanMs: input.maxCycleSpanMs, counterfactual },
-  });
+    // A batch holds whole cycles, and rows are keyed by (cycle, pair), so building per batch is exact.
+    yield buildOpportunityRows({
+      cycles: batch.map((c) => ({ cycleId: c.id, startedAt: c.startedAt, accountId: c.accountId, tradingEnvironment: c.tradingEnvironment, dataMode: c.dataMode })),
+      funnel,
+      decisions,
+      intents,
+      options: { maxCycleSpanMs: input.maxCycleSpanMs, counterfactual },
+    });
+  }
+}
+
+/** Collects every batch of one window. For tests and small windows; the CLI streams batches instead. */
+export async function loadOpportunityWindow(prisma: Reader, input: OpportunityWindowInput): Promise<OpportunityRow[]> {
+  const rows: OpportunityRow[] = [];
+  for await (const batch of iterateOpportunityBatches(prisma, input)) rows.push(...batch);
+  return rows;
 }
 
 /**
@@ -113,6 +124,8 @@ async function loadCounterfactualSeries(prisma: Reader, pairs: string[], from: D
     const datasets = await prisma.historicalDataset.findMany({
       where: { instrumentKey: { in: pairs.slice(i, i + 200) } },
       select: { id: true, instrumentKey: true, interval: true },
+      // Deterministic tie-break when several datasets share the finest interval: first by sourceId, then id.
+      orderBy: [{ interval: "asc" }, { sourceId: "asc" }, { id: "asc" }],
     });
     const finest = new Map<string, { id: string; interval: string; intervalMs: number }>();
     for (const d of datasets) {

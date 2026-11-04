@@ -50,6 +50,8 @@ export type QualityDataset = {
   interval: string;
   /** HistoricalDataset.versionHash as stored (null before the first import). */
   versionHash: string | null;
+  /** HistoricalDataset.lastOpenTime (epoch ms). Survivorship uses it when the bars are a window. */
+  lastOpenTime?: number | null;
 };
 
 export type QualityBar = Pick<HistoricalBar, "openTime" | "availableAt" | "open" | "high" | "low" | "close" | "volume">;
@@ -105,7 +107,10 @@ export type DatasetQualityReport = {
   zeroVolumeRuns: { count: number; longest: number; listed: QualityRun[]; truncated: boolean };
   nullVolumeBars: number;
   ohlcViolations: { count: number; byKind: Partial<Record<OhlcViolationKind, number>>; listed: Array<{ openTime: string; kind: OhlcViolationKind }>; truncated: boolean };
-  /** Deterministic hash over (openTime, o, h, l, c, v); equals HistoricalDataset.versionHash for the same bars. */
+  /**
+   * Deterministic hash over (openTime, o, h, l, c, v); equals HistoricalDataset.versionHash for the same bars.
+   * With a window it covers the window's bars only, and versionHashMatches is null.
+   */
   contentHash: string | null;
   storedVersionHash: string | null;
   versionHashMatches: boolean | null;
@@ -296,11 +301,14 @@ export function datasetQualityReport(input: DatasetQualityInput): DatasetQuality
   );
   const zeroRuns = collectRuns(unique, (bar) => bar.volume !== null && Number(bar.volume) === 0, minRun);
 
+  // With a window the bars may be a subset, so their hash identifies the window, not the dataset version.
+  const windowed = opts.window !== undefined;
   const contentHash = unique.length ? datasetVersionHash(unique) : null;
-  const versionHashMatches = dataset.versionHash === null || contentHash === null ? null : dataset.versionHash === contentHash;
+  const versionHashMatches = windowed || dataset.versionHash === null || contentHash === null ? null : dataset.versionHash === contentHash;
 
   const inactiveAfterMs = opts.inactiveAfterMs ?? Math.max(7 * 86_400_000, 24 * intervalMs);
-  const lastBarAgeMs = last === null ? null : Math.max(0, asOf - (last + intervalMs));
+  const lastForAge = dataset.lastOpenTime ?? last;
+  const lastBarAgeMs = lastForAge === null ? null : Math.max(0, asOf - (lastForAge + intervalMs));
   const survivorshipStatus: SurvivorshipStatus =
     dataset.cohort === "INACTIVE" ? "INACTIVE_COHORT" : lastBarAgeMs === null ? "NO_BARS" : lastBarAgeMs > inactiveAfterMs ? "POSSIBLY_INACTIVE" : "ACTIVE_AT_LAST_BAR";
 
@@ -322,7 +330,7 @@ export function datasetQualityReport(input: DatasetQualityInput): DatasetQuality
   if (input.revisions > 0) flags.add("REVISIONS_PRESENT");
   if (rejectionTotal > 0) flags.add("REJECTIONS_PRESENT");
   if (versionHashMatches === false) flags.add("VERSION_HASH_MISMATCH");
-  if (dataset.versionHash === null && unique.length > 0) flags.add("VERSION_HASH_MISSING");
+  if (!windowed && dataset.versionHash === null && unique.length > 0) flags.add("VERSION_HASH_MISSING");
   if (survivorshipStatus === "POSSIBLY_INACTIVE") flags.add("INACTIVE_CANDIDATE");
 
   const failing: QualityFlag[] = ["NO_BARS", "GAPS_MISSING_DATA", "DUPLICATE_CONFLICTS", "OHLC_VIOLATIONS", "VERSION_HASH_MISMATCH", "MISALIGNED_BARS", "OFF_CALENDAR_BARS"];

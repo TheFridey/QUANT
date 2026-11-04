@@ -67,6 +67,10 @@ Status labels: `AVAILABLE` (a source is wired into the warehouse and has importe
 - Quality report: `node apps/worker/dist/src/history/quality-cli.js --list | --all | <datasetId> [--from ISO --to ISO] [--max-listed n]`; API `GET /api/research/data-quality` and `GET /api/research/data-quality/:datasetId` (JWT, read-only).
 - Opportunity History: `node apps/worker/dist/src/history/opportunity-history-cli.js --from ISO --to ISO [--window-hours 6] [--account id] [--format jsonl|csv] [--out dir] [--counterfactual] [--horizons 1h,4h,24h]`.
 
+### Opportunity History: labels are not features
+
+`outcome`, `stages` and `intents[].status` (with `statusReason`, `sizedQty`, `sizedNotionalUsd`) say what happened to an opportunity after or as a result of the decision: risk passed, ordered, filled, rejected. They are labels. They must never be used as model features or inputs to a rule being evaluated, even though they are written within the decision window. Only `agents.*.features` (and the decision-time `funnel[].detail` and intent request fields) are features. The `hypothetical` block is a forward label as well, and is always tagged `HYPOTHETICAL`.
+
 ## Not verified
 
 - No production query was run for this document; counts are from STATUS.md.

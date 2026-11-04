@@ -7,8 +7,11 @@ import { createHash } from "node:crypto";
  * Point-in-time rule: every field carries the time it was written (`knownAt`). The row's `decisionAt` is the
  * latest write that belongs to the decision itself; writes more than `maxCycleSpanMs` after the cycle's first
  * write (late retries, later status changes on an upserted TradeIntent) are excluded rather than back-filled,
- * and any timestamp embedded in a stored feature that lies after `decisionAt` is removed. So nothing in a row
- * outside the `hypothetical` block was known later than `decisionAt`.
+ * and any timestamp embedded in a stored feature that lies after that record's own write time is removed. So
+ * nothing in a row outside the `hypothetical` block was known later than `decisionAt`.
+ *
+ * `outcome`, `stages` and `intents[].status` describe what happened to the opportunity; they are labels,
+ * not features, and must never be fed to a model as inputs.
  *
  * Counterfactual forward outcomes come from warehouse bars that closed after the decision. They are research
  * labels only, always tagged HYPOTHETICAL, and never mixed into the decision-time fields.
@@ -145,7 +148,13 @@ export type BuildOpportunityOptions = {
 const toMs = (value: TimeLike): number => (value instanceof Date ? value.getTime() : typeof value === "number" ? value : Date.parse(value));
 const iso = (ms: number) => new Date(ms).toISOString();
 const ISO_PREFIX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
-const TIME_KEY = /(at|time|timestamp)$/i;
+/**
+ * A key names a timestamp only at a word boundary: `at` / `time` / `timestamp` alone, a snake_case suffix
+ * (`created_at`), or a camelCase suffix (`createdAt`, `exitTime`). So `format`, `stat` and `lat` do not.
+ */
+export function isTimestampKey(key: string): boolean {
+  return /^(at|time|timestamp)$/i.test(key) || /_(at|time|timestamp)$/i.test(key) || /[a-z0-9](At|Time|Timestamp)$/.test(key);
+}
 
 /**
  * Remove any timestamp in a stored JSON feature that is later than `cutoff`. Strings that look like ISO
@@ -171,7 +180,7 @@ function strip(value: unknown, cutoff: number, path: string, excluded: ExcludedF
     const out: Record<string, unknown> = {};
     for (const key of Object.keys(value as Record<string, unknown>).sort()) {
       const child = (value as Record<string, unknown>)[key];
-      if (typeof child === "number" && TIME_KEY.test(key)) {
+      if (typeof child === "number" && isTimestampKey(key)) {
         const ms = child >= 1e12 && child < 1e14 ? child : child >= 1e9 && child < 1e11 ? child * 1000 : null;
         if (ms !== null && ms > cutoff) {
           excluded.push({ path: `${path}.${key}`, reason: "FUTURE_TIMESTAMP", knownAt: iso(ms) });
@@ -304,9 +313,11 @@ export function buildOpportunityRows(input: {
         reasonCodes: [...d.reasonCodes],
         inputSource: d.inputSource,
         knownAt: iso(toMs(d.updatedAt)),
+        // Each record is cut at its own write time, not at the row's latest write: a feature cannot carry
+        // a time later than the moment it was stored.
         features: {
-          input: stripFutureTimestamps(d.input ?? null, decisionAt, `agents.${d.agent}.input`, excluded),
-          output: stripFutureTimestamps(d.output ?? null, decisionAt, `agents.${d.agent}.output`, excluded),
+          input: stripFutureTimestamps(d.input ?? null, toMs(d.updatedAt), `agents.${d.agent}.input`, excluded),
+          output: stripFutureTimestamps(d.output ?? null, toMs(d.updatedAt), `agents.${d.agent}.output`, excluded),
         },
       };
     }
@@ -337,7 +348,7 @@ export function buildOpportunityRows(input: {
     const funnelRows = funnel.map((r) => ({
       stage: r.stage,
       reasonCodes: [...r.reasonCodes],
-      detail: stripFutureTimestamps(r.detail ?? null, decisionAt, `funnel.${r.stage}.detail`, excluded),
+      detail: stripFutureTimestamps(r.detail ?? null, toMs(r.createdAt), `funnel.${r.stage}.detail`, excluded),
       knownAt: iso(toMs(r.createdAt)),
     }));
 

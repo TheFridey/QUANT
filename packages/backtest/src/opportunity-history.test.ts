@@ -3,6 +3,7 @@ import {
   buildOpportunityRows,
   counterfactualOutcome,
   HYPOTHETICAL,
+  isTimestampKey,
   OpportunityManifestBuilder,
   opportunityCsvHeader,
   opportunityRowToCsv,
@@ -78,7 +79,7 @@ function timestampsAfterDecision(row: OpportunityRow): string[] {
     if (value && typeof value === "object") {
       for (const [k, v] of Object.entries(value)) {
         if (path === "" && (k === "hypothetical" || k === "excluded")) continue;
-        if (typeof v === "number" && /(at|time|timestamp)$/i.test(k) && v > 1e12 && v > cutoff) late.push(`${path}.${k}`);
+        if (typeof v === "number" && isTimestampKey(k) && v > 1e12 && v > cutoff) late.push(`${path}.${k}`);
         walk(v, `${path}.${k}`);
       }
       return;
@@ -156,6 +157,31 @@ describe("GENESIS opportunity history", () => {
     );
     // The eligible-looking FILLED stage was written later, so the decision-time outcome is NON_TRADE.
     expect(row.outcome).toBe("NON_TRADE");
+  });
+
+  it("cuts each record's features at its own write time, not at the row's latest write", () => {
+    // PULSE wrote at T+2s; the funnel write at T+5s makes decisionAt T+5s. A T+3s value inside PULSE's
+    // stored input cannot have been known when PULSE wrote it, so it is stripped.
+    const rows = buildOpportunityRows({
+      cycles: [cycle],
+      funnel: [funnel("DISCOVERED", { detail: { seenAt: new Date(T + 4 * S).toISOString(), earlierAt: new Date(T + S).toISOString() } })],
+      decisions: [decision({ input: { observedAt: new Date(T + 3 * S).toISOString(), keptAt: new Date(T + S).toISOString() } })],
+      intents: [],
+    });
+    const row = rows[0]!;
+    expect(row.decisionAt).toBe(new Date(T + 5 * S).toISOString());
+    expect(row.agents.PULSE!.features.input).toEqual({ keptAt: new Date(T + S).toISOString() });
+    expect(row.excluded).toContainEqual({ path: "agents.PULSE.input.observedAt", reason: "FUTURE_TIMESTAMP", knownAt: new Date(T + 3 * S).toISOString() });
+    // The funnel detail was written at T+5s, so a T+4s value in it is legitimate.
+    expect(row.funnel[0]!.detail).toEqual({ earlierAt: new Date(T + S).toISOString(), seenAt: new Date(T + 4 * S).toISOString() });
+  });
+
+  it("treats only word-boundary keys as timestamps", () => {
+    expect(["createdAt", "exitTime", "created_at", "at", "timestamp", "barTimestamp", "t0At"].every(isTimestampKey)).toBe(true);
+    expect(["format", "stat", "lat", "flat", "combat", "uptime", "data"].some(isTimestampKey)).toBe(false);
+    const future = T + 9 * H;
+    const rows = buildOpportunityRows({ cycles: [cycle], funnel: [], decisions: [decision({ input: { format: future, stat: future, lat: future, closeAt: future } })], intents: [] });
+    expect(rows[0]!.agents.PULSE!.features.input).toEqual({ format: future, stat: future, lat: future });
   });
 
   it("attaches counterfactual forward outcomes from later bars, labelled HYPOTHETICAL", () => {

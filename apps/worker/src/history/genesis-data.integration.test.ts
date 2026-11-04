@@ -71,6 +71,10 @@ describe.skipIf(!enabled)("GENESIS data quality + opportunity history (Postgres)
     expect(report!.revisions).toBe(1);
     expect(report!.rejections).toEqual({ total: 2, byReason: { NON_POSITIVE: 2 } });
     expect(report!.versionHashMatches).toBe(true);
+    // A window is applied in the query: only bars 5..7 are read, and the partial hash is not compared.
+    const windowed = await datasetQuality(prisma, datasetId, new Date(T0 + 12 * H), { window: { fromOpenTime: T0 + 5 * H, toOpenTime: T0 + 7 * H } });
+    expect(windowed!.coverage).toMatchObject({ actualBars: 3, expectedBars: 3, missingBars: 0 });
+    expect(windowed!.versionHashMatches).toBeNull();
     const listing = await listDatasetsForQuality(prisma, new Date(T0 + 12 * H));
     expect(listing.datasets.some((d) => d.id === datasetId)).toBe(true);
   });

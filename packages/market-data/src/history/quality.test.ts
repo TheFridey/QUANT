@@ -192,6 +192,21 @@ describe("GENESIS dataset quality report", () => {
     expect(survivorshipSummary([], T0).status).toBe("EMPTY");
   });
 
+  it("a windowed report does not compare its partial hash with the dataset version, and ages from the dataset's last bar", () => {
+    const bars = [0, 1, 2].map((i) => bar(T0 + i * H));
+    const report = datasetQualityReport({
+      dataset: { ...crypto, versionHash: "full-dataset-hash", lastOpenTime: T0 + 2 * H },
+      bars: bars.slice(0, 2),
+      revisions: 0,
+      rejectionsByReason: {},
+      asOf: T0 + 4 * H,
+      options: { window: { fromOpenTime: T0, toOpenTime: T0 + H } },
+    });
+    expect(report.versionHashMatches).toBeNull();
+    expect(report.flags).not.toContain("VERSION_HASH_MISMATCH");
+    expect(report.survivorship.lastBarAgeMs).toBe(H);
+  });
+
   it("returns no expectation for an unknown asset class rather than guessing", () => {
     const report = datasetQualityReport({ dataset: { ...crypto, instrumentKind: "COMMODITY_FUTURE" }, bars: [bar(T0), bar(T0 + 3 * H)], revisions: 0, rejectionsByReason: {}, asOf });
     expect(report.calendar.id).toBe("UNKNOWN");
