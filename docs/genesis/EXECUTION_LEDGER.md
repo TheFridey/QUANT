@@ -23,7 +23,7 @@ Operator: "Leave it for now" on the 15% daily limit (not applied). Then: impleme
 | --- | --- | --- | --- | --- |
 | [#53](https://github.com/TheFridey/QUANT/pull/53) drawdown reporting | 2 | `genesis/drawdown-reporting` `aa3d9d8` | Max drawdown from all `EquitySnapshot` rows in SQL; separate current drawdown vs HWM and return; every metric window labelled. 16 targeted tests passed, `apps/api` 57 passed; typecheck, lint clean | SQL integration test (needs `odin_test`); UI in a browser; e2e |
 | [#54](https://github.com/TheFridey/QUANT/pull/54) data quality, opportunity history | 3 | `genesis/data-quality` `cc9e703` | Per-dataset quality report (asset-class calendars, gaps, duplicates, revisions, content hash = `versionHash`); `docs/genesis/DATA_COVERAGE.md`; bounded Opportunity History export with HYPOTHETICAL counterfactuals. 46 targeted tests passed; full suite 877 passed (only `restore-drill.test.ts` fails, as on `main`) | Integration test; CLIs against a database; NYSE holiday table hand-entered (2025-01-09 closure missing from the engine's `sessions.ts`, left unchanged) |
-| [#52](https://github.com/TheFridey/QUANT/pull/52) ML engine 2.0 | 4 | `genesis/ml-engine-2` `a4e7b52` | `ml-wf-2.0.0`: next-bar-open labels with costs, purged/embargoed walk-forward, train-only preprocessing and calibration, feature-set hashes and causal checks, seeded random forest challenger, block-bootstrap CIs, honest verdicts, trial ledger, drift abstention. 66 targeted tests passed; full suite 877 passed | `restore-drill` as on `main`; SPY defect below |
+| [#52](https://github.com/TheFridey/QUANT/pull/52) ML engine 2.0 | 4 | `genesis/ml-engine-2` `43ffd47` | `ml-wf-2.0.0`: next-bar-open labels with costs, purged/embargoed walk-forward, train-only preprocessing and calibration, feature-set hashes and causal checks, seeded random forest challenger, block-bootstrap CIs, honest verdicts, trial ledger, drift abstention. 74 targeted tests passed after the review and SPY fixes (`43ffd47`); full suite 877 passed on `a4e7b52` | `restore-drill` as on `main`; full suite not rerun on `43ffd47` |
 | [#51](https://github.com/TheFridey/QUANT/pull/51) trade feedback | 7 | `genesis/trade-feedback` `ed90bff` | Read-only feedback summary, per-lot explainability (decision record from the stored ENTRY snapshot only; retrospective separate), error-attribution rules, HYPOTHETICAL non-trades, self-reinforcement guard. 21 unit + 10 auth tests passed; typecheck, lint clean | Integration test; full suite |
 
 ### First real ML runs (`HISTORICAL_VERIFIED` as runs; no skill found)
@@ -35,11 +35,12 @@ Data: read-only CSV export of the production warehouse on 4 Nov 2026 (7 datasets
 | SOL/USDC 1h | `742a7bceabef`, 4,337 bars | 4 bars; 30 bps fee + 10 bps slippage | 4,070 | Brier skill 0.0066; AUC 0.556, block-bootstrap lower 0.495; ECE 0.054 | **NO_SKILL** |
 | SOL/USDC 1h | same | 24 bars; same | 4,050 | Brier skill −0.0078; AUC 0.442, lower 0.348; ECE 0.088 | **NO_SKILL** |
 | GATO 1h | `8c54ce6bd406`, 1,637 bars | 4 bars; 30 + 50 bps | 1,370 | Brier skill −0.031; AUC 0.571, lower 0.494; ECE 0.093 | **NO_SKILL** |
-| SPY 1d | 1,464 bars | 5 and 20 bars; 1 + 2 bps | — | Refused: 991 `MISALIGNED` bars | **Defect** (fixed on #52, see below) |
+| SPY 1d | `b556d0532986`*, 1,464 bars | 5 bars; 1 + 2 bps | 1,320 | Brier skill 0.048; AUC 0.505, lower 0.410; ECE 0.046 | **NO_SKILL** |
+| SPY 1d | same | 20 bars; same | 1,305 | ≈41 independent test labels (< 100) | **INSUFFICIENT_EVIDENCE** |
 
 Always-enter net expectancy per trade at 1× costs was negative in every run (−0.70%, −0.19%, −1.44%), so costs alone exceed any average move at these horizons. Each run took 1.3–5.0 s and ≤ 167 MB RSS. Every artefact also failed the deployment check (stale training cutoff > 30 days and PSI drift > 0.25), so none could be used for shadow predictions even with skill. The speculative 5m pools (21–515 bars) are too short to train on.
 
-SPY defect: Alpaca daily bars open at New York midnight (04:00/05:00 UTC), so the pipeline's UTC day grid rejected them. Sent back to the PR #52 author: an exchange-session calendar for daily equity data.
+SPY: the first run (`a4e7b52`) refused all bars because Alpaca daily bars open at New York midnight and the pipeline used a UTC day grid. Fixed in `43ffd47` with a `US_EQUITY` session calendar (NYSE closures, DST); SPY rows above are from `43ffd47` with `--calendar US_EQUITY`. Rerunning the three Solana runs on `43ffd47` gave identical figures (deterministic). *sha256 prefix of the exported CSV.
 
 Wave 2 in progress: model registry and shadow store (Phases 5–6, one additive migration, stacked on #52); research loop dataset adapter (Phase 8).
 
@@ -101,7 +102,7 @@ Tests: `apps/worker/src/daily-loss-15pct.test.ts` (10 cases, against the unmodif
 | 1 15% PAPER daily loss | `BLOCKED` (drawdown dominates; operator login) | Operator decision | See above |
 | 2 Execution safety and reliability | In progress; drawdown fix in [#53](https://github.com/TheFridey/QUANT/pull/53) | PCR-1 needs operator unlock | Retention design; drill and smoke tests via operator |
 | 3 Warehouse expansion | First increment in [#54](https://github.com/TheFridey/QUANT/pull/54) | ASCEND-01 warehouse | Run quality CLI on production after deploy; free-source backfills; inactive cohort |
-| 4 ML engine 2.0 | `UNIT_VERIFIED` in [#52](https://github.com/TheFridey/QUANT/pull/52); first real runs NO_SKILL | 3 (data), existing `ml.ts` | Fix SPY calendar; more targets and horizons; longer histories |
+| 4 ML engine 2.0 | `UNIT_VERIFIED` in [#52](https://github.com/TheFridey/QUANT/pull/52); real runs: 4 NO_SKILL, 1 INSUFFICIENT_EVIDENCE | 3 (data), existing `ml.ts` | More targets and horizons; longer histories |
 | 5 Model registry | In progress (stacked on #52) | 4 | Migration-backed registry; needs separate migration approval |
 | 6 Shadow trading | In progress (with 5) | 5 | Prediction store, written before outcome, no order path; ships disabled |
 | 7 Trade memory feedback | `UNIT_VERIFIED` in [#51](https://github.com/TheFridey/QUANT/pull/51) | ASCEND-09 snapshots (138 in production) | Run on production lots after deploy |
