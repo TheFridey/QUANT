@@ -80,15 +80,17 @@ function validateSpec(spec: LabelSpec) {
 }
 
 /** All labels for every decision bar; null where the window runs past the data or crosses a gap. */
-export function buildTradeLabels(bars: readonly ResearchBar[], spec: LabelSpec, options: { barMs?: number } = {}): Array<TradeLabel | null> {
+export function buildTradeLabels(bars: readonly ResearchBar[], spec: LabelSpec, options: { barMs?: number; isContiguous?: (prev: ResearchBar, next: ResearchBar) => boolean } = {}): Array<TradeLabel | null> {
   validateSpec(spec);
   const barMs = options.barMs ?? inferBarMs(bars);
   const c = costPerSideFraction(spec);
   const h = spec.horizon;
+  // Default: the next bar is exactly one interval later. Session calendars pass their own predicate.
+  const follows = options.isContiguous ?? ((a: ResearchBar, b: ResearchBar) => b.t - a.t === barMs);
   // contiguousTo[k] = last index reachable from bar k without a gap in the bar grid.
   const contiguousTo: number[] = new Array<number>(bars.length).fill(0);
   for (let k = bars.length - 1; k >= 0; k -= 1) {
-    contiguousTo[k] = k + 1 < bars.length && bars[k + 1]!.t - bars[k]!.t === barMs ? contiguousTo[k + 1]! : k;
+    contiguousTo[k] = k + 1 < bars.length && follows(bars[k]!, bars[k + 1]!) ? contiguousTo[k + 1]! : k;
   }
   return bars.map((bar, i) => {
     const end = i + h;

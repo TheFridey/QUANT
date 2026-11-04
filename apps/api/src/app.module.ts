@@ -6,6 +6,7 @@ import { QUEUES } from "@odin/shared";
 import { createPrismaClient, PrismaClient } from "@odin/shared/db";
 import { AuthController } from "./auth.controller.js";
 import { AuthService } from "./auth.service.js";
+import { DataQualityController } from "./data-quality.controller.js";
 import { JwtAuthGuard } from "./http.js";
 import { EvolutionController } from "./evolution.controller.js";
 import { EvolutionService } from "./evolution.service.js";
@@ -20,6 +21,8 @@ import { TerminalFanout, TerminalGateway } from "./terminal.gateway.js";
 import { TerminalService } from "./terminal.service.js";
 import { TradeLotsController } from "./trade-lots.controller.js";
 import { TradeLotsService } from "./trade-lots.service.js";
+import { FeedbackController } from "./feedback.controller.js";
+import { FeedbackService } from "./feedback.service.js";
 
 @Module({
   imports: [
@@ -33,12 +36,13 @@ import { TradeLotsService } from "./trade-lots.service.js";
     }),
     BullModule.registerQueue({ name: QUEUES.ingest }),
   ],
-  controllers: [AuthController, TerminalController, TradeLotsController, OperatorController, LabController, EvolutionController, ResearchLoopController],
+  controllers: [AuthController, TerminalController, TradeLotsController, FeedbackController, OperatorController, LabController, EvolutionController, ResearchLoopController, DataQualityController],
   providers: [
     { provide: PrismaClient, useFactory: () => createPrismaClient() },
     AuthService,
     TerminalService,
     TradeLotsService,
+    FeedbackService,
     { provide: RedisHealth, useFactory: () => new RedisHealth(process.env.REDIS_URL) },
     OperatorCapacityService,
     LabService,

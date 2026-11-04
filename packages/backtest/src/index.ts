@@ -1,5 +1,6 @@
 export * from "./types.js";
 export * from "./quality.js";
+export * from "./opportunity-history.js";
 export * from "./engine.js";
 export * from "./validation.js";
 export * from "./baselines.js";
@@ -22,3 +23,4 @@ export * from "./research/feature-set.js";
 export * from "./research/ml2-learners.js";
 export * from "./research/ml2-eval.js";
 export * from "./research/ml2.js";
+export * from "./research/sessions.js";

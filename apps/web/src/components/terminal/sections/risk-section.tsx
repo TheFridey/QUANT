@@ -5,7 +5,7 @@ import { Metric, Panel } from "@/components/terminal/panel";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import { formatDrawdown, formatUsd, formatUsdCompact } from "@/lib/format";
+import { formatAllHistoryWindow, formatDrawdown, formatUsd, formatUsdCompact } from "@/lib/format";
 
 export function RiskSection() {
   const { snapshot, refresh } = useSnapshot();
@@ -43,7 +43,7 @@ export function RiskSection() {
           <Metric label="Equity" value={<span className="mono">{p.equityUsd === null ? "Incomplete" : formatUsd(p.equityUsd)}</span>} />
           <Metric label="Exposure" value={<span className="mono">{formatUsd(p.exposureUsd)}</span>} />
           <Metric label="Drawdown (below HWM)" value={<span className="mono text-loss">{formatDrawdown(p.currentDrawdownPct)}</span>} />
-          <Metric label="Max drawdown" value={<span className="mono text-loss">{formatDrawdown(p.maxDrawdownPct)}</span>} />
+          <Metric label="Max drawdown (all history)" value={<span className="mono text-loss">{formatDrawdown(p.historicalMaxDrawdownPct ?? p.maxDrawdownPct)}</span>} hint={formatAllHistoryWindow(p.historicalDrawdown?.sampleCount, p.historicalDrawdown?.firstAt)} />
           <Metric label="Open positions" value={<span className="mono">{p.positions.length}</span>} />
           <Metric label="HWM" value={<span className="mono">{formatUsd(p.highWaterMarkUsd)}</span>} />
           <Metric label="Protected" value={<span className="mono">{protectedCount}</span>} />

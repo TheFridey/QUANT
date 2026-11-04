@@ -95,6 +95,51 @@ export class FileBudgetStore implements BudgetStore {
   }
 }
 
+/**
+ * GENESIS Phase 8 durable reservation (no migration; see docs/genesis/RESEARCH_BUDGET_RESERVATION.md). Every
+ * research-loop model call first reserves its worst-case cost as a `ModelUsageLog` row (`costKind = RESERVED`)
+ * inside a transaction holding this advisory lock, so concurrent processes see each other's in-flight spend.
+ */
+export const RESEARCH_BUDGET_LOCK = 8_080_802;
+export const RESERVED_COST_KIND = "RESERVED";
+/** Attempts the router may make per endpoint (one retry on TIMEOUT/UPSTREAM). */
+export const ROUTER_ATTEMPTS_PER_ENDPOINT = 2;
+/** The router records at most this many × the token limit as completion tokens, the bound a reservation covers. */
+export const COMPLETION_ESTIMATE_BOUND_FACTOR = 2;
+
+/**
+ * Worst-case cost of one routed call: every endpoint in the chain, every attempt, the full prompt and twice the
+ * completion-token limit (the router estimates completion tokens from characters, which can exceed the limit).
+ */
+export function reservationEstimateUsd(input: {
+  endpoints: ReadonlyArray<{ costPer1kInputUsd: string; costPer1kOutputUsd: string }>;
+  promptTokens: number;
+  maxCompletionTokens: number;
+  attemptsPerEndpoint?: number;
+}): string {
+  const attempts = input.attemptsPerEndpoint ?? ROUTER_ATTEMPTS_PER_ENDPOINT;
+  let total = d("0");
+  for (const endpoint of input.endpoints) {
+    const one = d(String(input.promptTokens)).div(1000).mul(d(endpoint.costPer1kInputUsd))
+      .plus(d(String(input.maxCompletionTokens * COMPLETION_ESTIMATE_BOUND_FACTOR)).div(1000).mul(d(endpoint.costPer1kOutputUsd)));
+    total = total.plus(one.mul(attempts));
+  }
+  return total.toFixed(8);
+}
+
+export type ReservationDecision = { ok: true; remainingAfterUsd: string } | { ok: false; detail: string };
+
+/** Fail closed: unreadable spend or cap refuses; a reservation is granted only if spent + reserve stays within the cap. */
+export function reservationDecision(input: { capUsd: string; spentUsd: string; reserveUsd: string }): ReservationDecision {
+  const cap = parseSpend(input.capUsd);
+  const spent = parseSpend(input.spentUsd);
+  const reserve = parseSpend(input.reserveUsd);
+  if (cap === null || spent === null || reserve === null) return { ok: false, detail: "Budget cap, spend or reservation unreadable" };
+  const after = d(spent).plus(d(reserve));
+  if (after.gt(d(cap))) return { ok: false, detail: `Reservation ${reserve} USD would exceed the cap: ${spent} spent of ${cap} USD today (UTC)` };
+  return { ok: true, remainingAfterUsd: d(cap).minus(after).toFixed(8) };
+}
+
 /** Research model spend is budgeted per UTC calendar day. Returns the start of the window containing `now`. */
 export function researchBudgetWindowStart(now: Date = new Date()): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));

@@ -9,7 +9,7 @@ import {
   type ModelProvider,
 } from "@odin/agent-core";
 import { d, MODEL_TIERS, type ModelTier } from "@odin/shared";
-import { BudgetStoreUnreadableError, FileBudgetStore, MemoryBudgetStore, type BudgetStore } from "./budget-store.js";
+import { BudgetStoreUnreadableError, COMPLETION_ESTIMATE_BOUND_FACTOR, FileBudgetStore, MemoryBudgetStore, type BudgetStore } from "./budget-store.js";
 
 export type ProviderKind = "openai-compatible" | "anthropic-compatible" | "hermes-compatible" | "mock";
 
@@ -420,7 +420,11 @@ export class ModelRouter {
           schema,
         );
         const promptTokensEst = estimateTokens(request.messages.map((message) => message.content).join(" "));
-        const completionTokensEst = result.ok ? estimateTokens(JSON.stringify(result.data)) : 0;
+        // Capped at the bound a reservation covers (2 × the token limit): a provider cannot return more tokens
+        // than the limit, so a longer character-based estimate never exceeds what was reserved for the call.
+        const completionTokensEst = result.ok
+          ? Math.min(estimateTokens(JSON.stringify(result.data)), COMPLETION_ESTIMATE_BOUND_FACTOR * (request.maxTokens || endpoint.maxTokensDefault))
+          : 0;
         const costUsdEst = estimateCost(endpoint, promptTokensEst, completionTokensEst);
         this.budgetStore.add(costUsdEst);
         const usage: UsageRecord = {
