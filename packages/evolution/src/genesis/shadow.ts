@@ -31,6 +31,8 @@ export const SHADOW_MONITOR_ACTOR = "genesis-shadow-monitor";
 /** Ceiling on prediction latency after the decision bar closes; the database enforces the same ceiling. */
 export const MAX_DECISION_LATENCY_MS = 3_600_000;
 const MAX_HORIZON_BARS = 10_000;
+/** Matured predictions older than this (by horizon end) are no longer retried by the resolver. */
+export const RESOLVER_LOOKBACK_MS = 30 * 86_400_000;
 
 /** Closed bars only: every bar returned satisfies `t + barMs <= asOf`. */
 export type ShadowBarSource = {
@@ -491,10 +493,13 @@ async function failModel(prisma: PrismaClient, id: string, from: ModelState, rea
 /** Resolves matured PREDICTED rows (horizon ended, no outcome yet) from bars observed after the decision. */
 export async function resolveShadowPredictions(
   prisma: PrismaClient,
-  input: { bars: ShadowBarSource; now: Date; maxResolutions: number; overTime?: () => boolean; graceBars?: number; modelIds?: string[] },
+  input: { bars: ShadowBarSource; now: Date; maxResolutions: number; overTime?: () => boolean; graceBars?: number; modelIds?: string[]; lookbackMs?: number },
 ): Promise<{ resolved: number; unavailable: number; pending: Array<{ predictionId: string; reason: string }>; stoppedEarly: null | "MAX_MS" | "MAX_RESOLUTIONS" }> {
+  // Bounded window: rows that can never resolve (hash or model integrity failures) age out instead of
+  // blocking the head of the queue forever, and the scan does not grow with resolved history.
+  const since = new Date(input.now.getTime() - (input.lookbackMs ?? RESOLVER_LOOKBACK_MS));
   const due = await prisma.shadowPrediction.findMany({
-    where: { status: "PREDICTED", outcome: { is: null }, horizonEndsAt: { lte: input.now }, ...(input.modelIds ? { modelVersionId: { in: input.modelIds } } : {}) },
+    where: { status: "PREDICTED", outcome: { is: null }, horizonEndsAt: { lte: input.now, gte: since }, ...(input.modelIds ? { modelVersionId: { in: input.modelIds } } : {}) },
     orderBy: { horizonEndsAt: "asc" },
     take: input.maxResolutions + 1,
   });

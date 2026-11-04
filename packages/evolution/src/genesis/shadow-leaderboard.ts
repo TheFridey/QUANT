@@ -130,7 +130,7 @@ export async function shadowLeaderboard(prisma: PrismaClient, input: { now?: Dat
   const limit = Math.min(Math.max(1, input.limitPerModel ?? 5_000), 20_000);
   const ids =
     input.modelIds ??
-    (await prisma.shadowPrediction.groupBy({ by: ["modelVersionId"] })).map((g) => g.modelVersionId);
+    (await prisma.modelVersion.findMany({ where: { predictions: { some: {} } }, select: { id: true } })).map((m) => m.id);
   if (!ids.length) return [];
   const [models, states] = await Promise.all([prisma.modelVersion.findMany({ where: { id: { in: ids } } }), modelStates(prisma, ids)]);
   const out: ShadowLeaderboardEntry[] = [];

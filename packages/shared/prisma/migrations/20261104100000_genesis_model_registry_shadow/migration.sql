@@ -122,7 +122,7 @@ CREATE UNIQUE INDEX "ModelLifecycleEvent_modelVersionId_seq_key" ON "ModelLifecy
 CREATE INDEX "ModelLifecycleEvent_toState_createdAt_idx" ON "ModelLifecycleEvent"("toState", "createdAt");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "ShadowPrediction_modelVersionId_instrumentKey_decisionBarOpenTime_key" ON "ShadowPrediction"("modelVersionId", "instrumentKey", "decisionBarOpenTime");
+CREATE UNIQUE INDEX "ShadowPrediction_modelVersionId_instrumentKey_decisionBarOp_key" ON "ShadowPrediction"("modelVersionId", "instrumentKey", "decisionBarOpenTime");
 
 -- CreateIndex
 CREATE INDEX "ShadowPrediction_modelVersionId_decisionTime_idx" ON "ShadowPrediction"("modelVersionId", "decisionTime");
@@ -167,6 +167,8 @@ ALTER TABLE "ModelVersion" ADD CONSTRAINT "ModelVersion_hashes" CHECK (
   AND "featureSetHash" ~ '^[a-f0-9]{64}$'
   AND "labelSpecHash" ~ '^[a-f0-9]{64}$'
   AND "codeCommit" ~ '^[a-f0-9]{7,40}$'
+  AND "datasetHashes" IS NOT NULL
+  AND "evidenceLinks" IS NOT NULL
   AND cardinality("datasetHashes") BETWEEN 1 AND 64
   AND array_to_string("datasetHashes", ',') ~ '^[a-f0-9]{64}(,[a-f0-9]{64})*$'
 );
@@ -214,8 +216,12 @@ ALTER TABLE "ModelLifecycleEvent" ADD CONSTRAINT "ModelLifecycleEvent_fields" CH
 );
 
 ALTER TABLE "ShadowPrediction" ADD CONSTRAINT "ShadowPrediction_status" CHECK (
-  ("status" = 'PREDICTED' AND "probability" >= 0 AND "probability" <= 1 AND cardinality("abstainReasons") = 0)
-  OR ("status" = 'ABSTAINED' AND "probability" IS NULL AND "expectedNetReturn" IS NULL AND cardinality("abstainReasons") > 0)
+  "abstainReasons" IS NOT NULL
+  AND (
+    ("status" = 'PREDICTED' AND "probability" IS NOT NULL AND "probability" >= 0 AND "probability" <= 1
+       AND cardinality("abstainReasons") = 0)
+    OR ("status" = 'ABSTAINED' AND "probability" IS NULL AND "expectedNetReturn" IS NULL AND cardinality("abstainReasons") > 0)
+  )
 );
 
 -- Timing: the decision bar has closed (decisionTime = open + one bar), the prediction is taken at or after
@@ -234,7 +240,8 @@ ALTER TABLE "ShadowPrediction" ADD CONSTRAINT "ShadowPrediction_fields" CHECK (
   "featureHash" ~ '^[a-f0-9]{64}$'
   AND "inputHash" ~ '^[a-f0-9]{64}$'
   AND "recordHash" ~ '^[a-f0-9]{64}$'
-  AND "estimatedCostBps" >= 0
+  AND "estimatedCostBps" >= 0 AND "estimatedCostBps" < 'Infinity'::float8
+  AND ("expectedNetReturn" IS NULL OR ("expectedNetReturn" > '-Infinity'::float8 AND "expectedNetReturn" < 'Infinity'::float8))
   AND jsonb_typeof("features") = 'object'
   AND length("instrumentKey") BETWEEN 1 AND 200
 );
@@ -244,14 +251,16 @@ ALTER TABLE "ShadowOutcome" ADD CONSTRAINT "ShadowOutcome_source" CHECK ("source
 
 ALTER TABLE "ShadowOutcome" ADD CONSTRAINT "ShadowOutcome_fill" CHECK (
   ("hypotheticalFillAvailable" AND "realisedNetReturn" IS NOT NULL AND "positive" IS NOT NULL
-     AND "mae" IS NOT NULL AND "mfe" IS NOT NULL AND "mae" <= 0 AND "mfe" >= 0
+     AND "mae" IS NOT NULL AND "mfe" IS NOT NULL AND "mae" <= 0 AND "mae" > '-Infinity'::float8
+     AND "mfe" >= 0 AND "mfe" < 'Infinity'::float8
+     AND "realisedNetReturn" > '-Infinity'::float8 AND "realisedNetReturn" < 'Infinity'::float8
      AND "exitReason" IN ('HORIZON', 'STOP', 'TARGET'))
   OR (NOT "hypotheticalFillAvailable" AND "realisedNetReturn" IS NULL AND "positive" IS NULL
      AND "mae" IS NULL AND "mfe" IS NULL AND "exitReason" IS NULL)
 );
 
 ALTER TABLE "ShadowOutcome" ADD CONSTRAINT "ShadowOutcome_fields" CHECK (
-  "costBpsApplied" >= 0 AND "barsHash" ~ '^[a-f0-9]{64}$' AND "recordHash" ~ '^[a-f0-9]{64}$'
+  "costBpsApplied" >= 0 AND "costBpsApplied" < 'Infinity'::float8 AND "barsHash" ~ '^[a-f0-9]{64}$' AND "recordHash" ~ '^[a-f0-9]{64}$'
 );
 
 -- ---------------------------------------------------------------------------------------------------------
@@ -308,11 +317,12 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER "ModelVersion_insert_guard" BEFORE INSERT ON "ModelVersion"
   FOR EACH ROW EXECUTE FUNCTION odin_genesis_model_version_insert();
 
--- An approval names the exact artefact it approves.
+-- An approval names the exact artefact it approves, and is dated by the database clock.
 CREATE FUNCTION odin_genesis_paper_approval_insert() RETURNS trigger AS $$
 DECLARE
   model_hash TEXT;
 BEGIN
+  NEW."approvedAt" := odin_genesis_now();
   SELECT "artefactHash" INTO model_hash FROM "ModelVersion" WHERE "id" = NEW."modelVersionId";
   IF model_hash IS NULL OR model_hash <> NEW."subjectHash" THEN
     RAISE EXCEPTION 'ModelPaperApproval subject does not match model % artefact', NEW."modelVersionId";

@@ -51,11 +51,16 @@ SELECT count(*) FROM "ShadowOutcome" WHERE "source" <> 'HYPOTHETICAL_SHADOW';
 
 Worker log lines: `genesis shadow disabled … nothing scheduled` at boot while off; `genesis shadow cycle` with counts when on.
 
+## Operational prerequisites
+
+- **Clock sync.** Insert triggers date rows by the database clock and refuse a prediction dated more than 5 s ahead of it or more than 5 min behind it. Keep NTP running on the worker host and the database host. Skew fails safe: rows are refused, never accepted wrongly.
+- **Database role.** The append-only guarantee holds against the application role only. A table owner or superuser can disable triggers (`ALTER TABLE … DISABLE TRIGGER`, `session_replication_role = replica`). Confirm the role the app connects with does not own the tables or hold superuser. Not verified for production.
+
 ## Rollback
 
 - **Stop writes:** unset `GENESIS_SHADOW_ENABLED` (or set anything other than `true`) and restart the worker. The scheduler removes the repeat job; no further rows are written.
 - **Code rollback:** redeploy the previous build. The new tables are unused by older code, so the migration can stay in place (it is additive; nothing existing depends on it).
-- **Do not drop the tables** to roll back: they are append-only evidence and refuse `DELETE`/`TRUNCATE` by design. Removing them would need its own reviewed migration and operator approval, after a backup.
+- **Do not drop the tables** to roll back. They are append-only evidence and refuse `DELETE`/`TRUNCATE` by design. There is no down migration. `DROP TABLE` would still work, in the order ShadowOutcome, ShadowPrediction, ModelLifecycleEvent, ModelPaperApproval, ModelVersion, then `DROP FUNCTION odin_genesis_*`. It would destroy the evidence, so it needs its own reviewed migration and operator approval, taken after a backup.
 
 ## Tests
 
