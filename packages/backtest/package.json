@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./ml2": {
+      "types": "./dist/ml2-runtime.d.ts",
+      "default": "./dist/ml2-runtime.js"
     }
   },
   "scripts": {
