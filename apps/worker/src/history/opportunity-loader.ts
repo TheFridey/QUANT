@@ -90,9 +90,11 @@ export async function* iterateOpportunityBatches(prisma: Reader, input: Opportun
     const horizons = input.counterfactualHorizonsMs;
     if (horizons && horizons.length > 0) {
       const pairs = [...new Set([...funnel, ...decisions, ...intents].map((r) => r.pairAddress).filter(Boolean))];
-      const first = batch[0]!.startedAt;
-      const last = batch.at(-1)!.startedAt.getTime();
-      const series = await loadCounterfactualSeries(prisma, pairs, first, new Date(last + Math.max(...horizons) + (input.maxCycleSpanMs ?? 600_000)));
+      // decisionAt is never earlier than the cycle start and never later than the last cycle start + span,
+      // so these bound every reference and exit bar the batch can need.
+      const span = input.maxCycleSpanMs ?? DEFAULT_MAX_CYCLE_SPAN_MS;
+      const bounds = counterfactualBarBounds(batch[0]!.startedAt.getTime(), batch.at(-1)!.startedAt.getTime() + span, Math.max(...horizons));
+      const series = await loadCounterfactualSeries(prisma, pairs, bounds);
       counterfactual = { series, horizonsMs: horizons };
     }
 
@@ -114,30 +116,38 @@ export async function loadOpportunityWindow(prisma: Reader, input: OpportunityWi
   return rows;
 }
 
+const DEFAULT_MAX_CYCLE_SPAN_MS = 600_000;
+
+/** availableAt range of bars a batch needs: reference bars before its earliest decision, exits up to latest + horizon. */
+export function counterfactualBarBounds(earliestDecisionMs: number, latestDecisionMs: number, maxHorizonMs: number): { fromMs: number; untilMs: number } {
+  return { fromMs: earliestDecisionMs, untilMs: latestDecisionMs + maxHorizonMs };
+}
+
 /**
  * Warehouse bars for pairs that have a dataset (GeckoTerminal instrumentKey = pool address). The finest
- * interval wins. Only bars that had closed by `until` are read; they feed HYPOTHETICAL labels only.
+ * interval wins. Bars are read from three bars before the earliest decision to one bar past the latest exit
+ * target, bounded by MAX_COUNTERFACTUAL_BARS. The dataset's own last bar decides BEYOND_DATA. HYPOTHETICAL only.
  */
-async function loadCounterfactualSeries(prisma: Reader, pairs: string[], from: Date, until: Date): Promise<Map<string, CounterfactualSeries>> {
+async function loadCounterfactualSeries(prisma: Reader, pairs: string[], bounds: { fromMs: number; untilMs: number }): Promise<Map<string, CounterfactualSeries>> {
   const out = new Map<string, CounterfactualSeries>();
   for (let i = 0; i < pairs.length; i += 200) {
     const datasets = await prisma.historicalDataset.findMany({
       where: { instrumentKey: { in: pairs.slice(i, i + 200) } },
-      select: { id: true, instrumentKey: true, interval: true },
+      select: { id: true, instrumentKey: true, interval: true, lastOpenTime: true },
       // Deterministic tie-break when several datasets share the finest interval: first by sourceId, then id.
       orderBy: [{ interval: "asc" }, { sourceId: "asc" }, { id: "asc" }],
     });
-    const finest = new Map<string, { id: string; interval: string; intervalMs: number }>();
+    const finest = new Map<string, { id: string; interval: string; intervalMs: number; lastOpenTime: Date | null }>();
     for (const d of datasets) {
       const ms = INTERVAL_MS[d.interval as HistoryInterval];
       if (!ms) continue;
       const current = finest.get(d.instrumentKey);
-      if (!current || ms < current.intervalMs) finest.set(d.instrumentKey, { id: d.id, interval: d.interval, intervalMs: ms });
+      if (!current || ms < current.intervalMs) finest.set(d.instrumentKey, { id: d.id, interval: d.interval, intervalMs: ms, lastOpenTime: d.lastOpenTime });
     }
     for (const [pair, d] of finest) {
       const bars = await prisma.historicalBar.findMany({
-        // Reach back far enough to find the reference bar closed at the first decision.
-        where: { datasetId: d.id, availableAt: { gte: new Date(from.getTime() - 3 * d.intervalMs), lte: until } },
+        // Back three bars for the reference close; forward one bar past the latest exit target.
+        where: { datasetId: d.id, availableAt: { gte: new Date(bounds.fromMs - 3 * d.intervalMs), lte: new Date(bounds.untilMs + d.intervalMs) } },
         select: { openTime: true, availableAt: true, close: true },
         orderBy: { availableAt: "asc" },
         take: MAX_COUNTERFACTUAL_BARS + 1,
@@ -147,6 +157,7 @@ async function loadCounterfactualSeries(prisma: Reader, pairs: string[], from: D
         datasetId: d.id,
         interval: d.interval,
         intervalMs: d.intervalMs,
+        dataEndAvailableAt: d.lastOpenTime ? d.lastOpenTime.getTime() + d.intervalMs : null,
         bars: bars.map((b) => ({ openTime: b.openTime.getTime(), availableAt: b.availableAt.getTime(), close: b.close.toString() })),
       });
     }

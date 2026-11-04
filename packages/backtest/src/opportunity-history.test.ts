@@ -200,6 +200,16 @@ describe("GENESIS opportunity history", () => {
     expect(timestampsAfterDecision(rows[0]!)).toEqual([]);
   });
 
+  it("uses the dataset's end, not the last loaded bar, to decide BEYOND_DATA", () => {
+    // A bounded read stops at the exit bar (closed T+2h); the dataset itself runs to T+10h.
+    const bars = [{ openTime: T - H, availableAt: T, close: "10" }, { openTime: T + H, availableAt: T + 2 * H, close: "11" }];
+    const loaded = { datasetId: "ds", interval: "1h", intervalMs: H, bars };
+    const target = T + 2 * H + 5 * S;
+    expect(counterfactualOutcome(loaded, T + 5 * S, [2 * H]).horizons[0]).toMatchObject({ exitClose: null, reason: "BEYOND_DATA" });
+    expect(counterfactualOutcome({ ...loaded, dataEndAvailableAt: T + 10 * H }, T + 5 * S, [2 * H]).horizons[0]).toMatchObject({ exitClose: "11", reason: null });
+    expect(counterfactualOutcome({ ...loaded, dataEndAvailableAt: target - 1 }, T + 5 * S, [2 * H]).horizons[0]).toMatchObject({ reason: "BEYOND_DATA" });
+  });
+
   it("refuses a stale reference bar instead of pricing from old data", () => {
     const out = counterfactualOutcome({ datasetId: "ds", interval: "1h", intervalMs: H, bars: [{ openTime: T - 10 * H, availableAt: T - 9 * H, close: "1" }, { openTime: T + H, availableAt: T + 2 * H, close: "2" }] }, T, [H]);
     expect(out).toMatchObject({ label: HYPOTHETICAL, reason: "REFERENCE_STALE", referenceClose: null });

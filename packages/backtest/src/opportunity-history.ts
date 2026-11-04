@@ -81,8 +81,10 @@ export type CounterfactualSeries = {
   datasetId: string;
   interval: string;
   intervalMs: number;
-  /** Closed bars only, any order. */
+  /** Closed bars only, any order. Must cover every bar that closed by the latest target needed. */
   bars: Array<{ openTime: number; availableAt: number; close: string }>;
+  /** availableAt of the dataset's last stored bar (HistoricalDataset.lastOpenTime + interval), if known. */
+  dataEndAvailableAt?: number | null;
 };
 
 export type OpportunityOutcome = "ELIGIBLE" | "REJECTED" | "NON_TRADE";
@@ -239,7 +241,9 @@ export function counterfactualOutcome(series: CounterfactualSeries, decisionAt: 
   if (decisionAt - reference.availableAt > 2 * series.intervalMs) {
     return { ...base, reason: "REFERENCE_STALE", referenceAvailableAt: iso(reference.availableAt), horizons: horizonsMs.map((h) => ({ horizonMs: h, exitClose: null, exitAvailableAt: null, forwardReturn: null, reason: "REFERENCE_STALE" })) };
   }
-  const lastAvailable = bars.at(-1)!.availableAt;
+  // The dataset's own end (when known) decides BEYOND_DATA, not the last bar a bounded read happened to load:
+  // a sparse pool can have no bar between the exit bar and the load bound and still have data after it.
+  const lastAvailable = Math.max(bars.at(-1)!.availableAt, series.dataEndAvailableAt ?? Number.NEGATIVE_INFINITY);
   const ref = Number(reference.close);
   return {
     ...base,
