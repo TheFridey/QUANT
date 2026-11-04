@@ -2,6 +2,7 @@
 
 import { Panel } from "@/components/terminal/panel";
 import { ReadinessChecklist } from "@/components/terminal/readiness-checklist";
+import { RiskLimitsPanel } from "@/components/terminal/risk-limits-panel";
 import { useSnapshot } from "@/components/terminal/snapshot-context";
 import { Label } from "@/components/ui/label";
 
@@ -17,6 +18,7 @@ export function SettingsSection() {
 
   return (
     <div className="grid gap-3 lg:grid-cols-2 animate-odin-fade">
+      <RiskLimitsPanel />
       <ReadinessChecklist />
       <Panel title="Refresh interval">
         <div className="space-y-3 p-4">
