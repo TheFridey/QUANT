@@ -64,7 +64,7 @@ export class TradeLotsService {
   }
 
   /** Environment and origin of the entry fill's observation: marks from another environment never mix in. */
-  async markScope(lot: Lot): Promise<{ tradingEnvironment?: string; dataOrigin?: string }> {
+  private async markScope(lot: Lot): Promise<{ tradingEnvironment?: string; dataOrigin?: string }> {
     const entry = await this.prisma.fill.findUnique({ where: { id: lot.entryFillId }, select: { observationId: true } });
     if (!entry?.observationId) return {};
     const observation = await this.prisma.marketObservation.findUnique({ where: { id: entry.observationId }, select: { tradingEnvironment: true, dataOrigin: true } });

@@ -8,7 +8,7 @@ import { Module, UnauthorizedException, type INestApplication } from "@nestjs/co
 import { APP_GUARD, NestFactory, Reflector } from "@nestjs/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FeedbackController } from "./feedback.controller.js";
-import { boundedLimit, FEEDBACK_SUMMARY_MAX_LIMIT, FeedbackService, HYPOTHETICAL_MAX_LIMIT } from "./feedback.service.js";
+import { boundedLimit, FEEDBACK_SUMMARY_DEFAULT_LIMIT, FEEDBACK_SUMMARY_MAX_LIMIT, FeedbackService, HYPOTHETICAL_MAX_LIMIT } from "./feedback.service.js";
 import { JwtAuthGuard } from "./http.js";
 
 const calls: string[] = [];
@@ -83,9 +83,12 @@ describe("GENESIS feedback endpoints require authentication", () => {
     expect(calls.length).toBe(before);
   });
 
-  it("bounds limits to [1, max]", () => {
-    expect(boundedLimit(undefined, 100, FEEDBACK_SUMMARY_MAX_LIMIT)).toBe(100);
-    expect(boundedLimit("100000", 100, FEEDBACK_SUMMARY_MAX_LIMIT)).toBe(FEEDBACK_SUMMARY_MAX_LIMIT);
+  it("bounds limits to [1, max]: summary default 50, max 100", () => {
+    expect(FEEDBACK_SUMMARY_DEFAULT_LIMIT).toBe(50);
+    expect(FEEDBACK_SUMMARY_MAX_LIMIT).toBe(100);
+    expect(boundedLimit(undefined, FEEDBACK_SUMMARY_DEFAULT_LIMIT, FEEDBACK_SUMMARY_MAX_LIMIT)).toBe(50);
+    expect(boundedLimit("100000", FEEDBACK_SUMMARY_DEFAULT_LIMIT, FEEDBACK_SUMMARY_MAX_LIMIT)).toBe(100);
+    expect(boundedLimit("500", FEEDBACK_SUMMARY_DEFAULT_LIMIT, FEEDBACK_SUMMARY_MAX_LIMIT)).toBe(100);
     expect(boundedLimit("-5", 25, HYPOTHETICAL_MAX_LIMIT)).toBe(1);
     expect(boundedLimit("abc", 25, HYPOTHETICAL_MAX_LIMIT)).toBe(25);
   });

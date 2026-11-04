@@ -149,6 +149,8 @@ describe.skipIf(!enabled)("GENESIS feedback API (DB)", () => {
         { accountId: ACCOUNT, cycleId: "cyc_g7_r", pairAddress: PAIR, stage: "REJECTED", reasonCodes: ["RISK_LIMIT"], createdAt: at(100) },
         { accountId: ACCOUNT, cycleId: "cyc_g7_r", pairAddress: PAIR, stage: "FILLED", reasonCodes: [], createdAt: at(100) },
         { accountId: OTHER, cycleId: "cyc_g7_o", pairAddress: PAIR, stage: "REJECTED", reasonCodes: [], createdAt: at(100) },
+        // Latest pre-decision observation is g7_m110, 90 minutes old: stale.
+        { accountId: ACCOUNT, cycleId: "cyc_g7_s", pairAddress: PAIR, stage: "DROPPED", reasonCodes: [], createdAt: at(200) },
       ],
     });
 
@@ -174,7 +176,7 @@ describe.skipIf(!enabled)("GENESIS feedback API (DB)", () => {
 
   it("bounds the summary limit", async () => {
     const one = await service.summary({ limit: "1" });
-    expect(one).toMatchObject({ limit: 1, lotsEvaluated: 1, truncated: true });
+    expect(one).toMatchObject({ limit: 1, lotsEvaluated: 1, truncated: true, order: "CLOSED_AT_DESC" });
     expect(one.lots[0]!.primary).toBe("NO_ERROR"); // newest closed lot first
     expect((await service.summary({ limit: "999999" })).limit).toBe(FEEDBACK_SUMMARY_MAX_LIMIT);
   });
@@ -199,9 +201,11 @@ describe.skipIf(!enabled)("GENESIS feedback API (DB)", () => {
 
   it("returns hypothetical outcomes for this account's rejections only, labelled HYPOTHETICAL", async () => {
     const report = await service.hypothetical({});
-    expect(report).toMatchObject({ accountId: ACCOUNT, source: "HYPOTHETICAL", byStatus: { EVALUATED: 1 } });
-    expect(report.outcomes).toHaveLength(1);
-    const [outcome] = report.outcomes;
+    expect(report).toMatchObject({ accountId: ACCOUNT, source: "HYPOTHETICAL", byStatus: { EVALUATED: 1, "NOT_EVALUATED:STALE_PRE_DECISION_PRICE": 1 } });
+    expect(report.outcomes).toHaveLength(2);
+    const [stale, outcome] = report.outcomes;
+    expect(stale).toMatchObject({ status: "NOT_EVALUATED", notEvaluatedReason: "STALE_PRE_DECISION_PRICE" });
+    expect(stale!.decisionRecord.features!.observationId).toBe("g7_m110");
     expect(outcome).toMatchObject({ source: "HYPOTHETICAL", labelOrigin: "MARKET_BARS", derivedFromOwnPrediction: false, status: "EVALUATED" });
     expect(outcome!.decisionRecord.features!.observationId).toBe("g7_m99");
     expect(outcome!.retrospective.exit).toMatchObject({ reason: "TAKE_PROFIT", priceUsd: "1.06000000" });

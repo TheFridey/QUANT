@@ -76,7 +76,7 @@ export const FEEDBACK_RULES = {
 
 const RULE_TEXT = [
   "Only CLOSED lots are classified; OPEN lots have no retrospective.",
-  "A lot with realised net P&L >= 0 is NO_ERROR (EXECUTION_COST_ERROR may still be listed as a secondary match).",
+  "A lot with realised net P&L >= 0 is NO_ERROR (EXECUTION_COST_ERROR may still be listed as a secondary match). For counts, net > 0 is a win, < 0 a loss and exactly 0 breakeven, as in performance.ts: a breakeven lot is NO_ERROR but not a win.",
   `Losing lots: first match in ${LOSS_CLASS_PRIORITY.join(" > ")}; UNATTRIBUTED when none match.`,
   `EXECUTION_COST_ERROR: realised comparable cost (fees, plus slippage when an expected slippage was recorded) exceeds expected by > ${FEEDBACK_RULES.costExcessRatio}x expected and > ${FEEDBACK_RULES.costExcessMinBps} bps of entry notional; primary only when the excess alone explains the loss.`,
   "TURNOVER: the mid-to-mid price move was smaller in magnitude than realised costs (fees + slippage), so costs decided the outcome.",
@@ -588,6 +588,13 @@ export function lotFeedback(input: {
   };
 }
 
+/** CLOSED lots, newest **close** first (closedAt desc, then lotKey desc), for paging feedback. */
+export function closedLotsNewestFirst(lots: readonly Lot[]): Lot[] {
+  return lots
+    .filter((lot) => lot.status === "CLOSED" && lot.closedAt !== null)
+    .sort((left, right) => Date.parse(right.closedAt!) - Date.parse(left.closedAt!) || right.lotKey.localeCompare(left.lotKey));
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Aggregation
 // ---------------------------------------------------------------------------------------------------
@@ -618,8 +625,12 @@ export const FEEDBACK_DIMENSIONS: readonly FeedbackDimension[] = [
 export type FeedbackBucket = {
   key: string;
   count: number;
+  /** net > 0 */
   wins: number;
+  /** net < 0 */
   losses: number;
+  /** net = 0 (same definition as performance.ts) */
+  breakeven: number;
   netPnlUsd: string;
   feesUsd: string;
   avgNetPnlUsd: string;
@@ -632,7 +643,7 @@ export type FeedbackAggregate = {
   version: string;
   minSample: number;
   lots: { closed: number; open: number; withDecisionRecord: number; withoutDecisionRecord: number };
-  totals: { netPnlUsd: string; feesUsd: string; wins: number; losses: number; smallSample: boolean };
+  totals: { netPnlUsd: string; feesUsd: string; wins: number; losses: number; breakeven: number; smallSample: boolean };
   classifications: Record<ErrorClass, number>;
   dimensions: Record<FeedbackDimension, FeedbackBucket[]>;
   rules: string[];
@@ -689,13 +700,16 @@ export function aggregateFeedback(rows: readonly LotFeedback[]): FeedbackAggrega
   let fees = ZERO;
   let wins = 0;
   let losses = 0;
+  let breakeven = 0;
   for (const row of closed) {
     const retro = row.retrospective!;
     classifications[retro.classification.primary] += 1;
-    net = net.plus(d(retro.realised.netPnlUsd));
+    const value = d(retro.realised.netPnlUsd);
+    net = net.plus(value);
     fees = fees.plus(d(retro.realised.feesUsd));
-    if (d(retro.realised.netPnlUsd).gte(0)) wins += 1;
-    else losses += 1;
+    if (value.gt(0)) wins += 1;
+    else if (value.lt(0)) losses += 1;
+    else breakeven += 1;
   }
   const dimensions = {} as Record<FeedbackDimension, FeedbackBucket[]>;
   for (const dimension of FEEDBACK_DIMENSIONS) {
@@ -711,20 +725,23 @@ export function aggregateFeedback(rows: readonly LotFeedback[]): FeedbackAggrega
         let bucketNet = ZERO;
         let bucketFees = ZERO;
         let bucketWins = 0;
+        let bucketLosses = 0;
         const counts: Partial<Record<ErrorClass, number>> = {};
         for (const member of members) {
           const retro = member.retrospective!;
           const value = d(retro.realised.netPnlUsd);
           bucketNet = bucketNet.plus(value);
           bucketFees = bucketFees.plus(d(retro.realised.feesUsd));
-          if (value.gte(0)) bucketWins += 1;
+          if (value.gt(0)) bucketWins += 1;
+          else if (value.lt(0)) bucketLosses += 1;
           counts[retro.classification.primary] = (counts[retro.classification.primary] ?? 0) + 1;
         }
         return {
           key,
           count: members.length,
           wins: bucketWins,
-          losses: members.length - bucketWins,
+          losses: bucketLosses,
+          breakeven: members.length - bucketWins - bucketLosses,
           netPnlUsd: usd(bucketNet),
           feesUsd: usd(bucketFees),
           avgNetPnlUsd: usd(bucketNet.div(members.length)),
@@ -739,7 +756,7 @@ export function aggregateFeedback(rows: readonly LotFeedback[]): FeedbackAggrega
     version: FEEDBACK_VERSION,
     minSample,
     lots: { closed: closed.length, open: rows.length - closed.length, withDecisionRecord: withRecord, withoutDecisionRecord: rows.length - withRecord },
-    totals: { netPnlUsd: usd(net), feesUsd: usd(fees), wins, losses, smallSample: closed.length < minSample },
+    totals: { netPnlUsd: usd(net), feesUsd: usd(fees), wins, losses, breakeven, smallSample: closed.length < minSample },
     classifications,
     dimensions,
     rules: [...RULE_TEXT],
@@ -775,9 +792,18 @@ export type CounterfactualPolicy = {
   notionalUsd: string;
   /** Assumed round-trip cost; defaults to twice the default fee (slippage not modelled). */
   roundTripCostBps: string;
+  /**
+   * Oldest usable pre-decision price: decision time minus the observation's time (eventTime when known,
+   * else receivedAt). Older → NOT_EVALUATED / STALE_PRE_DECISION_PRICE.
+   */
+  maxPreDecisionAgeSeconds: number;
 };
 
+/** Default maximum age of the pre-decision entry price (15 minutes). */
+export const MAX_PRE_DECISION_PRICE_AGE_SECONDS = 15 * 60;
+
 export const DEFAULT_COUNTERFACTUAL_POLICY: CounterfactualPolicy = {
+  maxPreDecisionAgeSeconds: MAX_PRE_DECISION_PRICE_AGE_SECONDS,
   horizonSeconds: 4 * 3600,
   stopLossPct: DEFAULT_STRATEGY.stopLossPct,
   takeProfitPct: DEFAULT_STRATEGY.takeProfitPct,
@@ -785,7 +811,8 @@ export const DEFAULT_COUNTERFACTUAL_POLICY: CounterfactualPolicy = {
   roundTripCostBps: d(DEFAULT_STRATEGY.feeBps).mul(2).toString(),
 };
 
-export type HypotheticalStatus = "EVALUATED" | "NOT_A_REJECTION" | "NO_PRE_DECISION_PRICE" | "NO_BARS_AFTER_DECISION";
+export type HypotheticalStatus = "EVALUATED" | "NOT_A_REJECTION" | "NO_PRE_DECISION_PRICE" | "NO_BARS_AFTER_DECISION" | "NOT_EVALUATED";
+export type HypotheticalNotEvaluatedReason = "STALE_PRE_DECISION_PRICE";
 
 export type HypotheticalOutcome = {
   id: string;
@@ -793,6 +820,8 @@ export type HypotheticalOutcome = {
   labelOrigin: "MARKET_BARS";
   derivedFromOwnPrediction: false;
   status: HypotheticalStatus;
+  /** Set only when status is NOT_EVALUATED. */
+  notEvaluatedReason: HypotheticalNotEvaluatedReason | null;
   /** What was known at the rejection: features at or before createdAt only. */
   decisionRecord: {
     asOf: string;
@@ -810,6 +839,8 @@ export type HypotheticalOutcome = {
       priceChangeM5Pct: string | null;
       priceChangeH1Pct: string | null;
       freshness: string;
+      /** Decision time minus observation time (eventTime when known, else receivedAt), in seconds. */
+      ageAtDecisionSeconds: number;
     } | null;
   };
   /** Hindsight: what a long at the observed price would have done under the policy. */
@@ -829,10 +860,13 @@ export type HypotheticalOutcome = {
 };
 
 /**
- * Counterfactual outcome of a rejected opportunity: a long of `notionalUsd` at the latest pre-decision
- * price, exited at the first bar at or beyond the stop / take-profit, else at the last bar within the
- * horizon. Features are used only when received (and produced) at or before the decision; bars only
- * strictly after it and at or before asOf. Labelled HYPOTHETICAL; never an observed fill.
+ * Counterfactual outcome of a rejected opportunity: a long of `notionalUsd` entered at the **last
+ * pre-decision mark** (not the next mark after the decision, which a real order would have got), exited
+ * at the first bar at or beyond the stop / take-profit, else at the last bar within the horizon. The
+ * entry is therefore optimistic or pessimistic by the move between that mark and the next one. A
+ * pre-decision price older than `maxPreDecisionAgeSeconds` is NOT_EVALUATED (STALE_PRE_DECISION_PRICE).
+ * Features are used only when received (and produced) at or before the decision; bars only strictly
+ * after it and at or before asOf. Labelled HYPOTHETICAL; never an observed fill.
  */
 export function counterfactualOutcome(input: {
   opportunity: RejectedOpportunity;
@@ -861,9 +895,11 @@ export function counterfactualOutcome(input: {
         priceChangeM5Pct: preDecision.priceChangeM5,
         priceChangeH1Pct: preDecision.priceChangeH1,
         freshness: preDecision.freshness,
+        ageAtDecisionSeconds: (decisionAt - Date.parse(preDecision.eventTime ?? preDecision.receivedAt)) / 1000,
       }
     : null;
   const caveats = [
+    "Entry at the last pre-decision mark, not the next mark: optimistic or pessimistic by the inter-mark move.",
     "Stops and targets fill at the observed mark; gaps beyond them are not modelled.",
     `Round-trip cost assumed ${policy.roundTripCostBps} bps; slippage and market impact are not modelled.`,
     "Hypothetical only: never mixed with observed fills.",
@@ -874,6 +910,7 @@ export function counterfactualOutcome(input: {
     labelOrigin: "MARKET_BARS",
     derivedFromOwnPrediction: false,
     status: "EVALUATED",
+    notEvaluatedReason: null,
     decisionRecord: { asOf: opp.createdAt, accountId: opp.accountId, cycleId: opp.cycleId, pairAddress: opp.pairAddress, stage: opp.stage, reasonCodes: [...opp.reasonCodes], features },
     retrospective: {
       policy,
@@ -891,6 +928,9 @@ export function counterfactualOutcome(input: {
   if (!(REJECTION_STAGES as readonly string[]).includes(opp.stage)) return { ...result, status: "NOT_A_REJECTION" };
   const entryPrice = features?.priceUsd != null ? d(features.priceUsd) : null;
   if (entryPrice === null || entryPrice.lte(0)) return { ...result, status: "NO_PRE_DECISION_PRICE" };
+  if (features!.ageAtDecisionSeconds > policy.maxPreDecisionAgeSeconds) {
+    return { ...result, status: "NOT_EVALUATED", notEvaluatedReason: "STALE_PRE_DECISION_PRICE", retrospective: { ...result.retrospective, entryPriceUsd: null } };
+  }
   const bars = input.bars
     .filter((row) => row.pairAddress === opp.pairAddress && row.priceUsd !== null && d(row.priceUsd).gt(0))
     .filter((row) => {

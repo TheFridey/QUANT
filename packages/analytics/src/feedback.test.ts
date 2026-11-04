@@ -4,6 +4,8 @@ import { collectTimestamps, entryView, viewHash, type PitDecision, type PitObser
 import {
   aggregateFeedback,
   buildTrainingData,
+  closedLotsNewestFirst,
+  MAX_PRE_DECISION_PRICE_AGE_SECONDS,
   counterfactualOutcome,
   decisionRecordFromSnapshot,
   FEEDBACK_RULES,
@@ -326,7 +328,7 @@ describe("aggregation", () => {
     expect(agg.lots).toEqual({ closed: 3, open: 1, withDecisionRecord: 3, withoutDecisionRecord: 1 });
     const net = rows.slice(0, 3).reduce((sum, row) => sum.plus(d(row.retrospective!.realised.netPnlUsd)), d("0"));
     expect(agg.totals.netPnlUsd).toBe(usd(net));
-    expect(agg.totals).toMatchObject({ wins: 1, losses: 2, smallSample: true });
+    expect(agg.totals).toMatchObject({ wins: 1, losses: 2, breakeven: 0, smallSample: true });
     expect(agg.classifications).toMatchObject({ NO_ERROR: 1, SIGNAL_ERROR: 1, REGIME_MISMATCH: 1 });
     expect(Object.keys(agg.dimensions).sort()).toEqual(
       ["exitReason", "holdingDuration", "instrument", "liquidity", "modelVersion", "regime", "strategyInstance", "strategyVersion", "volatility"].sort(),
@@ -341,6 +343,24 @@ describe("aggregation", () => {
     }
   });
 
+  it("counts zero net P&L as breakeven (performance.ts definition), classified NO_ERROR but not a win", () => {
+    const flat = lotOf([fill("BUY", "100", "1.00", 0, { feeUsd: "0.00000000", slippageBps: "0" }), fill("SELL", "100", "1.00", 30, { feeUsd: "0.00000000", slippageBps: "0" })]);
+    const row = feedback(flat, { marks: [] });
+    expect(row.retrospective!.realised.netPnlUsd).toBe("0.00000000");
+    expect(row.retrospective!.classification.primary).toBe("NO_ERROR");
+    const agg = aggregateFeedback([row, feedback(roundTrip("1.10"), { marks: [] })]);
+    expect(agg.totals).toMatchObject({ wins: 1, losses: 0, breakeven: 1 });
+    expect(agg.dimensions.instrument[0]).toMatchObject({ count: 2, wins: 1, losses: 0, breakeven: 1 });
+  });
+
+  it("pages closed lots by closedAt, not by openedAt", () => {
+    // Lot A opens first but closes last; lot B opens later and closes first; lot C is still open.
+    const a = lotOf([fill("BUY", "1", "1", 0), fill("SELL", "1", "1", 300)]);
+    const b = { ...lotOf([fill("BUY", "1", "1", 10), fill("SELL", "1", "1", 20)]), lotKey: "lot_b" };
+    const c = lotOf([fill("BUY", "1", "1", 400)]);
+    expect(closedLotsNewestFirst([a, b, c]).map((lot) => lot.lotKey)).toEqual([a.lotKey, "lot_b"]);
+  });
+
   it("clears the small-sample flag at the minimum sample and refuses hypothetical rows", () => {
     const rows = Array.from({ length: FEEDBACK_RULES.minSample }, () => feedback(roundTrip("1.05"), { marks: [] }));
     expect(aggregateFeedback(rows).dimensions.strategyInstance[0]).toMatchObject({ key: "inst_a", count: FEEDBACK_RULES.minSample, smallSample: false });
@@ -352,7 +372,21 @@ describe("aggregation", () => {
 describe("hypothetical non-trades", () => {
   const opportunity: RejectedOpportunity = { id: "fun_1", accountId: ACCOUNT, cycleId: "cyc_r", pairAddress: PAIR, stage: "REJECTED", reasonCodes: ["RISK_LIMIT"], createdAt: at(0) };
   const feature = (minute: number, price: string, extra: Partial<PitObservation> = {}) => observation(`f_${minute}`, minute, { priceUsd: price, ...extra });
-  const policy = { horizonSeconds: 3600, stopLossPct: "3", takeProfitPct: "5", notionalUsd: "100", roundTripCostBps: "60" };
+  const policy = { horizonSeconds: 3600, stopLossPct: "3", takeProfitPct: "5", notionalUsd: "100", roundTripCostBps: "60", maxPreDecisionAgeSeconds: MAX_PRE_DECISION_PRICE_AGE_SECONDS };
+
+  it("is NOT_EVALUATED (STALE_PRE_DECISION_PRICE) when the last pre-decision price is too old", () => {
+    const stale = counterfactualOutcome({ opportunity, features: [feature(-16, "1.00")], bars: [mark(5, "1.10")], asOf: ASOF, policy });
+    expect(stale).toMatchObject({ status: "NOT_EVALUATED", notEvaluatedReason: "STALE_PRE_DECISION_PRICE" });
+    expect(stale.decisionRecord.features!.ageAtDecisionSeconds).toBe(960);
+    expect(stale.retrospective).toMatchObject({ exit: null, netPnlUsd: null });
+    expect(feedbackRowFromHypothetical(stale)).toBeNull();
+    // Age uses the provider eventTime when known: received 1 min before, produced 20 min before → stale.
+    const oldEvent = counterfactualOutcome({ opportunity, features: [feature(-1, "1.00", { eventTime: at(-20) })], bars: [mark(5, "1.10")], asOf: ASOF, policy });
+    expect(oldEvent.notEvaluatedReason).toBe("STALE_PRE_DECISION_PRICE");
+    const fresh = counterfactualOutcome({ opportunity, features: [feature(-14, "1.00")], bars: [mark(5, "1.10")], asOf: ASOF, policy });
+    expect(fresh).toMatchObject({ status: "EVALUATED", notEvaluatedReason: null });
+    expect(fresh.retrospective.caveats[0]).toContain("last pre-decision mark");
+  });
 
   it("labels the outcome HYPOTHETICAL and exits at the take-profit", () => {
     const out = counterfactualOutcome({ opportunity, features: [feature(-1, "1.00"), feature(-5, "0.50")], bars: [mark(-0.5, "2"), mark(10, "1.02"), mark(20, "1.06"), mark(30, "0.5")], asOf: ASOF, policy });
