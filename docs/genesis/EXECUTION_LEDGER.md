@@ -15,6 +15,12 @@ Durable checkpoint for Operation GENESIS (ASCEND-10, ASCEND-11 and the APEX cont
 | `BLOCKED` | Cannot proceed; the blocker and what unblocks it are named |
 | `NOT_VERIFIED` | Not checked; no claim is made |
 
+## Checkpoint 4: 4 Nov 2026, ~22:45 UTC (risk limits editor deployed)
+
+Operator request: "make an options page where I can edit my max daily losses, drawdown etc." then "Merge and deploy". [#58](https://github.com/TheFridey/QUANT/pull/58) adds a Risk limits (PAPER) panel on Settings for `maxDailyLossPct`, `maxTotalDrawdownPct`, `maxRiskPerTradePct`, `maxAggregateExposurePct` and `maxPositionPctEquity`. It uses the existing audited `PATCH /engine/config` (admin, paused engine, server bounds, `EngineConfigRevision`); no new server path; `DEFAULT_STRATEGY` and the risk engine unchanged; saving never resumes the engine. quant-safety-reviewer: APPROVE WITH NOTES, six notes fixed before merge. CI green (unit, parity with `strategy.ts`, browser e2e of the whole flow). Merged `5e26943`.
+
+Deploy: fast-forward `7cdff36` → `5e26943`; web-only change, no migration, lockfile unchanged; backup `/srv/quant/backups/quant-20261104T224242Z.dump`; web snapshot `/srv/quant/releases/7cdff36-20261104T224337Z`; only `quant-web` rebuilt and restarted (22:44:06 UTC). Smoke: SHA `5e26943`; panel present in the build; `/terminal/settings` 200; API health `ok`; worker cycles advancing; other tenants 200; 0 web error lines. Stored limits unchanged at deploy (3 / 10 / 0.5 / 20 / 5; engine RUNNING). Not verified: the panel in a logged-in browser on production.
+
 ## Checkpoint 3: 4 Nov 2026, ~21:50 UTC (all GENESIS PRs merged; `7cdff36` deployed)
 
 Operator instruction, 4 Nov 2026: "merge all push to main and push live". Merging, the one migration and the deploy were approved by that instruction. The 15% daily limit stays **not applied** ("Leave it for now"). The shadow service and research loop stay **disabled**.
