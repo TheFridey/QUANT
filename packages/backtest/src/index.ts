@@ -17,3 +17,8 @@ export * from "./research/features.js";
 export * from "./research/ml.js";
 export * from "./research/intelligence.js";
 export * from "./research/portfolio.js";
+export * from "./research/labels.js";
+export * from "./research/feature-set.js";
+export * from "./research/ml2-learners.js";
+export * from "./research/ml2-eval.js";
+export * from "./research/ml2.js";
