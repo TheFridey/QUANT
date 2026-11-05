@@ -65,6 +65,8 @@ export type ValidationReport = {
   config: ValidationConfig;
   verdict: Verdict;
   reasons: string[];
+  /** True when every out-of-sample test passed before the holdout step (which may still demote the verdict). */
+  walkForwardPassed: boolean;
   trials: TrialRecord[];
   trialCount: number;
   selectedParamsByFold: Array<Record<string, ParamValue>>;
@@ -176,9 +178,15 @@ export function validateStrategy(input: {
   /**
    * False when this strategy (any version) already consumed a holdout on this instrument and interval (see the
    * trial registry). Keyed wider than the unique key so a version bump or a re-imported dataset cannot buy a
-   * fresh look at the same bars.
+   * fresh look at the same bars. A function is called only when a candidate is about to read the holdout, so a
+   * recording gate (HORIZON) is consumed exactly when the holdout is evaluated and never otherwise.
    */
-  holdoutAvailable?: boolean;
+  holdoutAvailable?: boolean | (() => boolean);
+  /**
+   * True when the caller cannot record a holdout read (a read-only run): a candidate that passed walk-forward is
+   * reported as INSUFFICIENT_EVIDENCE with `walkForwardPassed: true`, and the holdout is never touched.
+   */
+  holdoutWithheld?: boolean;
   /** Trials already recorded across the whole research programme; deflates DSR for programme-wide selection. */
   programmeTrialCount?: number;
   /**
@@ -196,7 +204,7 @@ export function validateStrategy(input: {
     codeVersion: input.codeVersion,
     config: cfg,
   };
-  const empty = { trials: [], trialCount: 0, selectedParamsByFold: [], gridScale: null, oos: null, oosGross: null, oosControls: { buyAndHoldSharpe: null, randomSharpe: null, cashSharpe: null }, psr: null, dsr: null, dsrProgramme: null, costSensitivity: [], pbo: null, holdout: null };
+  const empty = { walkForwardPassed: false, trials: [], trialCount: 0, selectedParamsByFold: [], gridScale: null, oos: null, oosGross: null, oosControls: { buyAndHoldSharpe: null, randomSharpe: null, cashSharpe: null }, psr: null, dsr: null, dsrProgramme: null, costSensitivity: [], pbo: null, holdout: null };
   if (!spec.supported || !spec.build) {
     return { ...base, ...empty, verdict: "RESEARCH_ONLY", reasons: [spec.unsupportedReason ?? "unsupported"], evidence: "RESEARCH_ONLY" };
   }
@@ -323,7 +331,11 @@ export function validateStrategy(input: {
   // The final holdout is touched exactly once, with the last fold's selection, and only for a candidate
   // that already passed every OOS test. It can demote a candidate, never promote one.
   let holdout: ValidationReport["holdout"] = null;
-  if (verdict === "VALIDATED_CANDIDATE" && input.holdoutAvailable === false) {
+  const walkForwardPassed = verdict === "VALIDATED_CANDIDATE";
+  if (verdict === "VALIDATED_CANDIDATE" && input.holdoutWithheld) {
+    verdict = "INSUFFICIENT_EVIDENCE";
+    reasons.push("Walk-forward passed; holdout withheld (this run cannot record a holdout read)");
+  } else if (verdict === "VALIDATED_CANDIDATE" && (typeof input.holdoutAvailable === "function" ? !input.holdoutAvailable() : input.holdoutAvailable === false)) {
     // Re-evaluating a consumed holdout would turn it into another validation set.
     verdict = "INSUFFICIENT_EVIDENCE";
     reasons.push("Holdout already consumed by this strategy on this instrument and interval; only genuinely new bars can confirm it");
@@ -343,6 +355,7 @@ export function validateStrategy(input: {
     ...base,
     verdict,
     reasons,
+    walkForwardPassed,
     trials,
     trialCount: trials.filter((t) => t.window !== "HOLDOUT").length,
     selectedParamsByFold: selected,
