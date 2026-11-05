@@ -123,13 +123,19 @@ export type DatasetQualityReport = {
 export function gapSemanticsFor(sourceId: string, interval: string): GapSemantics {
   if (sourceId === "geckoterminal") return "EMPTY_INTERVALS_OMITTED";
   // Alpaca daily bars cover every session; intraday IEX bars are one venue and can have no prints.
-  if (sourceId === "alpaca_iex") return interval === "1d" ? "COMPLETE_SESSIONS" : "EMPTY_INTERVALS_OMITTED";
+  if (isAlpacaSource(sourceId)) return interval === "1d" ? "COMPLETE_SESSIONS" : "EMPTY_INTERVALS_OMITTED";
+  // OANDA emits no candle for an interval without a price update.
+  if (sourceId === "oanda_practice") return "EMPTY_INTERVALS_OMITTED";
   return "UNKNOWN";
+}
+
+function isAlpacaSource(sourceId: string): boolean {
+  return sourceId === "alpaca_iex" || sourceId === "alpaca_sip" || sourceId === "alpaca_delayed_sip";
 }
 
 /** Bar-open convention per source (mirrors HistoricalBarSource.barAlignment). */
 export function alignmentFor(sourceId: string, interval: string): BarAlignment {
-  return sourceId === "alpaca_iex" && interval === "1d" ? "NEW_YORK_DAY" : "UTC_GRID";
+  return isAlpacaSource(sourceId) && interval === "1d" ? "NEW_YORK_DAY" : "UTC_GRID";
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();

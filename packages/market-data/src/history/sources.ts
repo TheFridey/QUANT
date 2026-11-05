@@ -1,5 +1,7 @@
 import { assertAllowlistedHttpsUrl, ALPACA_DATA_HOSTS_STRICT, type AllowedHost } from "../practice-url.js";
 import type { BarAlignment, RawBar } from "./integrity.js";
+import { nyseSessionPhase } from "./calendar.js";
+import { OandaPracticeMarketData, type OandaGranularity } from "../providers/oanda-practice.js";
 
 /**
  * ASCEND-01 historical bar sources. Read-only GETs against documented public endpoints; no order flow.
@@ -145,27 +147,46 @@ const ALPACA_TIMEFRAME: Partial<Record<HistoryInterval, string>> = {
   "1d": "1Day",
 };
 
+/** Alpaca stock data feeds. `sip` needs a paid plan; `delayed_sip` is the 15-minute-delayed consolidated feed. */
+export type AlpacaFeed = "iex" | "sip" | "delayed_sip";
+
+/** Retry delay from a 429: Retry-After seconds, else X-RateLimit-Reset (epoch seconds), else a minute. */
+export function retryAfterMs(headers: Headers, nowMs: number = Date.now()): number {
+  const after = Number(headers.get("retry-after"));
+  if (Number.isFinite(after) && after > 0) return Math.min(after * 1000, 300_000);
+  const reset = Number(headers.get("x-ratelimit-reset"));
+  if (Number.isFinite(reset) && reset * 1000 > nowMs) return Math.min(reset * 1000 - nowMs, 300_000);
+  return 60_000;
+}
+
 /**
  * Alpaca market-data v2 stock/ETF bars (`instrumentKey` = ticker). Uses the paper account's data keys and
- * the free IEX feed; prices are unadjusted (`adjustment=raw`) so corporate actions are recorded, not
- * silently rewritten. IEX is a single venue: volume is a fraction of consolidated volume.
+ * (by default) the free IEX feed; prices are unadjusted (`adjustment=raw`) so corporate actions are
+ * recorded, not silently rewritten. IEX is a single venue: volume is a fraction of consolidated volume.
+ * Each bar records its feed in `extra.feed`; intraday bars also record their New York session phase in
+ * `extra.nySession` (PRE/RTH/POST/CLOSED) so research can drop extended-hours bars explicitly. The source
+ * id names the feed (`alpaca_iex`, `alpaca_delayed_sip`, …), so feeds never share a dataset.
  */
 export class AlpacaBarsSource implements HistoricalBarSource {
-  readonly id = "alpaca_iex";
-  readonly licence: SourceLicence = {
-    provider: "Alpaca Market Data (IEX feed)",
-    terms: "Alpaca customer agreement; for the account holder's own use; no redistribution",
-    attribution: null,
-    redistribution: "NO",
-  };
+  readonly id: string;
+  readonly licence: SourceLicence;
   readonly maxRequestsPerMinute: number;
+  private readonly feed: AlpacaFeed;
 
   constructor(
     private readonly credentials: { keyId: string | undefined; secret: string | undefined; dataUrl?: string },
-    private readonly options: { fetchImpl?: typeof fetch; maxRequestsPerMinute?: number; feed?: "iex" } = {},
+    private readonly options: { fetchImpl?: typeof fetch; maxRequestsPerMinute?: number; feed?: AlpacaFeed; now?: () => number } = {},
   ) {
     // The free plan allows 200/min; research takes a small share so live quotes keep priority.
     this.maxRequestsPerMinute = options.maxRequestsPerMinute ?? 30;
+    this.feed = options.feed ?? "iex";
+    this.id = `alpaca_${this.feed}`;
+    this.licence = {
+      provider: `Alpaca Market Data (${this.feed.toUpperCase()} feed)`,
+      terms: "Alpaca customer agreement; for the account holder's own use; no redistribution",
+      attribution: null,
+      redistribution: "NO",
+    };
   }
 
   barAlignment(interval: HistoryInterval): BarAlignment {
@@ -189,14 +210,14 @@ export class AlpacaBarsSource implements HistoricalBarSource {
     url.searchParams.set("end", new Date(input.endMs).toISOString());
     url.searchParams.set("limit", "10000");
     url.searchParams.set("adjustment", "raw");
-    url.searchParams.set("feed", this.options.feed ?? "iex");
+    url.searchParams.set("feed", this.feed);
     url.searchParams.set("sort", "asc");
     if (input.cursor) url.searchParams.set("page_token", input.cursor);
     const response = await (this.options.fetchImpl ?? fetch)(url, {
       headers: { accept: "application/json", "APCA-API-KEY-ID": this.credentials.keyId, "APCA-API-SECRET-KEY": this.credentials.secret },
       redirect: "error",
     });
-    if (response.status === 429) return { ok: false, code: "RATE_LIMITED", error: "alpaca 429", retryAfterMs: 60_000 };
+    if (response.status === 429) return { ok: false, code: "RATE_LIMITED", error: "alpaca 429", retryAfterMs: retryAfterMs(response.headers, (this.options.now ?? Date.now)()) };
     if (!response.ok) return { ok: false, code: "HTTP_ERROR", error: `alpaca http_${response.status}` };
     const payload = (await response.json()) as { bars?: Record<string, unknown>; next_page_token?: string | null };
     const rows = payload?.bars?.[input.instrumentKey] ?? [];
@@ -212,10 +233,94 @@ export class AlpacaBarsSource implements HistoricalBarSource {
         low: row.l as number,
         close: row.c as number,
         volume: (row.v as number | undefined) ?? null,
-        extra: { trades: (row.n as number | undefined) ?? null, vwap: (row.vw as number | undefined) ?? null },
+        extra: {
+          trades: (row.n as number | undefined) ?? null,
+          vwap: (row.vw as number | undefined) ?? null,
+          feed: this.feed,
+          ...(input.interval === "1d" ? {} : { nySession: nyseSessionPhase(t) }),
+        },
       });
     }
     // Credentials are headers only; the request description carries no secret.
     return { ok: true, bars, nextCursor: payload.next_page_token ?? null, requestDescription: `${url.pathname}?${url.searchParams.toString()}`, payload };
+  }
+}
+
+const OANDA_GRANULARITY: Record<HistoryInterval, OandaGranularity> = {
+  "1m": "M1",
+  "5m": "M5",
+  "15m": "M15",
+  "1h": "H1",
+  "4h": "H4",
+  "1d": "D",
+};
+
+const OANDA_PAGE_SIZE = 5000;
+
+/**
+ * OANDA v20 practice candles (`instrumentKey` = OANDA name such as EUR_USD or XAU_USD). Requests `price=MBA`:
+ * the stored OHLC is the mid, and the bid and ask OHLC are kept in `extra` (`bid_o`…`ask_c`) with the spread
+ * at the close. Volume is null because OANDA reports tick volume (kept as `extra.tickVolume`), not traded
+ * volume. Daily and 4-hour candles are aligned to 00:00 UTC so they sit on the UTC grid. Only candles OANDA
+ * marks complete are returned; availableAt is the candle close (applied by normaliseBars).
+ * Pages forward from the window start with `from` + `count`; the cursor is the next `from` in epoch ms.
+ */
+export class OandaCandlesSource implements HistoricalBarSource {
+  readonly id = "oanda_practice";
+  readonly licence: SourceLicence = {
+    provider: "OANDA fxTrade Practice (v20 REST)",
+    terms: "OANDA practice account terms; for the account holder's own use; no redistribution",
+    attribution: null,
+    redistribution: "NO",
+  };
+  readonly maxRequestsPerMinute: number;
+
+  constructor(
+    private readonly credentials: { token: string | undefined; apiUrl?: string },
+    private readonly options: { fetchImpl?: typeof fetch; maxRequestsPerMinute?: number; now?: () => Date } = {},
+  ) {
+    // OANDA allows far more; research stays small and polite.
+    this.maxRequestsPerMinute = options.maxRequestsPerMinute ?? 30;
+  }
+
+  async fetchPage(input: { instrumentKey: string; interval: HistoryInterval; startMs: number; endMs: number; cursor: string | null }): Promise<SourcePage> {
+    const token = this.credentials.token;
+    const client = new OandaPracticeMarketData(
+      { tokenPresent: Boolean(token), accountIdPresent: false, apiUrl: this.credentials.apiUrl ?? "https://api-fxpractice.oanda.com", accountId: "" },
+      { fetchImpl: this.options.fetchImpl, now: this.options.now, token: () => token ?? "" },
+    );
+    const fromMs = input.cursor ? Number(input.cursor) : input.startMs;
+    if (!Number.isFinite(fromMs)) return { ok: false, code: "INVALID", error: "oanda cursor is not epoch ms" };
+    if (fromMs >= input.endMs) return { ok: true, bars: [], nextCursor: null, requestDescription: "(window exhausted)", payload: null };
+    const result = await client.candles({ instrument: input.instrumentKey, granularity: OANDA_GRANULARITY[input.interval], price: "MBA", fromMs, count: OANDA_PAGE_SIZE });
+    if (!result.ok) {
+      const code = result.code === "AUTH_FAILED" ? "MISSING_CREDENTIALS" : result.code === "HTTP_ERROR" ? "HTTP_ERROR" : result.code;
+      return { ok: false, code, error: result.error, ...(result.code === "RATE_LIMITED" ? { retryAfterMs: 60_000 } : {}) };
+    }
+    const { candles, request, payload } = result.data;
+    const bars: RawBar[] = [];
+    let lastOpen = Number.NEGATIVE_INFINITY;
+    for (const candle of candles) {
+      lastOpen = Math.max(lastOpen, candle.openTime);
+      if (!candle.complete || !candle.mid) continue;
+      if (candle.openTime < input.startMs || candle.openTime >= input.endMs) continue;
+      const extra: Record<string, string | number | null> = { tickVolume: candle.tickVolume, priceComponents: "MBA" };
+      for (const [side, ohlc] of [
+        ["bid", candle.bid],
+        ["ask", candle.ask],
+      ] as const) {
+        extra[`${side}_o`] = ohlc?.o ?? null;
+        extra[`${side}_h`] = ohlc?.h ?? null;
+        extra[`${side}_l`] = ohlc?.l ?? null;
+        extra[`${side}_c`] = ohlc?.c ?? null;
+      }
+      extra.spread_c = candle.bid && candle.ask ? (Number(candle.ask.c) - Number(candle.bid.c)).toFixed(10).replace(/\.?0+$/, "") : null;
+      bars.push({ openTime: candle.openTime, open: candle.mid.o, high: candle.mid.h, low: candle.mid.l, close: candle.mid.c, volume: null, extra });
+    }
+    const next = lastOpen + INTERVAL_MS[input.interval];
+    // Short page or past the window end: done. An incomplete (in-progress) candle also ends the walk.
+    const sawIncomplete = candles.some((c) => !c.complete);
+    const done = candles.length < OANDA_PAGE_SIZE || !Number.isFinite(next) || next >= input.endMs || sawIncomplete;
+    return { ok: true, bars, nextCursor: done ? null : String(next), requestDescription: request, payload };
   }
 }

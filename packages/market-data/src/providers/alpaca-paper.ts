@@ -1,9 +1,12 @@
 import {
   SEED_INSTRUMENTS,
   canPaperExecute,
+  describeQuoteQuality,
   evaluateSession,
   type Instrument,
   type ProviderReadiness,
+  type QuoteFeed,
+  type QuoteQuality,
 } from "@odin/shared";
 import type { MarketDataProvider, InstrumentQuote, OrderSpec, MarketSessionStatus } from "../market-provider.js";
 import type { ProviderResult } from "../provider.js";
@@ -13,6 +16,8 @@ import {
   assertAllowlistedHttpsUrl,
   assertCompleteQuote,
 } from "../practice-url.js";
+import { AlpacaBarsSource, retryAfterMs, type AlpacaFeed, type HistoryInterval } from "../history/sources.js";
+import type { RawBar } from "../history/integrity.js";
 
 export type AlpacaPaperCredentials = {
   apiKeyPresent: boolean;
@@ -42,6 +47,11 @@ export class AlpacaPaperProvider implements MarketDataProvider {
       quoteFixture?: Record<string, { bid: string; ask: string; mid: string; eventTime?: string }>;
       /** Max quote event age before rejection (ms). */
       maxEventAgeMs?: number;
+      /**
+       * HORIZON: request this feed explicitly on the latest-quote call. Unset keeps the historical behaviour
+       * (Alpaca picks the account default) and the quote's quality records the feed as unspecified.
+       */
+      feed?: AlpacaFeed;
     } = {},
   ) {}
 
@@ -144,6 +154,7 @@ export class AlpacaPaperProvider implements MarketDataProvider {
           bid: complete.bid.toFixed(8),
           ask: complete.ask.toFixed(8),
           eventTime: fix.eventTime ?? now.toISOString(),
+          quality: describeQuoteQuality({ source: "alpaca_paper", feed: "OFFLINE_FIXTURE", now, eventTime: fix.eventTime ?? null, bid: fix.bid, ask: fix.ask }),
         });
       }
       return { ok: true, fetchedAt: now.toISOString(), data };
@@ -160,7 +171,8 @@ export class AlpacaPaperProvider implements MarketDataProvider {
       const session = evaluateSession({ session: instrument.session, now });
       try {
         const symbol = encodeURIComponent(instrument.providerSymbol || instrument.symbol);
-        const url = `${this.credentials.dataUrl.replace(/\/$/, "")}/v2/stocks/${symbol}/quotes/latest`;
+        const feedParam = this.options.feed ? `?feed=${this.options.feed}` : "";
+        const url = `${this.credentials.dataUrl.replace(/\/$/, "")}/v2/stocks/${symbol}/quotes/latest${feedParam}`;
         const response = await fetchImpl(url, {
           headers: {
             "APCA-API-KEY-ID": process.env.ALPACA_API_KEY_ID ?? "",
@@ -203,6 +215,14 @@ export class AlpacaPaperProvider implements MarketDataProvider {
           bid: complete.bid.toFixed(8),
           ask: complete.ask.toFixed(8),
           eventTime: body.quote?.t ?? null,
+          quality: describeQuoteQuality({
+            source: "alpaca_paper",
+            feed: this.options.feed ? ALPACA_QUALITY_FEED[this.options.feed] : "ALPACA_ACCOUNT_DEFAULT",
+            now,
+            eventTime: body.quote?.t ?? null,
+            bid: body.quote?.bp,
+            ask: body.quote?.ap,
+          }),
         });
       } catch (error) {
         quotes.push(
@@ -329,4 +349,190 @@ function empty(
     ask: null,
     eventTime: null,
   };
+}
+
+/* ------------------------------------------------------------------------------------------------------
+ * HORIZON: read-only Alpaca market data (latest quotes and historical bars) with the feed recorded.
+ * Observation only: GETs against the data host; no order flow, not routed into the paper pipeline.
+ * ---------------------------------------------------------------------------------------------------- */
+
+export const ALPACA_QUALITY_FEED: Record<AlpacaFeed, QuoteFeed> = {
+  iex: "ALPACA_IEX",
+  sip: "ALPACA_SIP",
+  delayed_sip: "ALPACA_DELAYED_SIP",
+};
+
+export type AlpacaQuoteSnapshot = {
+  symbol: string;
+  /** Feed explicitly requested for this quote. */
+  feed: AlpacaFeed;
+  bid: string | null;
+  ask: string | null;
+  /** Sizes in shares as reported by the feed (IEX sizes are IEX-only). */
+  bidSize: number | null;
+  askSize: number | null;
+  bidExchange: string | null;
+  askExchange: string | null;
+  /** Quote condition flags as reported (e.g. "R" regular). */
+  conditions: string[];
+  tape: string | null;
+  /** Quote timestamp (ISO, ms precision). */
+  time: string | null;
+  quality: QuoteQuality;
+};
+
+export type AlpacaDataFailure = { ok: false; code: "MISSING_CREDENTIALS" | "INVALID_CONFIGURATION" | "AUTH_FAILED" | "RATE_LIMITED" | "HTTP_ERROR" | "INVALID"; error: string; retryAfterMs?: number };
+
+/** Trim RFC 3339 nanosecond timestamps to milliseconds. */
+function isoMillis(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z$/.exec(value.trim());
+  if (!match) return null;
+  const iso = `${match[1]}.${(match[2] ?? "").padEnd(3, "0").slice(0, 3)}Z`;
+  return Number.isFinite(Date.parse(iso)) ? iso : null;
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** Parse `/v2/stocks/quotes/latest?symbols=…`. Missing symbols are simply absent; nothing is invented. */
+export function parseAlpacaLatestQuotes(payload: unknown, feed: AlpacaFeed, now: Date): AlpacaQuoteSnapshot[] | null {
+  const quotes = (payload as { quotes?: unknown } | null)?.quotes;
+  if (!quotes || typeof quotes !== "object" || Array.isArray(quotes)) return null;
+  const out: AlpacaQuoteSnapshot[] = [];
+  for (const [symbol, raw] of Object.entries(quotes as Record<string, Record<string, unknown>>)) {
+    const bp = finiteNumber(raw?.bp);
+    const ap = finiteNumber(raw?.ap);
+    // Alpaca reports 0 for an empty side; that is "no price", not a zero price.
+    const bid = bp !== null && bp > 0 ? String(bp) : null;
+    const ask = ap !== null && ap > 0 ? String(ap) : null;
+    const time = isoMillis(raw?.t);
+    out.push({
+      symbol,
+      feed,
+      bid,
+      ask,
+      bidSize: finiteNumber(raw?.bs),
+      askSize: finiteNumber(raw?.as),
+      bidExchange: typeof raw?.bx === "string" ? raw.bx : null,
+      askExchange: typeof raw?.ax === "string" ? raw.ax : null,
+      conditions: Array.isArray(raw?.c) ? (raw.c as unknown[]).filter((c): c is string => typeof c === "string") : [],
+      tape: typeof raw?.z === "string" ? raw.z : null,
+      time,
+      quality: describeQuoteQuality({ source: "alpaca_paper", feed: ALPACA_QUALITY_FEED[feed], now, eventTime: time, bid, ask }),
+    });
+  }
+  return out.sort((a, b) => a.symbol.localeCompare(b.symbol));
+}
+
+const ALPACA_SYMBOL = /^[A-Z.]{1,10}$/;
+
+/**
+ * Read-only Alpaca stock data client. Keys are read at call time and sent only to the strict data host.
+ * Default feed is IEX (the free plan); SIP needs a paid plan and is never assumed.
+ */
+export class AlpacaMarketData {
+  readonly feed: AlpacaFeed;
+
+  constructor(
+    private readonly credentials: AlpacaPaperCredentials,
+    private readonly options: {
+      fetchImpl?: typeof fetch;
+      now?: () => Date;
+      feed?: AlpacaFeed;
+      keys?: () => { keyId: string; secret: string };
+      /** Request budget for paginated bars (default 30/min, well under the free plan's 200/min). */
+      maxRequestsPerMinute?: number;
+      sleep?: (ms: number) => Promise<void>;
+    } = {},
+  ) {
+    this.feed = options.feed ?? "iex";
+  }
+
+  private keys(): { keyId: string; secret: string } {
+    return (this.options.keys ?? (() => ({ keyId: process.env.ALPACA_API_KEY_ID ?? "", secret: process.env.ALPACA_API_SECRET_KEY ?? "" })))();
+  }
+
+  private preflight(): { ok: true; base: string } | AlpacaDataFailure {
+    if (!this.credentials.apiKeyPresent || !this.credentials.apiSecretPresent) {
+      return { ok: false, code: "MISSING_CREDENTIALS", error: "BLOCKED_EXTERNAL: ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY not set" };
+    }
+    if (!assertAllowlistedHttpsUrl(this.credentials.dataUrl, ALPACA_DATA_HOSTS_STRICT).ok) {
+      return { ok: false, code: "INVALID_CONFIGURATION", error: "ALPACA_DATA_BASE_URL must be https://data.alpaca.markets" };
+    }
+    return { ok: true, base: this.credentials.dataUrl.replace(/\/$/, "") };
+  }
+
+  /** Latest quote per symbol (1-50 symbols) on the configured feed. */
+  async latestQuotes(symbols: readonly string[]): Promise<{ ok: true; data: AlpacaQuoteSnapshot[]; fetchedAt: string; request: string } | AlpacaDataFailure> {
+    const pre = this.preflight();
+    if (!pre.ok) return pre;
+    if (symbols.length === 0 || symbols.length > 50 || !symbols.every((s) => ALPACA_SYMBOL.test(s))) {
+      return { ok: false, code: "INVALID", error: "latestQuotes needs 1-50 upper-case tickers" };
+    }
+    const url = new URL(`${pre.base}/v2/stocks/quotes/latest`);
+    url.searchParams.set("symbols", symbols.join(","));
+    url.searchParams.set("feed", this.feed);
+    const keys = this.keys();
+    let response: Response;
+    try {
+      response = await (this.options.fetchImpl ?? fetch)(url, {
+        method: "GET",
+        headers: { accept: "application/json", "APCA-API-KEY-ID": keys.keyId, "APCA-API-SECRET-KEY": keys.secret },
+        redirect: "error",
+      });
+    } catch (error) {
+      return { ok: false, code: "HTTP_ERROR", error: `alpaca:error:${error instanceof Error ? error.message : "unknown"}` };
+    }
+    const now = (this.options.now ?? (() => new Date()))();
+    if (response.status === 401 || response.status === 403) return { ok: false, code: "AUTH_FAILED", error: `AUTH_FAILED: Alpaca http_${response.status} (keys rejected or feed ${this.feed} not entitled)` };
+    if (response.status === 429) return { ok: false, code: "RATE_LIMITED", error: "alpaca 429", retryAfterMs: retryAfterMs(response.headers, now.getTime()) };
+    if (!response.ok) return { ok: false, code: "HTTP_ERROR", error: `alpaca http_${response.status}` };
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      return { ok: false, code: "INVALID", error: "alpaca invalid json" };
+    }
+    const data = parseAlpacaLatestQuotes(payload, this.feed, now);
+    if (!data) return { ok: false, code: "INVALID", error: "alpaca latest quotes payload malformed" };
+    return { ok: true, data, fetchedAt: now.toISOString(), request: `${url.pathname}?${url.searchParams.toString()}` };
+  }
+
+  /**
+   * Historical bars for one symbol, following `next_page_token` up to `maxPages`, spaced to the request
+   * budget. A 429 stops the walk and reports how long to wait; partial bars are returned with
+   * `complete: false`, never padded.
+   */
+  async bars(input: { symbol: string; interval: HistoryInterval; startMs: number; endMs: number; maxPages?: number }): Promise<
+    | { ok: true; bars: RawBar[]; pages: number; complete: boolean; stoppedBy: "DONE" | "PAGE_LIMIT" | "RATE_LIMITED"; retryAfterMs: number | null }
+    | AlpacaDataFailure
+  > {
+    const pre = this.preflight();
+    if (!pre.ok) return pre;
+    const keys = this.keys();
+    const perMinute = Math.max(1, this.options.maxRequestsPerMinute ?? 30);
+    const source = new AlpacaBarsSource(
+      { keyId: keys.keyId, secret: keys.secret, dataUrl: this.credentials.dataUrl },
+      { fetchImpl: this.options.fetchImpl, feed: this.feed, maxRequestsPerMinute: perMinute },
+    );
+    const maxPages = Math.min(Math.max(Math.trunc(input.maxPages ?? 10), 1), 100);
+    const spacingMs = Math.ceil(60_000 / perMinute);
+    const sleep = this.options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const bars: RawBar[] = [];
+    let cursor: string | null = null;
+    for (let page = 1; page <= maxPages; page += 1) {
+      if (page > 1) await sleep(spacingMs);
+      const result = await source.fetchPage({ instrumentKey: input.symbol, interval: input.interval, startMs: input.startMs, endMs: input.endMs, cursor });
+      if (!result.ok) {
+        if (result.code === "RATE_LIMITED") return { ok: true, bars, pages: page - 1, complete: false, stoppedBy: "RATE_LIMITED", retryAfterMs: result.retryAfterMs ?? 60_000 };
+        return { ok: false, code: result.code === "MISSING_CREDENTIALS" ? "MISSING_CREDENTIALS" : result.code === "INVALID_CONFIGURATION" ? "INVALID_CONFIGURATION" : result.code === "INVALID" ? "INVALID" : "HTTP_ERROR", error: result.error };
+      }
+      bars.push(...result.bars);
+      cursor = result.nextCursor;
+      if (cursor === null) return { ok: true, bars, pages: page, complete: true, stoppedBy: "DONE", retryAfterMs: null };
+    }
+    return { ok: true, bars, pages: maxPages, complete: false, stoppedBy: "PAGE_LIMIT", retryAfterMs: null };
+  }
 }

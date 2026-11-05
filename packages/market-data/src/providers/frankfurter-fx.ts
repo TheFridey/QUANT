@@ -1,9 +1,11 @@
-import { SEED_INSTRUMENTS, canPaperExecute, evaluateSession, type Instrument, type ProviderReadiness } from "@odin/shared";
+import { SEED_INSTRUMENTS, canPaperExecute, describeQuoteQuality, evaluateSession, type Instrument, type ProviderReadiness } from "@odin/shared";
 import type { MarketDataProvider, InstrumentQuote, OrderSpec, MarketSessionStatus } from "../market-provider.js";
 import type { ProviderResult } from "../provider.js";
 
 /**
  * Frankfurter (ECB reference rates) — free, no API key.
+ * A once-daily reference rate (about 16:00 CET on TARGET business days), never a live quote: it has no
+ * bid/ask and its quality descriptor says REFERENCE_RATE. dataState stays DELAYED as before.
  * Suitable for MARKET_DATA_PAPER FX marks (DELAYED). Not a broker; no execution.
  * Docs: https://www.frankfurter.app/docs/
  */
@@ -63,6 +65,14 @@ export class FrankfurterFxProvider implements MarketDataProvider {
           bid: null,
           ask: null,
           eventTime: body.date ? `${body.date}T16:00:00.000Z` : null,
+          // Descriptive only: a once-daily ECB reference rate, never a live quote. dataState is unchanged.
+          quality: describeQuoteQuality({
+            source: "frankfurter_fx",
+            feed: "ECB_REFERENCE",
+            now: at,
+            eventTime: body.date ? `${body.date}T16:00:00.000Z` : null,
+            notes: [`reference date ${body.date ?? "unknown"}; no bid/ask`],
+          }),
         });
       } catch (error) {
         quotes.push(

@@ -154,7 +154,8 @@ describe("AlpacaBarsSource", () => {
     expect(r.requestDescription).not.toContain("s3cret");
     expect(headers["APCA-API-SECRET-KEY"]).toBe("s3cret");
     expect(r.nextCursor).toBe("abc");
-    expect(r.bars[0]!.extra).toEqual({ trades: 3, vwap: 1.2 });
+    // HORIZON: the feed is recorded on every bar (daily bars carry no New York session phase).
+    expect(r.bars[0]!.extra).toEqual({ trades: 3, vwap: 1.2, feed: "iex" });
   });
 });
 
