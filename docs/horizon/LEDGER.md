@@ -2,6 +2,38 @@
 
 Operation HORIZON (multi-asset expansion). Evidence labels as in [`docs/genesis/EXECUTION_LEDGER.md`](../genesis/EXECUTION_LEDGER.md). Diagnosis: [`DIAGNOSIS.md`](DIAGNOSIS.md). Nothing here enables new trading.
 
+## Checkpoint 3: 6 Nov 2026 (OANDA connected; gold and FX history; first gold/FX studies)
+
+Operator created an OANDA fxTrade Practice account and set `OANDA_API_TOKEN`, `OANDA_ACCOUNT_ID`, `OANDA_API_URL` in the production `.env` (file `quant:quant 600`; values never read or printed by Claude). The first probe reported `AUTH_FAILED`: OANDA briefly answered `/instruments` with 401 "Insufficient authorization" for a newly issued token; minutes later every call returned 200 (no code change). OANDA's practice API also returned occasional Cloudflare 504s.
+
+Account availability (`/v3/accounts/{id}/instruments`, 392 instruments): **XAU_USD, EUR_USD, GBP_USD, USD_JPY, WTICO_USD, XAG_USD available.** Production probe ~10:45 UTC: all five registry markets REAL_TIME / DEALER_INDICATIVE, two-sided, tradeable on the account; spreads XAU 1.2 bps, EUR/USD 0.7, GBP/USD 1.0, USD/JPY 1.0, WTI 3.3. Still `NOT_WIRED_INTO_PAPER_PIPELINE` and `RISK_ADMISSION_NEEDS_PCR2`.
+
+Warehouse backfill (`oanda_practice`, read-only to OANDA, append-only to the warehouse; 0 rejected, 0 revisions):
+
+| Instrument | Cohort | 1h (2024-11-01 → 2026-11-06) | 1d (2016-11-01 → 2026-11-05) |
+| --- | --- | --- | --- |
+| EUR_USD | MAJOR_FX | 12,513 | 3,125 |
+| GBP_USD | MAJOR_FX | 12,513 | 3,125 |
+| USD_JPY | MAJOR_FX | 12,513 | 3,125 |
+| XAU_USD | PRECIOUS_METAL | 11,904 | 3,112 |
+
+The 1d datasets use UTC alignment and are superseded for research by the `oanda_practice_ny17` source in [#65](https://github.com/TheFridey/QUANT/pull/65) (re-backfill after deploy; existing rows unchanged).
+
+Real data exposed three research defects, fixed in [#65](https://github.com/TheFridey/QUANT/pull/65) (CI green): the `FX_24_5` calendar's fixed 22:00 UTC roll (real roll is 17:00 New York, 21:00 UTC in summer), UTC-aligned daily candles (Sunday stub bar), and ML features all null on OANDA data (no traded volume extended the warm-up to the whole series; regime coverage counted weekends as gaps).
+
+### Hourly gold and FX studies (`HISTORICAL_VERIFIED` as runs; no edge)
+
+`horizon-cli` at `19d938d` (#65) on CSV exports of the 1h datasets; seed 1; prior trials 2,700; programme trials reached ~2,900; holdout never consumed. Each run ~31–33 s, ≤ 357 MB RSS.
+
+| Market | Strategy families | ML 2.0 (8-bar horizon) | Overall |
+| --- | --- | --- | --- |
+| EUR/USD | 5 REJECTED_OVERFIT (DSR ≈ 0 or PBO 0.58–0.98); MTF trend REJECTED_COSTS (OOS gross +1.53% → net −0.05%) | NO_SKILL (AUC 0.526, lower 0.491) | NO_SKILL |
+| GBP/USD | 4 REJECTED_OVERFIT; ATR breakout REJECTED_COSTS (gross +1.01% → net −0.25%); MTF trend INSUFFICIENT_EVIDENCE | NO_SKILL (AUC 0.528, lower 0.497) | NO_SKILL |
+| USD/JPY | 6 REJECTED_OVERFIT (best DSR 0.273) | NO_SKILL (AUC 0.529, lower 0.494) | NO_SKILL |
+| XAU/USD | 5 REJECTED_OVERFIT; vol mean reversion INSUFFICIENT_EVIDENCE | NO_SKILL (AUC 0.471, lower 0.435) | NO_SKILL |
+
+No gold or FX strategy is a candidate. Two families showed positive gross returns that costs removed; that is the expected failure mode for short-horizon FX at retail spreads.
+
 ## Checkpoint 2: 6 Nov 2026, ~10:10 UTC (`5fe4484` deployed)
 
 Operator: "Merge and deploy". Merged #60 (`999a6ea`), #62 (`0a5559a`), #61 (`aa46037`), #63 (`5fe4484`); no conflicts; main CI green on `5fe4484`.
