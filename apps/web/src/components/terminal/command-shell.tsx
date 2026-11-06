@@ -22,6 +22,7 @@ import {
 } from "@/components/terminal/sections/genesis-panels";
 import { HistorySection } from "@/components/terminal/sections/history-section";
 import { LogsSection } from "@/components/terminal/sections/logs-section";
+import { OpportunityScannerSection } from "@/components/terminal/sections/opportunity-scanner";
 import { OverviewSection } from "@/components/terminal/sections/overview-section";
 import { PerformanceSection } from "@/components/terminal/sections/performance-section";
 import { PortfolioSection } from "@/components/terminal/sections/portfolio-section";
@@ -127,7 +128,12 @@ function renderSection(section: TerminalSection) {
     case "overview":
       return <OverviewSection />;
     case "radar":
-      return <RadarSection />;
+      return (
+        <div className="space-y-3">
+          <OpportunityScannerSection />
+          <RadarSection />
+        </div>
+      );
     case "agents":
       return <AgentsSection />;
     case "markets":

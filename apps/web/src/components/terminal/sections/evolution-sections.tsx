@@ -2,7 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState, Panel } from "@/components/terminal/panel";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  assetClassLabel,
+  blockingReason,
+  groupByAssetClass,
+  stateClass,
+  useOpportunities,
+} from "@/components/terminal/sections/opportunity-scanner";
 import { api } from "@/lib/api";
 
 type MarketRow = {
@@ -24,6 +32,7 @@ type MarketRow = {
 export function MarketSelectorSection() {
   const [markets, setMarkets] = useState<MarketRow[]>([]);
   const [message, setMessage] = useState<string | null>(null);
+  const scanner = useOpportunities();
 
   const load = useCallback(async () => {
     const data = await api<{ instruments: MarketRow[] }>("/evolution/markets");
@@ -44,6 +53,7 @@ export function MarketSelectorSection() {
         body: JSON.stringify({ instrumentId, enabled }),
       });
       await load();
+      await scanner.reload();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Toggle failed");
     }
@@ -51,41 +61,65 @@ export function MarketSelectorSection() {
 
   return (
     <div className="space-y-3 animate-odin-fade">
-      <Panel title="Market Selector" extra="Solana paper + equity indices (research-only)">
+      <Panel title="Market Selector" extra="Enabling a market does not make it tradable: see its readiness state">
         {markets.length === 0 ? (
           <EmptyState title="No instruments" detail={message ?? "Registry empty or API unavailable"} />
         ) : (
-          <ul className="divide-y divide-border">
-            {markets.map((market) => (
-              <li key={market.id} className="flex flex-wrap items-start justify-between gap-3 px-3 py-3">
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium">
-                    {market.symbol}{" "}
-                    <span className="text-xs text-muted">{market.displayName}</span>
-                  </div>
-                  <div className="mt-1 text-[11px] text-muted">
-                    {market.assetClass} · {market.venue} · {market.executionCapabilities.join(", ")}
-                  </div>
-                  {market.quote ? (
-                    <div className="mt-1 mono text-[11px]">
-                      level={market.quote.level ?? "null"} · {market.quote.dataState} · {market.quote.provenance}
-                    </div>
-                  ) : null}
-                  {market.notes ? <p className="mt-1 text-[11px] text-muted">{market.notes}</p> : null}
-                </div>
-                <Button
-                  size="xs"
-                  variant={market.enabled ? "default" : "outline"}
-                  onClick={() => void toggle(market.id, !market.enabled)}
-                >
-                  {market.enabled ? "Enabled" : "Disabled"}
-                </Button>
-              </li>
+          <div className="divide-y divide-border">
+            {groupByAssetClass(markets).map(([assetClass, group]) => (
+              <section key={assetClass} aria-labelledby={`selector-${assetClass}`}>
+                <h3 id={`selector-${assetClass}`} className="px-3 pt-3 text-[10px] uppercase tracking-[0.14em] text-muted">
+                  {assetClassLabel(assetClass)}
+                </h3>
+                <ul className="divide-y divide-border">
+                  {group.map((market) => {
+                    const scanned = scanner.data?.markets.find((row) => row.id === market.id);
+                    const reason = scanned ? blockingReason(scanned) : null;
+                    return (
+                      <li key={market.id} className="flex flex-wrap items-start justify-between gap-3 px-3 py-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium">
+                            {market.symbol}{" "}
+                            <span className="text-xs text-muted">{market.displayName}</span>
+                          </div>
+                          <div className="mt-1 text-[11px] text-muted">
+                            {market.assetClass} · {market.venue} · {market.executionCapabilities.join(", ")}
+                          </div>
+                          {market.quote ? (
+                            <div className="mt-1 mono text-[11px]">
+                              level={market.quote.level ?? "null"} · {market.quote.dataState} · {market.quote.provenance}
+                            </div>
+                          ) : null}
+                          {scanned ? (
+                            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+                              <Badge className={stateClass(scanned.readiness.state)}>{scanned.readiness.state}</Badge>
+                              {reason ? (
+                                <span className="text-muted">
+                                  <span className="mono">{reason.code}</span> — {reason.detail}
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {market.notes ? <p className="mt-1 text-[11px] text-muted">{market.notes}</p> : null}
+                        </div>
+                        <Button
+                          size="xs"
+                          variant={market.enabled ? "default" : "outline"}
+                          onClick={() => void toggle(market.id, !market.enabled)}
+                        >
+                          {market.enabled ? "Enabled" : "Disabled"}
+                        </Button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
             ))}
-          </ul>
+          </div>
         )}
       </Panel>
       {message ? <p className="text-xs text-loss">{message}</p> : null}
+      {scanner.error ? <p className="text-xs text-muted">Readiness unavailable: {scanner.error}</p> : null}
     </div>
   );
 }
