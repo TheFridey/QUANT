@@ -142,6 +142,49 @@ describe("OandaCandlesSource", () => {
     expect(bars.map((b) => b.availableAt)).toEqual([start + M5, start + 2 * M5, start + 3 * M5]);
   });
 
+  it("serves daily candles only as oanda_practice_ny17, on the 17:00 New York roll, as a distinct dataset", async () => {
+    const day = 86_400_000;
+    // Thu 6 Mar 2025 17:00 EST (22:00Z) and Sun 9 Mar 2025 17:00 EDT (21:00Z): across the US DST change.
+    const opens = ["2025-03-05T22:00:00.000000000Z", "2025-03-06T22:00:00.000000000Z", "2025-03-09T21:00:00.000000000Z", "2025-03-10T21:00:00.000000000Z"];
+    const payload = { instrument: "EUR_USD", granularity: "D", candles: opens.map((time) => ({ complete: true, volume: 90000, time, mid: { o: "1.08", h: "1.09", l: "1.07", c: "1.085" } })) };
+    let requested: URL | null = null;
+    const fetchImpl = (async (url: URL) => {
+      requested = url;
+      return jsonResponse(payload);
+    }) as unknown as typeof fetch;
+    const winStart = Date.parse("2025-03-01T00:00:00Z");
+    const winEnd = Date.parse("2025-03-12T00:00:00Z");
+
+    // The UTC-aligned default refuses 1d (its Sunday 00:00 UTC stub bar is not a trading day).
+    const utc = new OandaCandlesSource({ token: "t" }, { fetchImpl });
+    expect(utc.id).toBe("oanda_practice");
+    expect(await utc.fetchPage({ instrumentKey: "EUR_USD", interval: "1d", startMs: winStart, endMs: winEnd, cursor: null })).toMatchObject({ ok: false, code: "INVALID_CONFIGURATION" });
+
+    const ny = new OandaCandlesSource({ token: "t" }, { fetchImpl, dailyAlignment: "NEW_YORK_17" });
+    expect(ny.id).toBe("oanda_practice_ny17");
+    expect(ny.barAlignment("1d")).toBe("NEW_YORK_17");
+    expect(await ny.fetchPage({ instrumentKey: "EUR_USD", interval: "1h", startMs: winStart, endMs: winEnd, cursor: null })).toMatchObject({ ok: false, code: "INVALID_CONFIGURATION" });
+    const page = await ny.fetchPage({ instrumentKey: "EUR_USD", interval: "1d", startMs: winStart, endMs: winEnd, cursor: null });
+    expect(page.ok).toBe(true);
+    if (!page.ok) return;
+    expect(requested!.searchParams.get("granularity")).toBe("D");
+    expect(requested!.searchParams.get("dailyAlignment")).toBe("17");
+    expect(requested!.searchParams.get("alignmentTimezone")).toBe("America/New_York");
+    const norm = normaliseBars(page.bars, { intervalMs: day, collectedAt: winEnd, alignment: ny.barAlignment("1d") });
+    expect(norm.rejected).toEqual([]);
+    // availableAt is the true close: the next 17:00 New York roll, 24 h later (DST changes only at weekends).
+    expect(norm.bars.map((b) => [new Date(b.openTime).toISOString(), new Date(b.availableAt).toISOString()])).toEqual([
+      ["2025-03-05T22:00:00.000Z", "2025-03-06T22:00:00.000Z"],
+      ["2025-03-06T22:00:00.000Z", "2025-03-07T22:00:00.000Z"],
+      ["2025-03-09T21:00:00.000Z", "2025-03-10T21:00:00.000Z"],
+      ["2025-03-10T21:00:00.000Z", "2025-03-11T21:00:00.000Z"],
+    ]);
+    // A UTC-aligned stub bar is refused under the New York 17:00 alignment.
+    expect(normaliseBars([{ openTime: Date.parse("2016-11-06T00:00:00Z"), open: 1, high: 1, low: 1, close: 1, volume: null }], { intervalMs: day, collectedAt: winEnd, alignment: "NEW_YORK_17" }).rejected).toEqual([{ openTime: Date.parse("2016-11-06T00:00:00Z"), reason: "MISALIGNED" }]);
+    expect(alignmentFor("oanda_practice_ny17", "1d")).toBe("NEW_YORK_17");
+    expect(gapSemanticsFor("oanda_practice_ny17", "1d")).toBe("EMPTY_INTERVALS_OMITTED");
+  });
+
   it("pages forward from the last candle when a page is full", async () => {
     const full = { candles: Array.from({ length: 5000 }, (_, i) => ({ complete: true, volume: 1, time: new Date(start + i * M5).toISOString(), mid: { o: "1", h: "1", l: "1", c: "1" } })) };
     const source = new OandaCandlesSource({ token: "t" }, { fetchImpl: (async () => jsonResponse(full)) as unknown as typeof fetch });

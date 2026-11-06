@@ -87,6 +87,20 @@ node scripts/verify-external-providers.mjs --provider alpaca_paper
 node scripts/verify-external-providers.mjs --provider oanda_practice
 ```
 
+## OANDA daily candles: re-backfill on the 17:00 New York roll (HORIZON)
+
+Daily FX/metals datasets stored under source `oanda_practice` were requested with UTC daily alignment. They include a Sunday 00:00 UTC stub bar, and the FX_24_5 research calendar refuses them (`MISALIGNED`). Leave those rows untouched. Back-fill a new dataset under source `oanda_practice_ny17` instead. It requests `dailyAlignment=17` and `alignmentTimezone=America/New_York`: each bar opens at 17:00 New York (21:00Z in US summer, 22:00Z in winter) and becomes available at its true close, 24 h later. The warehouse keys datasets by (source, instrument, interval), so the new dataset is distinct and identifiable by its `sourceId`. `oanda_practice` now refuses `1d`, so the two alignments cannot mix. Intraday intervals stay on `oanda_practice`.
+
+```bash
+# On the worker host, from apps/worker; read-only against OANDA; resumable by re-running.
+for i in EUR_USD GBP_USD USD_JPY XAU_USD; do
+  node dist/src/history/backfill-cli.js oanda_practice_ny17 "$i" 1d MAJOR_FX 2016-11-01T00:00:00Z 2026-11-01T00:00:00Z 50
+done
+# Then point horizon-cli at the new datasetId (sourceId = oanda_practice_ny17).
+```
+
+Use a cohort that fits the instrument (for example XAU_USD is stored as `COMMODITY`). The old `oanda_practice` 1d datasets can be deleted later, by explicit operator decision only.
+
 ## Restore / backup
 
 Do not delete ambiguous paper history. Production backups are custom-format dumps written by the VPS

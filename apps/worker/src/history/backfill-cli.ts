@@ -1,19 +1,20 @@
 import "../load-env.js";
-import { AlpacaBarsSource, GeckoTerminalPoolSource, OandaCandlesSource, runBackfill, type HistoricalBarSource, type HistoryInterval } from "@odin/market-data";
+import { AlpacaBarsSource, GeckoTerminalPoolSource, OANDA_NY17_SOURCE_ID, OandaCandlesSource, runBackfill, type HistoricalBarSource, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
 import { ensureBackfillJob, PrismaBackfillStore } from "./prisma-backfill-store.js";
 
 /**
  * ASCEND-01 bounded backfill, run by hand (or a timer) outside the trading loop:
  *
- *   node dist/src/history/backfill-cli.js <geckoterminal|alpaca_iex|alpaca_delayed_sip|oanda_practice> <instrumentKey> <interval> <cohort> <startISO> <endISO> [maxRequests]
+ *   node dist/src/history/backfill-cli.js <geckoterminal|alpaca_iex|alpaca_delayed_sip|oanda_practice|oanda_practice_ny17> <instrumentKey> <interval> <cohort> <startISO> <endISO> [maxRequests]
  *
  * Re-running the same arguments resumes the open job from its checkpoint. Read-only against providers.
+ * OANDA daily candles: use `oanda_practice_ny17 <instrument> 1d` (17:00 New York roll); `oanda_practice` refuses 1d.
  */
 async function main() {
   const [sourceId, instrumentKey, interval, cohort, start, end, maxRequestsText] = process.argv.slice(2);
   if (!sourceId || !instrumentKey || !interval || !cohort || !start || !end) {
-    console.error("usage: backfill-cli <geckoterminal|alpaca_iex|alpaca_delayed_sip|oanda_practice> <instrumentKey> <interval> <cohort> <startISO> <endISO> [maxRequests]");
+    console.error("usage: backfill-cli <geckoterminal|alpaca_iex|alpaca_delayed_sip|oanda_practice|oanda_practice_ny17> <instrumentKey> <interval> <cohort> <startISO> <endISO> [maxRequests]");
     process.exit(2);
   }
   let source: HistoricalBarSource;
@@ -27,9 +28,14 @@ async function main() {
       { feed: sourceId === "alpaca_iex" ? "iex" : "delayed_sip" },
     );
     instrumentKind = "EQUITY_ETF";
-  } else if (sourceId === "oanda_practice") {
+  } else if (sourceId === "oanda_practice" || sourceId === OANDA_NY17_SOURCE_ID) {
     // instrumentKey is an OANDA name (EUR_USD, USD_JPY, XAU_USD). Metals and CFDs are commodities, not FX.
-    source = new OandaCandlesSource({ token: process.env.OANDA_API_TOKEN?.trim(), apiUrl: process.env.OANDA_API_URL?.trim() || undefined });
+    // oanda_practice serves intraday intervals; oanda_practice_ny17 serves 1d on the 17:00 New York roll, as a
+    // separate dataset (the warehouse keys datasets by source, instrument and interval).
+    source = new OandaCandlesSource(
+      { token: process.env.OANDA_API_TOKEN?.trim(), apiUrl: process.env.OANDA_API_URL?.trim() || undefined },
+      { dailyAlignment: sourceId === OANDA_NY17_SOURCE_ID ? "NEW_YORK_17" : "UTC" },
+    );
     instrumentKind = /^(XAU|XAG|XPT|XPD|WTICO|BCO)_/.test(instrumentKey) ? "COMMODITY" : "FX_PAIR";
   } else {
     throw new Error(`unknown source ${sourceId}`);

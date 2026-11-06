@@ -673,8 +673,10 @@ export class OandaPracticeMarketData {
   }
 
   /**
-   * Candles for one instrument. `price` BA records bid and ask; MBA adds mid. Candles are requested on a
-   * UTC daily alignment so D and H4 candles sit on the warehouse's UTC grid. At most 5000 per call.
+   * Candles for one instrument. `price` BA records bid and ask; MBA adds mid. By default candles are requested on
+   * a UTC daily alignment so D and H4 candles sit on the warehouse's UTC grid. `alignment: "NEW_YORK_17"` asks for
+   * the FX market convention instead (`dailyAlignment=17`, `alignmentTimezone=America/New_York`): D candles then
+   * open at the 17:00 New York roll and cover one real trading day. At most 5000 per call.
    */
   async candles(input: {
     instrument: string;
@@ -682,6 +684,7 @@ export class OandaPracticeMarketData {
     price?: "M" | "BA" | "MBA";
     fromMs: number;
     count?: number;
+    alignment?: "UTC" | "NEW_YORK_17";
   }): Promise<OandaResult<{ candles: OandaCandle[]; request: string; payload: unknown }>> {
     const pre = this.preflight(false);
     if (!pre.ok) return pre;
@@ -693,8 +696,9 @@ export class OandaPracticeMarketData {
     url.searchParams.set("price", input.price ?? "MBA");
     url.searchParams.set("from", new Date(input.fromMs).toISOString());
     url.searchParams.set("count", String(Math.min(Math.max(Math.trunc(input.count ?? 500), 1), 5000)));
-    url.searchParams.set("dailyAlignment", "0");
-    url.searchParams.set("alignmentTimezone", "UTC");
+    const ny17 = input.alignment === "NEW_YORK_17";
+    url.searchParams.set("dailyAlignment", ny17 ? "17" : "0");
+    url.searchParams.set("alignmentTimezone", ny17 ? "America/New_York" : "UTC");
     const res = await this.get(url);
     if (!res.ok) return res;
     const candles = parseOandaCandles(res.payload, input.granularity);

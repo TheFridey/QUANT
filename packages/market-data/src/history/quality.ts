@@ -1,6 +1,6 @@
 import { barHash, datasetVersionHash, type BarAlignment, type HistoricalBar } from "./integrity.js";
 import { calendarForInstrumentKind, expectedSlots, ExpectedSlotLimitExceeded, sessionOverlaps, type CalendarId } from "./calendar.js";
-import { INTERVAL_MS, type HistoryInterval } from "./sources.js";
+import { INTERVAL_MS, OANDA_NY17_SOURCE_ID, type HistoryInterval } from "./sources.js";
 
 /**
  * GENESIS Phase 3 dataset quality report for one ASCEND-01 warehouse dataset. Pure: the caller loads the
@@ -125,7 +125,7 @@ export function gapSemanticsFor(sourceId: string, interval: string): GapSemantic
   // Alpaca daily bars cover every session; intraday IEX bars are one venue and can have no prints.
   if (isAlpacaSource(sourceId)) return interval === "1d" ? "COMPLETE_SESSIONS" : "EMPTY_INTERVALS_OMITTED";
   // OANDA emits no candle for an interval without a price update.
-  if (sourceId === "oanda_practice") return "EMPTY_INTERVALS_OMITTED";
+  if (sourceId === "oanda_practice" || sourceId === OANDA_NY17_SOURCE_ID) return "EMPTY_INTERVALS_OMITTED";
   return "UNKNOWN";
 }
 
@@ -135,6 +135,7 @@ function isAlpacaSource(sourceId: string): boolean {
 
 /** Bar-open convention per source (mirrors HistoricalBarSource.barAlignment). */
 export function alignmentFor(sourceId: string, interval: string): BarAlignment {
+  if (sourceId === OANDA_NY17_SOURCE_ID && interval === "1d") return "NEW_YORK_17";
   return isAlpacaSource(sourceId) && interval === "1d" ? "NEW_YORK_DAY" : "UTC_GRID";
 }
 
@@ -164,8 +165,10 @@ function ohlcViolation(bar: QualityBar, intervalMs: number): OhlcViolationKind |
 
 function isAligned(openTime: number, intervalMs: number, alignment: BarAlignment): boolean {
   if (alignment === "UTC_GRID") return openTime % intervalMs === 0;
-  // NEW_YORK_DAY: midnight New York is 04:00Z or 05:00Z.
   const hour = (openTime % 86_400_000) / 3_600_000;
+  // NEW_YORK_17: the 17:00 New York FX roll is 21:00Z (EDT) or 22:00Z (EST).
+  if (alignment === "NEW_YORK_17") return intervalMs === 86_400_000 && (hour === 21 || hour === 22);
+  // NEW_YORK_DAY: midnight New York is 04:00Z or 05:00Z.
   return intervalMs === 86_400_000 && (hour === 4 || hour === 5);
 }
 

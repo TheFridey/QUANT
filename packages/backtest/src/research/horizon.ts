@@ -3,7 +3,7 @@ import { declaredGrids, HORIZON_STRATEGIES_VERSION, horizonStrategySpecs } from 
 import { costBpsPerSideAt, horizonBars, legacyThresholdDiagnostic, marketConfigHash, periodsPerYearFor, pipSizeFor, validationCostBpsPerSide, type MarketResearchConfig } from "./market-config.js";
 import { Ml2Refusal, runMlPipeline, type HoldoutGate, type LearnerConfig, type Ml2Config, type Ml2Verdict } from "./ml2.js";
 import { classifyRegimes, type RegimeState } from "./regime.js";
-import { regimeCalendarFor } from "./sessions.js";
+import { expectedBarCount, regimeCalendarFor } from "./sessions.js";
 import type { ResearchBar } from "./simulate.js";
 import { STRATEGY_LIBRARY, type ParamValue } from "./strategies.js";
 import { DEFAULT_VALIDATION, validateStrategy, type ValidationConfig, type Verdict } from "./validate.js";
@@ -111,7 +111,8 @@ const CONTROLS = { buyAndHold: find("control_buy_and_hold"), random: find("contr
 
 /** Causal regime lookup: classifyRegimes is a filtered (one-pass) history, so state t reads bars ≤ t only. */
 export function regimeLookup(bars: readonly ResearchBar[], barMs: number, market: MarketResearchConfig): (t: number) => RegimeState | undefined {
-  const states = classifyRegimes(bars, { barMs, calendar: regimeCalendarFor(market.calendar) });
+  const cal = market.calendar;
+  const states = classifyRegimes(bars, { barMs, calendar: regimeCalendarFor(cal), expectedBars: cal === "FX_24_5" ? (fromT, toT, ms) => expectedBarCount(fromT, toT, ms, cal) : undefined });
   const byT = new Map(states.map((s) => [s.t, s]));
   return (t) => byT.get(t);
 }

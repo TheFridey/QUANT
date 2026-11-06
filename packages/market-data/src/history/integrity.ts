@@ -45,14 +45,18 @@ export type NormaliseResult = {
 /**
  * How a source stamps bar opens. UTC_GRID: multiples of the interval in UTC (DEX candles, intraday bars).
  * NEW_YORK_DAY: daily equity bars open at 00:00 America/New_York, which is 04:00Z or 05:00Z by DST.
+ * NEW_YORK_17: daily FX/metals bars open at the 17:00 America/New_York roll, which is 21:00Z or 22:00Z by DST
+ * (OANDA `dailyAlignment=17`, `alignmentTimezone=America/New_York`). The roll changes offset only at weekends, so
+ * every such bar is exactly 24 h and `availableAt` = open + 1 day is its true close.
  */
-export type BarAlignment = "UTC_GRID" | "NEW_YORK_DAY";
+export type BarAlignment = "UTC_GRID" | "NEW_YORK_DAY" | "NEW_YORK_17";
 
 const NEW_YORK_TIME = new Intl.DateTimeFormat("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
 
 function isAligned(openTime: number, intervalMs: number, alignment: BarAlignment): boolean {
   if (!Number.isInteger(openTime)) return false;
   if (alignment === "UTC_GRID") return openTime % intervalMs === 0;
+  if (alignment === "NEW_YORK_17") return intervalMs === 86_400_000 && NEW_YORK_TIME.format(new Date(openTime)) === "17:00:00";
   return intervalMs === 86_400_000 && NEW_YORK_TIME.format(new Date(openTime)) === "00:00:00";
 }
 

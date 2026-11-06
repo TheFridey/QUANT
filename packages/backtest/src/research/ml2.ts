@@ -454,8 +454,10 @@ export function buildMl2Dataset(input: Ml2Input) {
     throw new Ml2Refusal(`${issues.length} bar integrity issue(s) under the ${calendar} calendar; first: ${issues.slice(0, 3).map((i) => `#${i.index} ${i.code} ${i.detail}`).join("; ")}${hint}`);
   }
   if (target === "TARGET_BEFORE_STOP" && (input.labelSpec.stopPct == null || input.labelSpec.targetPct == null)) throw new Ml2Refusal("TARGET_BEFORE_STOP needs both stopPct and targetPct");
-  const spec = input.featureSet ?? defaultFeatureSetSpec(barMs);
-  const builder = input.featureBuilder ?? ((b: readonly ResearchBar[]) => buildDefaultFeatureRows(b, { barMs, calendar: regimeCalendarFor(calendar) }));
+  // A source that reports no volume at all (OANDA FX/metals: tick volume is not traded volume) cannot feed the volume
+  // features; the default set then omits them (a distinct, hashed spec) instead of dropping every row.
+  const spec = input.featureSet ?? defaultFeatureSetSpec(barMs, { volume: bars.some((b) => b.volume !== null) });
+  const builder = input.featureBuilder ?? ((b: readonly ResearchBar[]) => buildDefaultFeatureRows(b, { barMs, calendar: regimeCalendarFor(calendar), sessionCalendar: calendar }));
   // A row reading bars[0..i] is available no earlier than the latest availability among those bars.
   const latestAvailable: number[] = [];
   if (input.barAvailableAt) {
@@ -492,14 +494,17 @@ export function buildMl2Dataset(input: Ml2Input) {
     labelled.push({ index: fr.index, endIndex: l.endIndex, t: bars[fr.index]!.t, x: spec.features.map((f) => fr.values[f] ?? Number.NaN).map((v) => (v === null || !Number.isFinite(v) ? Number.NaN : v)), y: yv, gross: l.grossReturn });
   }
   labelled.sort((a, b) => a.index - b.index);
-  // Warm-up: rows before every feature has been observed at least once are structural, not missing data.
+  // Warm-up: rows before every feature has been observed at least once are structural, not missing data. A feature
+  // that is never observed does not extend the warm-up (it used to consume every row, so all features reported 100%
+  // missing); it is reported on its own as 100% missing and fails coverage.
+  const everSeen = spec.features.map((_, j) => labelled.some((r) => Number.isFinite(r.x[j]!)));
   const seen = spec.features.map(() => false);
   let warm = 0;
   for (; warm < labelled.length; warm += 1) {
     labelled[warm]!.x.forEach((v, j) => {
       if (Number.isFinite(v)) seen[j] = true;
     });
-    if (seen.every(Boolean)) break;
+    if (seen.every((s, j) => s || !everSeen[j])) break;
   }
   const post = labelled.slice(warm);
   const coverage = spec.features.map((feature, j) => {

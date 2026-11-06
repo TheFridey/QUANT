@@ -67,11 +67,21 @@ describe("GENESIS calendars", () => {
     expect(slots.unknownYears).toEqual([2027]);
   });
 
-  it("FX is closed Friday 22:00 UTC to Sunday 22:00 UTC", () => {
-    expect(sessionOverlaps("FX_24_5", Date.UTC(2026, 9, 30, 21), Date.UTC(2026, 9, 30, 22))).toBe(true); // Fri 21:00
-    expect(sessionOverlaps("FX_24_5", Date.UTC(2026, 9, 30, 22), Date.UTC(2026, 9, 30, 23))).toBe(false); // Fri 22:00
-    expect(sessionOverlaps("FX_24_5", Date.UTC(2026, 10, 1, 21), Date.UTC(2026, 10, 1, 22))).toBe(false); // Sun 21:00
-    expect(sessionOverlaps("FX_24_5", Date.UTC(2026, 10, 1, 22), Date.UTC(2026, 10, 1, 23))).toBe(true); // Sun 22:00
+  it("FX is closed Friday 17:00 to Sunday 17:00 New York (DST-aware)", () => {
+    // Fri 30 Oct 2026 is still EDT: the close is 21:00Z. US DST ends Sun 1 Nov 2026 02:00, so that Sunday opens 22:00Z.
+    expect(sessionOverlaps("FX_24_5", Date.UTC(2026, 9, 30, 20), Date.UTC(2026, 9, 30, 21))).toBe(true); // Fri 16:00 EDT
+    expect(sessionOverlaps("FX_24_5", Date.UTC(2026, 9, 30, 21), Date.UTC(2026, 9, 30, 22))).toBe(false); // Fri 17:00 EDT
+    expect(sessionOverlaps("FX_24_5", Date.UTC(2026, 10, 1, 21), Date.UTC(2026, 10, 1, 22))).toBe(false); // Sun 16:00 EST
+    expect(sessionOverlaps("FX_24_5", Date.UTC(2026, 10, 1, 22), Date.UTC(2026, 10, 1, 23))).toBe(true); // Sun 17:00 EST
+    // Summer: Sun 8 Mar 2026 is the first EDT Sunday; the market opens 21:00Z.
+    expect(sessionOverlaps("FX_24_5", Date.UTC(2026, 2, 8, 21), Date.UTC(2026, 2, 8, 22))).toBe(true);
+    expect(sessionOverlaps("FX_24_5", Date.UTC(2026, 2, 8, 20), Date.UTC(2026, 2, 8, 21))).toBe(false);
+    // New York 17:00 daily slots: Sun..Thu opens, one per trading day, 21:00Z in summer and 22:00Z in winter.
+    const days = expectedSlots({ calendar: "FX_24_5", intervalMs: 24 * H, alignment: "NEW_YORK_17", fromOpenTime: Date.UTC(2026, 9, 25), toOpenTime: Date.UTC(2026, 10, 7) });
+    expect(days.openTimes.map((t) => new Date(t).toISOString())).toEqual([
+      "2026-10-25T21:00:00.000Z", "2026-10-26T21:00:00.000Z", "2026-10-27T21:00:00.000Z", "2026-10-28T21:00:00.000Z", "2026-10-29T21:00:00.000Z",
+      "2026-11-01T22:00:00.000Z", "2026-11-02T22:00:00.000Z", "2026-11-03T22:00:00.000Z", "2026-11-04T22:00:00.000Z", "2026-11-05T22:00:00.000Z",
+    ]);
     const week = expectedSlots({ calendar: "FX_24_5", intervalMs: H, alignment: "UTC_GRID", fromOpenTime: Date.UTC(2026, 10, 1), toOpenTime: Date.UTC(2026, 10, 8) - H });
     expect(week.openTimes).toHaveLength(120); // 5 × 24 h trading week
   });

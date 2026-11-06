@@ -151,8 +151,10 @@ const sign = (s: TrendState) => (s === "STRONG_UP" || s === "WEAK_UP" ? 1 : s ==
 /**
  * Filtered regime history for every bar. `benchmark`, when given, must be bars of a broader-market series; a
  * benchmark bar is used only once its close (t + its interval) is at or before the decision bar's close.
+ * `expectedBars`, when given, replaces the calendar's expected-bar count for coverage (e.g. a session calendar that
+ * skips the FX weekend, so a Monday trend window is not counted as 40% missing). It reads bar times only.
  */
-export function classifyRegimes(bars: readonly ResearchBar[], options: { config?: RegimeConfig; barMs?: number; benchmark?: readonly ResearchBar[]; calendar?: MarketCalendar; benchmarkCalendar?: MarketCalendar } = {}): RegimeState[] {
+export function classifyRegimes(bars: readonly ResearchBar[], options: { config?: RegimeConfig; barMs?: number; benchmark?: readonly ResearchBar[]; calendar?: MarketCalendar; benchmarkCalendar?: MarketCalendar; expectedBars?: (fromT: number, toT: number, barMs: number) => number } = {}): RegimeState[] {
   const barMs = options.barMs ?? inferBarMs(bars);
   const cfg = options.config ?? regimeConfigFor(barMs);
   const out: RegimeState[] = [];
@@ -176,7 +178,7 @@ export function classifyRegimes(bars: readonly ResearchBar[], options: { config?
     const bar = bars[i]!;
     const explanation: string[] = [];
     const from = Math.max(0, i + 1 - cfg.trendWindow);
-    const expected = expectedBars(bars[from]!.t, bar.t, barMs, calendar);
+    const expected = options.expectedBars ? options.expectedBars(bars[from]!.t, bar.t, barMs) : expectedBars(bars[from]!.t, bar.t, barMs, calendar);
     const coverage = Math.min(1, (i - from + 1) / expected);
     const enough = i + 1 >= cfg.trendWindow && coverage >= cfg.minCoverage;
 

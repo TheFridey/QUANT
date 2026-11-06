@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { stdev } from "../stats.js";
 import { computeFeatures, FEATURE_DEFINITIONS, horizonsFor, type FeatureDefinition, type FeatureRow } from "./features.js";
 import { classifyRegimes, inferBarMs, type MarketCalendar } from "./regime.js";
-import { sessionAlignmentIssue, type SessionCalendar } from "./sessions.js";
+import { expectedBarCount, sessionAlignmentIssue, type SessionCalendar } from "./sessions.js";
 import type { ResearchBar } from "./simulate.js";
 
 /**
@@ -47,12 +47,15 @@ export type FeatureSetSpec = {
 const ALL_DEFINITIONS = new Map<string, FeatureDefinition>([...FEATURE_DEFINITIONS, ...EXTRA_FEATURE_DEFINITIONS].map((d) => [d.name, d]));
 
 /** Default spec: every base and extra feature that applies to the interval (hour features are dropped for daily bars). */
-export function defaultFeatureSetSpec(barMs: number): FeatureSetSpec {
+export function defaultFeatureSetSpec(barMs: number, options: { volume?: boolean } = {}): FeatureSetSpec {
   const daily = barMs >= 86_400_000;
+  // `volume: false` (a source with no traded volume) drops the features whose only input is volume.
+  const noVolume = options.volume === false;
+  const keep = (name: string) => !(noVolume && ALL_DEFINITIONS.get(name)?.inputs.includes("volume"));
   return {
-    name: daily ? "genesis-ohlcv-daily" : "genesis-ohlcv-intraday",
+    name: `${daily ? "genesis-ohlcv-daily" : "genesis-ohlcv-intraday"}${noVolume ? "-novolume" : ""}`,
     version: "2.0.0",
-    features: [...FEATURE_DEFINITIONS.map((d) => d.name).filter((n) => !(daily && n.startsWith("hour_"))), ...EXTRA_FEATURE_NAMES],
+    features: [...FEATURE_DEFINITIONS.map((d) => d.name).filter((n) => !(daily && n.startsWith("hour_"))), ...EXTRA_FEATURE_NAMES].filter(keep),
     nullPolicy: "DROP_ROW",
     maxMissingShare: 0.05,
   };
@@ -115,9 +118,12 @@ export function computeExtraFeatures(bars: readonly ResearchBar[], options: { ba
 }
 
 /** Base point-in-time features (ASCEND-05) merged with the extra OHLCV features; every value available at the bar close. */
-export function buildDefaultFeatureRows(bars: readonly ResearchBar[], options: { barMs?: number; calendar?: MarketCalendar } = {}): CausalFeatureRow[] {
+export function buildDefaultFeatureRows(bars: readonly ResearchBar[], options: { barMs?: number; calendar?: MarketCalendar; sessionCalendar?: SessionCalendar } = {}): CausalFeatureRow[] {
   const barMs = options.barMs ?? inferBarMs(bars);
-  const base = computeFeatures(bars, classifyRegimes(bars, { barMs, calendar: options.calendar }), { barMs });
+  // FX/metals: regime coverage is counted on the session grid, so the weekend closure is not "missing" bars.
+  const sc = options.sessionCalendar;
+  const expected = sc === "FX_24_5" ? (fromT: number, toT: number, ms: number) => expectedBarCount(fromT, toT, ms, sc) : undefined;
+  const base = computeFeatures(bars, classifyRegimes(bars, { barMs, calendar: options.calendar, expectedBars: expected }), { barMs });
   const extra = computeExtraFeatures(bars, { barMs });
   return base.map((row, i) => ({ ...row, values: { ...row.values, ...extra[i]! } }));
 }
