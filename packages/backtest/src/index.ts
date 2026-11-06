@@ -24,3 +24,6 @@ export * from "./research/ml2-learners.js";
 export * from "./research/ml2-eval.js";
 export * from "./research/ml2.js";
 export * from "./research/sessions.js";
+export * from "./research/market-config.js";
+export * from "./research/horizon-strategies.js";
+export * from "./research/horizon.js";
