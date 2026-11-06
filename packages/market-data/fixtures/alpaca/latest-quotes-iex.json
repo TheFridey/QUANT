@@ -1,0 +1,7 @@
+{
+  "_comment": "Sanitised fixture modelled on the documented Alpaca GET /v2/stocks/quotes/latest?symbols=SPY,QQQ&feed=iex response. NOT recorded from a live call.",
+  "quotes": {
+    "SPY": { "ap": 512.13, "as": 3, "ax": "V", "bp": 512.1, "bs": 2, "bx": "V", "c": ["R"], "t": "2026-11-04T14:59:58.500123456Z", "z": "B" },
+    "QQQ": { "ap": 0, "as": 0, "ax": "V", "bp": 441.2, "bs": 1, "bx": "V", "c": ["R"], "t": "2026-11-04T14:59:50.000000000Z", "z": "C" }
+  }
+}

@@ -23,3 +23,6 @@ export * from "./evolution.js";
 export * from "./runtime-contracts.js";
 export * from "./intent-identity.js";
 export * from "./metrics.js";
+export * from "./quote-quality.js";
+export * from "./fx-conversion.js";
+export * from "./precision.js";

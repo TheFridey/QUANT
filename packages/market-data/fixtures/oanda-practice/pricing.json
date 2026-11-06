@@ -1,0 +1,39 @@
+{
+  "_comment": "Sanitised fixture modelled on the documented OANDA v20 GET /v3/accounts/{id}/pricing response (nanosecond RFC 3339 times). NOT recorded from a live account.",
+  "time": "2026-11-04T15:00:00.000000000Z",
+  "prices": [
+    {
+      "type": "PRICE",
+      "instrument": "EUR_USD",
+      "time": "2026-11-04T14:59:58.912345678Z",
+      "bids": [{ "price": "1.08201", "liquidity": 1000000 }, { "price": "1.08200", "liquidity": 2000000 }],
+      "asks": [{ "price": "1.08215", "liquidity": 1000000 }],
+      "closeoutBid": "1.08196",
+      "closeoutAsk": "1.08220",
+      "status": "tradeable",
+      "tradeable": true
+    },
+    {
+      "type": "PRICE",
+      "instrument": "USD_JPY",
+      "time": "2026-11-04T14:59:59.500000000Z",
+      "bids": [{ "price": "151.482", "liquidity": 1000000 }],
+      "asks": [{ "price": "151.494", "liquidity": 1000000 }],
+      "closeoutBid": "151.476",
+      "closeoutAsk": "151.500",
+      "status": "tradeable",
+      "tradeable": true
+    },
+    {
+      "type": "PRICE",
+      "instrument": "GBP_USD",
+      "time": "2026-10-30T20:59:59.000000000Z",
+      "bids": [{ "price": "1.29010", "liquidity": 1000000 }],
+      "asks": [],
+      "closeoutBid": "1.29000",
+      "closeoutAsk": "1.29040",
+      "status": "non-tradeable",
+      "tradeable": false
+    }
+  ]
+}

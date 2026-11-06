@@ -1,5 +1,5 @@
 import type { DataState } from "@odin/shared";
-import type { Instrument, MarketProviderId } from "@odin/shared";
+import type { Instrument, MarketProviderId, QuoteQuality } from "@odin/shared";
 import type { ProviderResult } from "./provider.js";
 
 export type MarketSessionStatus = "OPEN" | "CLOSED" | "UNKNOWN";
@@ -23,6 +23,11 @@ export type InstrumentQuote = {
   ask?: string | null;
   /** Exchange/event time when distinct from receive time. */
   eventTime?: string | null;
+  /**
+   * HORIZON: descriptive quote quality (feed, coverage, timeliness, age). Additive only: risk admission
+   * reads `dataState`, never this field, and nothing derives `dataState` from it.
+   */
+  quality?: QuoteQuality;
 };
 
 export type OrderSpec = {

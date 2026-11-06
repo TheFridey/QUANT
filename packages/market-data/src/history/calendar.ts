@@ -162,6 +162,23 @@ export function nyseSession(date: string): { open: number; close: number; early:
   return { open: newYorkWallToUtc(date, NYSE_OPEN_MINUTE), close: newYorkWallToUtc(date, early ? NYSE_EARLY_CLOSE_MINUTE : NYSE_CLOSE_MINUTE), early };
 }
 
+export type NysePhase = "PRE" | "RTH" | "POST" | "CLOSED";
+
+/**
+ * Phase of the US equity day at `ms`: PRE (04:00 to the open), RTH (regular session), POST (close to 20:00),
+ * or CLOSED (overnight, weekends, full closures). Early-close days end RTH at 13:00. Used to tag intraday
+ * ETF bars so research can keep or drop extended-hours bars explicitly.
+ */
+export function nyseSessionPhase(ms: number): NysePhase {
+  const date = newYorkDate(ms);
+  const session = nyseSession(date);
+  if (!session) return "CLOSED";
+  if (ms >= session.open && ms < session.close) return "RTH";
+  if (ms >= newYorkWallToUtc(date, 4 * 60) && ms < session.open) return "PRE";
+  if (ms >= session.close && ms < newYorkWallToUtc(date, 20 * 60)) return "POST";
+  return "CLOSED";
+}
+
 function fxClosedAt(ms: number): boolean {
   const d = new Date(ms);
   const minute = d.getUTCHours() * 60 + d.getUTCMinutes();
