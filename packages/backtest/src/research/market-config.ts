@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { fxSessionState, isUsEquitySessionDate, nyLocalParts, type SessionCalendar } from "./sessions.js";
+import { fxSessionState, isUsEquitySessionDate, nyHourAndWeekday, nyLocalParts, type SessionCalendar } from "./sessions.js";
 import type { ResearchBar } from "./simulate.js";
 
 /**
@@ -14,7 +14,8 @@ import type { ResearchBar } from "./simulate.js";
  * a USD/JPY pip (0.01) and a EUR/USD pip (0.0001) are both handled correctly.
  */
 
-export const MARKET_CONFIG_VERSION = "horizon-market-1.0.0";
+/** 1.1.0: FX/metals roll, maintenance hour and spread-widening windows follow 17:00 New York (DST-aware). */
+export const MARKET_CONFIG_VERSION = "horizon-market-1.1.0";
 
 export type MarketId = "CRYPTO" | "GOLD" | "FX" | "ETF";
 
@@ -68,7 +69,10 @@ export type MarketResearchConfig = {
 
 const NO_WIDENING = { sessionOpen: 1, sessionClose: 1, rollover: 1, maintenanceOrHoliday: 1, outsideRegularHours: 1 };
 
-const COMMON_SAMPLE = { minBarsIntraday: 1500, minBarsDaily: 500, minOosTrades: 30, minMlEffectiveTestLabels: 100, minMlEffectiveSignals: 30 };
+const FX_ROLL_WIDENING = "Half-spread ×3 in the first two hours after the Sunday 17:00 New York open and in the hours either side of the 17:00 New York roll (16:00-17:00 and 18:00-19:00 New York); ×2 in the two hours before the Friday 17:00 New York close; ×5 in the maintenance hour or on a holiday";
+const FX_ROLL_CLOCK = "Trading days roll at 17:00 New York (21:00 UTC in US summer, 22:00 UTC in winter); 17:00-18:00 New York is the maintenance hour";
+
+const COMMON_SAMPLE ={ minBarsIntraday: 1500, minBarsDaily: 500, minOosTrades: 30, minMlEffectiveTestLabels: 100, minMlEffectiveSignals: 30 };
 
 export const MARKET_CONFIGS: Record<MarketId, MarketResearchConfig> = {
   CRYPTO: {
@@ -113,8 +117,8 @@ export const MARKET_CONFIGS: Record<MarketId, MarketResearchConfig> = {
       validationQuantile: 0.9,
       assumptions: [
         "Spread-only retail CFD/spot account: no commission; 35-pip (US$0.35) quoted spread, 5-pip slippage per side; pip = 0.01",
-        "Half-spread ×3 in the first two hours after the Sunday open and in the hours either side of the 22:00 UTC roll; ×2 in the two hours before the Friday close; ×5 in the maintenance hour or on a holiday",
-        "Fixed 22:00 UTC roll all year (true roll is 17:00 New York; one hour early in summer)",
+        FX_ROLL_WIDENING,
+        FX_ROLL_CLOCK,
       ],
     },
     tradingHoursPerDay: 23,
@@ -141,8 +145,8 @@ export const MARKET_CONFIGS: Record<MarketId, MarketResearchConfig> = {
       assumptions: [
         "Spread-only retail account: no commission; 1.2-pip quoted spread, 0.2-pip slippage per side",
         "Pip = 0.0001, except JPY-quoted pairs where pip = 0.01; converted to bps at the bar's price",
-        "Half-spread ×3 in the first two hours after the Sunday open and in the hours either side of the 22:00 UTC roll; ×2 in the two hours before the Friday close; ×5 in the maintenance hour or on a holiday",
-        "Fixed 22:00 UTC roll all year (true roll is 17:00 New York; one hour early in summer)",
+        FX_ROLL_WIDENING,
+        FX_ROLL_CLOCK,
       ],
     },
     tradingHoursPerDay: 23,
@@ -224,13 +228,12 @@ export function costWindowAt(cfg: MarketResearchConfig, t: number, barMs: number
   if (cfg.calendar === "FX_24_5") {
     const state = fxSessionState(t);
     if (state !== "OPEN") return "MAINTENANCE_OR_HOLIDAY";
-    const d = new Date(t);
-    const h = d.getUTCHours();
-    const dow = d.getUTCDay();
-    // The first two hours of the week: Sunday 22:00-24:00 UTC.
-    if (dow === 0 && h >= 22) return "SESSION_OPEN";
-    if (dow === 5 && (h === 19 || h === 20)) return "SESSION_CLOSE";
-    if (h === 20 || h === 22) return "ROLLOVER";
+    // New York wall clock (DST-aware): the week opens Sunday 17:00 and closes Friday 17:00; the roll is 17:00 daily.
+    const { hour: h, weekday: dow } = nyHourAndWeekday(t);
+    // The first two hours of the week, Sunday 17:00-19:00 (17:00-18:00 is already the maintenance hour).
+    if (dow === 0 && h >= 17 && h < 19) return "SESSION_OPEN";
+    if (dow === 5 && (h === 15 || h === 16)) return "SESSION_CLOSE";
+    if (h === 16 || h === 18) return "ROLLOVER";
     return "NORMAL";
   }
   if (cfg.calendar === "US_EQUITY") {

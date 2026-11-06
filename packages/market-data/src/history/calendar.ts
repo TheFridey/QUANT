@@ -8,7 +8,8 @@ import type { BarAlignment } from "./integrity.js";
  * - US_EQUITY_NYSE: regular session 09:30–16:00 America/New_York on weekdays, minus the closures and
  *   13:00 early closes in `NYSE_SPECIAL_DAYS` (the single data table). Years outside
  *   `NYSE_COVERED_YEARS` fall back to weekday rules and are reported as calendar-incomplete.
- * - FX_24_5: open Sunday 22:00 UTC to Friday 22:00 UTC (fixed UTC boundary; no FX holidays modelled).
+ * - FX_24_5: open Sunday 17:00 to Friday 17:00 America/New_York (21:00Z or 22:00Z by US DST; no FX holidays
+ *   modelled). Was a fixed 22:00 UTC boundary, which marked real summer Sunday-open bars as off-calendar.
  *
  * A slot [open, open + interval) is expected when it overlaps an open session. New York offsets use the
  * US DST rule in force since 2007 (second Sunday of March to first Sunday of November, 02:00 local), so the
@@ -101,7 +102,8 @@ const NYSE_OPEN_MINUTE = 9 * 60 + 30;
 const NYSE_CLOSE_MINUTE = 16 * 60;
 const NYSE_EARLY_CLOSE_MINUTE = 13 * 60;
 /** FX week: open Sunday 22:00 UTC, close Friday 22:00 UTC. */
-const FX_BOUNDARY_MINUTE = 22 * 60;
+/** FX week boundary in New York wall-clock minutes (17:00 New York: 21:00Z in US summer, 22:00Z in winter). */
+const FX_BOUNDARY_MINUTE = 17 * 60;
 
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
@@ -180,18 +182,19 @@ export function nyseSessionPhase(ms: number): NysePhase {
 }
 
 function fxClosedAt(ms: number): boolean {
-  const d = new Date(ms);
+  // New York wall clock: closed Friday 17:00 to Sunday 17:00 (21:00Z or 22:00Z by US DST).
+  const d = new Date(ms - (usEasternDst(ms) ? 4 : 5) * HOUR);
   const minute = d.getUTCHours() * 60 + d.getUTCMinutes();
   const dow = d.getUTCDay();
   return dow === 6 || (dow === 5 && minute >= FX_BOUNDARY_MINUTE) || (dow === 0 && minute < FX_BOUNDARY_MINUTE);
 }
 
-/** Next FX reopening (Sunday 22:00 UTC) at or after `ms`. */
+/** Next FX reopening (Sunday 17:00 New York) at or after `ms`. */
 function fxNextOpen(ms: number): number {
-  const d = new Date(ms);
-  const sunday = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) + ((7 - d.getUTCDay()) % 7) * DAY;
-  const open = sunday + FX_BOUNDARY_MINUTE * MINUTE;
-  return open >= ms ? open : open + WEEK;
+  const date = newYorkDate(ms);
+  const sunday = addDays(date, (7 - new Date(`${date}T00:00:00Z`).getUTCDay()) % 7);
+  const open = newYorkWallToUtc(sunday, FX_BOUNDARY_MINUTE);
+  return open >= ms ? open : newYorkWallToUtc(addDays(sunday, 7), FX_BOUNDARY_MINUTE);
 }
 
 /** True when any part of [startMs, endMs) falls in an open session of `calendar`. */
@@ -237,7 +240,15 @@ export function expectedSlots(input: { calendar: CalendarId; intervalMs: number;
     openTimes.push(t);
   };
   if (toOpenTime >= fromOpenTime) {
-    if (alignment === "NEW_YORK_DAY") {
+    if (alignment === "NEW_YORK_17") {
+      // FX/metals daily bars: one per 17:00 New York roll whose 24 h overlaps an open session.
+      const lastDate = newYorkDate(toOpenTime);
+      for (let date = newYorkDate(fromOpenTime - DAY); date <= lastDate; date = addDays(date, 1)) {
+        const open = newYorkWallToUtc(date, 17 * 60);
+        if (open < fromOpenTime || open > toOpenTime) continue;
+        if (sessionOverlaps(calendar, open, newYorkWallToUtc(addDays(date, 1), 17 * 60))) push(open);
+      }
+    } else if (alignment === "NEW_YORK_DAY") {
       const lastDate = newYorkDate(toOpenTime);
       for (let date = newYorkDate(fromOpenTime); date <= lastDate; date = addDays(date, 1)) {
         const open = newYorkWallToUtc(date, 0);

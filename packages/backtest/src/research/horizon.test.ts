@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { seededRng } from "../stats.js";
-import { validateResearchBars } from "./feature-set.js";
+import { buildDefaultFeatureRows, defaultFeatureSetSpec, validateResearchBars } from "./feature-set.js";
 import { runHorizonStudy, regimeLookup } from "./horizon.js";
 import { costGatePasses, horizonStrategySpecs, inSessionWindow } from "./horizon-strategies.js";
 import { buildTradeLabels } from "./labels.js";
 import { costBpsPerSideAt, costWindowAt, horizonBars, isTradeableAt, MARKET_CONFIGS, marketConfigHash, pipSizeFor, unitToBps, validationCostBpsPerSide, type MarketResearchConfig } from "./market-config.js";
-import { createMemoryHoldoutGate } from "./ml2.js";
-import { fxSessionState, isContiguous } from "./sessions.js";
+import { buildMl2Dataset, createMemoryHoldoutGate } from "./ml2.js";
+import { expectedBarCount, fxSessionState, fxTradingDay, isContiguous } from "./sessions.js";
 import { simulate, type ResearchBar } from "./simulate.js";
 import { expandGrid } from "./strategies.js";
 
@@ -58,39 +58,107 @@ function pathBars(times: number[], seed: number, opts: { price0: number; sigma: 
   });
 }
 
-describe("FX/metals session calendar (Sun 22:00 - Fri 22:00 UTC, 21:00-22:00 maintenance)", () => {
-  it("classifies weekend, maintenance, holiday and open instants", () => {
+// US DST 2025: 9 Mar to 2 Nov. UK BST 2025: 30 Mar to 26 Oct. Between those dates the two clocks disagree.
+describe("FX/metals session calendar (Sun 17:00 - Fri 17:00 New York, 17:00-18:00 New York maintenance)", () => {
+  it("classifies weekend, maintenance, holiday and open instants in winter and summer", () => {
     expect(fxSessionState(iso("2025-03-08T12:00:00Z"))).toBe("WEEKEND"); // Saturday
-    expect(fxSessionState(iso("2025-03-09T21:00:00Z"))).toBe("WEEKEND"); // Sunday before the open
-    expect(fxSessionState(iso("2025-03-09T22:00:00Z"))).toBe("OPEN"); // Sunday open
-    expect(fxSessionState(iso("2025-03-10T21:00:00Z"))).toBe("MAINTENANCE");
-    expect(fxSessionState(iso("2025-03-14T21:00:00Z"))).toBe("MAINTENANCE"); // Friday's last hour
-    expect(fxSessionState(iso("2025-03-14T22:00:00Z"))).toBe("WEEKEND"); // Friday close
-    expect(fxSessionState(iso("2025-12-24T22:00:00Z"))).toBe("HOLIDAY"); // the 25 Dec trading day
-    expect(fxSessionState(iso("2025-12-25T22:00:00Z"))).toBe("OPEN");
+    // Winter (EST): the week opens 22:00Z.
+    expect(fxSessionState(iso("2025-01-12T21:00:00Z"))).toBe("WEEKEND"); // Sun 16:00 EST
+    expect(fxSessionState(iso("2025-01-12T22:00:00Z"))).toBe("MAINTENANCE"); // Sun 17:00 EST: open, first hour
+    expect(fxSessionState(iso("2025-01-12T23:00:00Z"))).toBe("OPEN");
+    expect(fxSessionState(iso("2025-01-10T21:00:00Z"))).toBe("OPEN"); // Fri 16:00 EST: last hour
+    expect(fxSessionState(iso("2025-01-10T22:00:00Z"))).toBe("WEEKEND"); // Fri 17:00 EST
+    // Summer (EDT): one hour earlier in UTC. This is the bar real OANDA data printed and 1.0.0 refused.
+    expect(fxSessionState(iso("2025-03-09T20:00:00Z"))).toBe("WEEKEND"); // Sun 16:00 EDT
+    expect(fxSessionState(iso("2025-03-09T21:00:00Z"))).toBe("MAINTENANCE"); // Sun 17:00 EDT
+    expect(fxSessionState(iso("2025-03-09T22:00:00Z"))).toBe("OPEN");
+    expect(fxSessionState(iso("2025-03-10T21:00:00Z"))).toBe("MAINTENANCE"); // Mon 17:00 EDT roll
+    expect(fxSessionState(iso("2025-03-14T20:00:00Z"))).toBe("OPEN"); // Fri 16:00 EDT
+    expect(fxSessionState(iso("2025-03-14T21:00:00Z"))).toBe("WEEKEND"); // Fri 17:00 EDT
+    // Autumn: Fri 31 Oct is EDT (close 21:00Z); Sun 2 Nov is EST (open 22:00Z).
+    expect(fxSessionState(iso("2025-10-31T21:00:00Z"))).toBe("WEEKEND");
+    expect(fxSessionState(iso("2025-11-02T21:00:00Z"))).toBe("WEEKEND");
+    expect(fxSessionState(iso("2025-11-02T22:00:00Z"))).toBe("MAINTENANCE");
+    // Holidays: the 25 Dec trading day runs 24 Dec 17:00 to 25 Dec 17:00 New York.
+    expect(fxSessionState(iso("2025-12-24T23:00:00Z"))).toBe("HOLIDAY");
+    expect(fxSessionState(iso("2025-12-25T21:00:00Z"))).toBe("HOLIDAY");
+    expect(fxSessionState(iso("2025-12-25T23:00:00Z"))).toBe("OPEN");
+    expect(fxSessionState(iso("2026-01-01T12:00:00Z"))).toBe("HOLIDAY");
+    expect(fxTradingDay(iso("2025-07-15T21:00:00Z"))).toBe("2025-07-16");
+    expect(fxTradingDay(iso("2025-01-15T21:00:00Z"))).toBe("2025-01-15");
   });
 
-  it("refuses weekend bars but accepts maintenance-hour bars", () => {
-    const t0 = iso("2025-03-14T19:00:00Z");
-    const mk = (t: number): ResearchBar => ({ t, open: 1.1, high: 1.1, low: 1.1, close: 1.1, volume: 1 });
-    const weekend = validateResearchBars([mk(t0), mk(t0 + H), mk(t0 + 3 * H)], { barMs: H, calendar: "FX_24_5" });
-    expect(weekend.map((i) => i.code)).toEqual(["OFF_SESSION"]); // Friday 22:00
-    expect(validateResearchBars([mk(t0), mk(t0 + H), mk(t0 + 2 * H)], { barMs: H, calendar: "FX_24_5" })).toEqual([]);
-    // A Saturday daily bar is refused; Friday and Monday are fine.
-    const daily = [iso("2025-03-14T00:00:00Z"), iso("2025-03-15T00:00:00Z"), iso("2025-03-17T00:00:00Z")].map(mk);
-    expect(validateResearchBars(daily, { barMs: D, calendar: "FX_24_5" }).map((i) => i.index)).toEqual([1]);
+  it("refuses weekend bars, accepts the summer Sunday-open and maintenance-hour bars", () => {
+    const mk = (t: number): ResearchBar => ({ t, open: 1.1, high: 1.1, low: 1.1, close: 1.1, volume: null });
+    const issues = (ts: string[], ms = H) => validateResearchBars(ts.map((s) => mk(iso(s))), { barMs: ms, calendar: "FX_24_5" }).map((i) => `${i.index}:${i.code}`);
+    // The reported refusal: 2025-03-09T21:00Z (Sunday 17:00 EDT) is the first bar of the week.
+    expect(issues(["2025-03-07T20:00:00Z", "2025-03-07T21:00:00Z", "2025-03-09T21:00:00Z", "2025-03-09T22:00:00Z"])).toEqual([]);
+    expect(issues(["2025-03-09T20:00:00Z", "2025-03-09T21:00:00Z"])).toEqual(["0:OFF_SESSION"]);
+    expect(issues(["2025-03-14T20:00:00Z", "2025-03-14T21:00:00Z"])).toEqual(["1:OFF_SESSION"]); // Fri 17:00 EDT
+    expect(issues(["2025-01-10T21:00:00Z", "2025-01-12T21:00:00Z", "2025-01-12T22:00:00Z"])).toEqual(["1:OFF_SESSION"]); // winter
+    // A UTC-aligned 4-hour bar straddling the summer open (20:00-24:00Z) is in session.
+    expect(issues(["2025-03-09T20:00:00Z"], 4 * H)).toEqual([]);
+  });
+
+  it("daily bars follow the 17:00 New York convention; the UTC Sunday stub is misaligned", () => {
+    const mk = (t: number): ResearchBar => ({ t, open: 1.1, high: 1.1, low: 1.1, close: 1.1, volume: null });
+    const issues = (ts: string[]) => validateResearchBars(ts.map((s) => mk(iso(s))), { barMs: D, calendar: "FX_24_5" }).map((i) => `${i.index}:${i.code}`);
+    // Thu 6 Mar (EST, trading day Fri 7) → Sun 9 Mar (EDT, trading day Mon 10): across the US DST change.
+    expect(issues(["2025-03-05T22:00:00Z", "2025-03-06T22:00:00Z", "2025-03-09T21:00:00Z", "2025-03-10T21:00:00Z"])).toEqual([]);
+    expect(issues(["2016-11-06T00:00:00Z"])).toEqual(["0:MISALIGNED"]); // the reported UTC-aligned stub
+    expect(issues(["2025-03-10T22:00:00Z"])).toEqual(["0:MISALIGNED"]); // 18:00 EDT
+    expect(issues(["2025-03-14T21:00:00Z"])).toEqual(["0:OFF_SESSION"]); // Fri 17:00 EDT opens Saturday's trading day
+    expect(issues(["2025-03-07T22:00:00Z"])).toEqual(["0:OFF_SESSION"]); // Fri 17:00 EST
   });
 
   it("treats the weekend, a missing maintenance bar and a holiday as session boundaries, not gaps", () => {
     const c = (a: string, b: string, ms = H) => isContiguous(iso(a), iso(b), ms, "FX_24_5");
-    expect(c("2025-03-14T20:00:00Z", "2025-03-16T22:00:00Z")).toBe(true); // Fri 20:00 → Sun 22:00
+    // Summer week.
+    expect(c("2025-03-14T20:00:00Z", "2025-03-16T22:00:00Z")).toBe(true); // Fri 16:00 → Sun 18:00 EDT
+    expect(c("2025-03-14T20:00:00Z", "2025-03-16T21:00:00Z")).toBe(true); // Sunday maintenance bar printed
     expect(c("2025-03-10T20:00:00Z", "2025-03-10T22:00:00Z")).toBe(true); // maintenance bar absent
     expect(c("2025-03-10T20:00:00Z", "2025-03-10T21:00:00Z")).toBe(true); // maintenance bar present
     expect(c("2025-03-10T20:00:00Z", "2025-03-10T23:00:00Z")).toBe(false); // 22:00 missing: a gap
-    expect(c("2025-03-14T20:00:00Z", "2025-03-16T23:00:00Z")).toBe(false); // Sunday open missing: a gap
-    expect(c("2025-12-24T20:00:00Z", "2025-12-25T22:00:00Z")).toBe(true); // 25 Dec trading day skipped
-    expect(c("2025-03-14T00:00:00Z", "2025-03-17T00:00:00Z", D)).toBe(true); // daily Fri → Mon
-    expect(c("2025-03-12T00:00:00Z", "2025-03-14T00:00:00Z", D)).toBe(false); // Thursday missing
+    expect(c("2025-03-14T20:00:00Z", "2025-03-16T23:00:00Z")).toBe(false); // first open hour missing: a gap
+    // Winter week, and both DST-change weekends.
+    expect(c("2025-01-10T21:00:00Z", "2025-01-12T23:00:00Z")).toBe(true);
+    expect(c("2025-01-10T20:00:00Z", "2025-01-12T23:00:00Z")).toBe(false); // Fri 16:00 EST missing
+    expect(c("2025-03-07T21:00:00Z", "2025-03-09T22:00:00Z")).toBe(true); // EST Friday → EDT Sunday
+    expect(c("2025-10-31T20:00:00Z", "2025-11-02T23:00:00Z")).toBe(true); // EDT Friday → EST Sunday
+    expect(c("2025-12-24T21:00:00Z", "2025-12-25T23:00:00Z")).toBe(true); // 25 Dec trading day skipped
+    // Daily bars step by trading day, across the DST change and over a printed holiday bar.
+    expect(c("2025-03-13T21:00:00Z", "2025-03-16T21:00:00Z", D)).toBe(true); // Fri → Mon trading day
+    expect(c("2025-03-06T22:00:00Z", "2025-03-09T21:00:00Z", D)).toBe(true); // EST → EDT weekend
+    expect(c("2025-10-30T21:00:00Z", "2025-11-02T22:00:00Z", D)).toBe(true); // EDT → EST weekend
+    expect(c("2025-03-10T21:00:00Z", "2025-03-12T21:00:00Z", D)).toBe(false); // Wednesday missing
+    expect(c("2025-12-23T22:00:00Z", "2025-12-25T22:00:00Z", D)).toBe(true); // 25 Dec skipped
+    expect(c("2025-12-23T22:00:00Z", "2025-12-24T22:00:00Z", D)).toBe(true); // 25 Dec printed
+  });
+
+  it("spread widening follows the New York roll in winter and summer", () => {
+    expect(costWindowAt(FX, iso("2025-01-12T23:00:00Z"), H)).toBe("SESSION_OPEN"); // Sun 18:00 EST
+    expect(costWindowAt(FX, iso("2025-03-16T22:00:00Z"), H)).toBe("SESSION_OPEN"); // Sun 18:00 EDT
+    expect(costWindowAt(FX, iso("2025-01-14T21:00:00Z"), H)).toBe("ROLLOVER"); // 16:00 EST
+    expect(costWindowAt(FX, iso("2025-07-15T20:00:00Z"), H)).toBe("ROLLOVER"); // 16:00 EDT
+    expect(costWindowAt(FX, iso("2025-07-15T22:00:00Z"), H)).toBe("ROLLOVER"); // 18:00 EDT
+    expect(costWindowAt(FX, iso("2025-07-15T21:00:00Z"), H)).toBe("MAINTENANCE_OR_HOLIDAY"); // 17:00 EDT
+    expect(costWindowAt(FX, iso("2025-01-14T22:00:00Z"), H)).toBe("MAINTENANCE_OR_HOLIDAY"); // 17:00 EST
+    expect(costWindowAt(FX, iso("2025-07-18T19:00:00Z"), H)).toBe("SESSION_CLOSE"); // Fri 15:00 EDT
+    expect(costWindowAt(FX, iso("2025-07-15T12:00:00Z"), H)).toBe("NORMAL");
+  });
+
+  it("London and New York clocks change on different dates; each window follows its own city", () => {
+    // 17 Mar 2025: New York on EDT, London still on GMT.
+    expect(inSessionWindow("LONDON_OPEN", iso("2025-03-17T08:00:00Z"))).toBe(true); // 08:00 GMT
+    expect(inSessionWindow("NY_OPEN", iso("2025-03-17T12:00:00Z"))).toBe(true); // 08:00 EDT
+    expect(inSessionWindow("NY_OPEN", iso("2025-03-17T11:00:00Z"))).toBe(false);
+    expect(fxSessionState(iso("2025-03-17T21:00:00Z"))).toBe("MAINTENANCE"); // the roll follows New York
+    // 28 Oct 2025: London back on GMT, New York still on EDT.
+    expect(inSessionWindow("LONDON_OPEN", iso("2025-10-28T07:00:00Z"))).toBe(false);
+    expect(inSessionWindow("LONDON_OPEN", iso("2025-10-28T08:00:00Z"))).toBe(true);
+    expect(inSessionWindow("NY_OPEN", iso("2025-10-28T12:00:00Z"))).toBe(true);
+    expect(fxSessionState(iso("2025-10-28T21:00:00Z"))).toBe("MAINTENANCE");
+    expect(fxSessionState(iso("2025-11-04T22:00:00Z"))).toBe("MAINTENANCE"); // after the US change
   });
 
   it("labels never span a real gap but do span the weekend", () => {
@@ -176,7 +244,7 @@ describe("cost model and pip scaling", () => {
     const normal = at("2025-03-11T10:00:00Z");
     expect(at("2025-03-09T22:00:00Z")).toBeGreaterThan(normal); // Sunday open
     expect(at("2025-03-11T20:00:00Z")).toBeGreaterThan(normal); // before the roll
-    expect(at("2025-03-11T21:00:00Z")).toBeGreaterThan(at("2025-03-11T20:00:00Z")); // maintenance
+    expect(at("2025-03-11T21:00:00Z")).toBeGreaterThan(at("2025-03-11T20:00:00Z")); // 17:00 EDT maintenance > 16:00 roll
     expect(at("2025-03-14T19:00:00Z")).toBeGreaterThan(normal); // Friday close
   });
 
@@ -222,7 +290,7 @@ describe("cost model and pip scaling", () => {
     const times = fxHourlyTimes("2025-01-05T22:00:00Z", 500, true);
     const bars = pathBars(times, 1, { price0: 1.1, sigma: 0.001 });
     const c = validationCostBpsPerSide(FX, "EUR/USD", bars, H);
-    const maint = costBpsPerSideAt(FX, "EUR/USD", iso("2025-01-07T21:00:00Z"), 1.1, H);
+    const maint = costBpsPerSideAt(FX, "EUR/USD", iso("2025-01-07T22:00:00Z"), 1.1, H); // 17:00 EST
     expect(c).toBeGreaterThan(costBpsPerSideAt(FX, "EUR/USD", iso("2025-01-07T10:00:00Z"), 1.1, H) - 1e-9);
     expect(c).toBeLessThan(maint);
   });
@@ -248,7 +316,8 @@ describe("config hash", () => {
   });
 });
 
-const PINNED_HASHES = { CRYPTO: "336f32f33a3bd075", GOLD: "5ee66d2b4d1597f2", FX: "db7bfaeda97feafa", ETF: "f48a4b74b634ff6d" };
+// horizon-market-1.1.0 (1.0.0 was CRYPTO 336f32f33a3bd075, GOLD 5ee66d2b4d1597f2, FX db7bfaeda97feafa, ETF f48a4b74b634ff6d).
+const PINNED_HASHES = { CRYPTO: "2f6f7918efe487ff", GOLD: "b0969f35dfd67d71", FX: "377765cd5bfb2020", ETF: "48ce65d74939703b" };
 
 describe("no look-ahead", () => {
   it("every HORIZON strategy's decisions on a prefix equal its decisions on the full series (regime included)", () => {
@@ -347,5 +416,67 @@ describe("runHorizonStudy", () => {
     expect(late.data.lateBars).toBe(1);
     expect(late.strategies.every((s) => s.verdict === "REJECTED_DATA")).toBe(true);
     expect(late.verdict).toBe("REJECTED_DATA");
+  });
+});
+
+describe("ML 2.0 features on the FX/metals session grid (regression: XAU/USD 1h all features null)", () => {
+  // OANDA-like series: weekend closures, maintenance-hour bars printed, a US DST change, and no traded volume.
+  const times = fxHourlyTimes("2025-01-05T23:00:00Z", 3000, true);
+  const bars = pathBars(times, 77, { price0: 2650, sigma: 0.002 }).map((b) => ({ ...b, volume: null }));
+  const labelSpec = { horizon: 8, feeBpsPerSide: 0, slippageBpsPerSide: 1 };
+
+  it("counts expected bars on the session grid", () => {
+    expect(expectedBarCount(iso("2025-03-14T20:00:00Z"), iso("2025-03-16T23:00:00Z"), H, "FX_24_5")).toBe(3); // Fri 16:00, Sun 18:00, 19:00 EDT
+    expect(expectedBarCount(iso("2025-03-14T20:00:00Z"), iso("2025-03-16T23:00:00Z"), H, "CRYPTO_24_7")).toBe(52);
+  });
+
+  it("builds usable rows: volume features omitted, every other feature covered, rows kept after weekends", () => {
+    const ds = buildMl2Dataset({ bars, barMs: H, calendar: "FX_24_5", labelSpec });
+    expect(ds.spec.name).toBe("genesis-ohlcv-intraday-novolume");
+    expect(ds.spec.features).not.toContain("rel_volume_m");
+    expect(ds.spec.features).not.toContain("volume_z_m");
+    expect(ds.coverage.filter((c) => !c.ok)).toEqual([]);
+    expect(ds.rows.length).toBeGreaterThan(0.85 * ds.labelledCount);
+    // The prefix audit ran inside buildMl2Dataset (it throws on look-ahead).
+    expect(ds.probes.length).toBeGreaterThan(0);
+  });
+
+  it("a never-observed feature fails coverage alone instead of consuming the warm-up", () => {
+    const ds = buildMl2Dataset({ bars, barMs: H, calendar: "FX_24_5", labelSpec, featureSet: defaultFeatureSetSpec(H) });
+    expect(ds.coverage.filter((c) => !c.ok).map((c) => c.feature).sort()).toEqual(["rel_volume_m", "volume_z_m"]);
+    expect(ds.coverage.find((c) => c.feature === "ret_s")!.missingShare).toBe(0);
+  });
+
+  it("regime features are not lost after every weekend when coverage is counted on the session grid", () => {
+    const nullShare = (rows: ReturnType<typeof buildDefaultFeatureRows>) => {
+      const late = rows.slice(600);
+      return late.filter((r) => r.values.regime_trend_t === null).length / late.length;
+    };
+    const session = buildDefaultFeatureRows(bars, { barMs: H, calendar: "WEEKDAYS", sessionCalendar: "FX_24_5" });
+    const continuous = buildDefaultFeatureRows(bars, { barMs: H, calendar: "WEEKDAYS" });
+    expect(nullShare(session)).toBeLessThan(0.02);
+    expect(nullShare(continuous)).toBeGreaterThan(0.2); // the defect: windows spanning a weekend read as gappy
+    // Still causal: features of a prefix equal those of the full series.
+    const prefix = buildDefaultFeatureRows(bars.slice(0, 1500), { barMs: H, calendar: "WEEKDAYS", sessionCalendar: "FX_24_5" });
+    for (let i = 0; i < 1500; i += 1) expect(prefix[i]!.values).toEqual(session[i]!.values);
+  });
+
+  it("a GOLD study runs ML 2.0 to a verdict without coverage failures", () => {
+    const report = runHorizonStudy({
+      bars,
+      barMs: H,
+      market: MARKET_CONFIGS.GOLD,
+      instrument: "XAU/USD",
+      datasetKey: "XAU_USD|1h",
+      codeVersion: "test",
+      priorTrials: 0,
+      strategies: ["hz_vol_expansion"],
+      ml: { enabled: true, learners: [{ family: "BASE_RATE" }, { family: "LOGISTIC_L2", params: { lambda: 0.01, iterations: 100, rate: 0.2 } }], config: { bootstrapResamples: 50, randomControls: 20, prefixProbes: 4 } },
+    });
+    const ml = report.ml[0]!;
+    expect("verdict" in ml).toBe(true);
+    if (!("verdict" in ml)) return;
+    expect(ml.reasons.join(" ")).not.toMatch(/missing on 100/);
+    expect(ml.trialCount).toBeGreaterThan(0);
   });
 });

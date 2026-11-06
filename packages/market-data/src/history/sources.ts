@@ -257,16 +257,28 @@ const OANDA_GRANULARITY: Record<HistoryInterval, OandaGranularity> = {
 
 const OANDA_PAGE_SIZE = 5000;
 
+/** Source id of OANDA daily candles on the FX market convention (17:00 New York roll). */
+export const OANDA_NY17_SOURCE_ID = "oanda_practice_ny17";
+
 /**
  * OANDA v20 practice candles (`instrumentKey` = OANDA name such as EUR_USD or XAU_USD). Requests `price=MBA`:
  * the stored OHLC is the mid, and the bid and ask OHLC are kept in `extra` (`bid_o`…`ask_c`) with the spread
  * at the close. Volume is null because OANDA reports tick volume (kept as `extra.tickVolume`), not traded
- * volume. Daily and 4-hour candles are aligned to 00:00 UTC so they sit on the UTC grid. Only candles OANDA
- * marks complete are returned; availableAt is the candle close (applied by normaliseBars).
- * Pages forward from the window start with `from` + `count`; the cursor is the next `from` in epoch ms.
+ * volume. Only candles OANDA marks complete are returned; availableAt is the candle close (applied by
+ * normaliseBars). Pages forward from the window start with `from` + `count`; the cursor is the next `from`.
+ *
+ * Two variants, so the two daily conventions can never mix in one warehouse dataset (keyed by source id,
+ * instrument and interval):
+ *  - `oanda_practice` (default): intraday intervals on the UTC grid (4-hour candles aligned to 00:00 UTC). It
+ *    refuses `1d`: its earlier UTC-aligned daily candles produced a Sunday 00:00 UTC stub bar that is not a
+ *    trading day; those stored datasets are left as they are.
+ *  - `oanda_practice_ny17` (`dailyAlignment: "NEW_YORK_17"`): `1d` only, on the FX market convention
+ *    (`dailyAlignment=17`, `alignmentTimezone=America/New_York`). Each candle opens at the 17:00 New York roll
+ *    (21:00Z in US summer, 22:00Z in winter) and closes 24 h later; availableAt is that true close.
  */
 export class OandaCandlesSource implements HistoricalBarSource {
-  readonly id = "oanda_practice";
+  readonly id: string;
+  private readonly dailyNy17: boolean;
   readonly licence: SourceLicence = {
     provider: "OANDA fxTrade Practice (v20 REST)",
     terms: "OANDA practice account terms; for the account holder's own use; no redistribution",
@@ -277,13 +289,21 @@ export class OandaCandlesSource implements HistoricalBarSource {
 
   constructor(
     private readonly credentials: { token: string | undefined; apiUrl?: string },
-    private readonly options: { fetchImpl?: typeof fetch; maxRequestsPerMinute?: number; now?: () => Date } = {},
+    private readonly options: { fetchImpl?: typeof fetch; maxRequestsPerMinute?: number; now?: () => Date; dailyAlignment?: "UTC" | "NEW_YORK_17" } = {},
   ) {
     // OANDA allows far more; research stays small and polite.
     this.maxRequestsPerMinute = options.maxRequestsPerMinute ?? 30;
+    this.dailyNy17 = options.dailyAlignment === "NEW_YORK_17";
+    this.id = this.dailyNy17 ? OANDA_NY17_SOURCE_ID : "oanda_practice";
+  }
+
+  barAlignment(interval: HistoryInterval): BarAlignment {
+    return this.dailyNy17 && interval === "1d" ? "NEW_YORK_17" : "UTC_GRID";
   }
 
   async fetchPage(input: { instrumentKey: string; interval: HistoryInterval; startMs: number; endMs: number; cursor: string | null }): Promise<SourcePage> {
+    if (this.dailyNy17 && input.interval !== "1d") return { ok: false, code: "INVALID_CONFIGURATION", error: `${OANDA_NY17_SOURCE_ID} serves 1d only; use oanda_practice for intraday intervals` };
+    if (!this.dailyNy17 && input.interval === "1d") return { ok: false, code: "INVALID_CONFIGURATION", error: `oanda_practice no longer serves 1d (UTC-aligned daily candles include a Sunday stub bar); use ${OANDA_NY17_SOURCE_ID} (17:00 New York daily alignment)` };
     const token = this.credentials.token;
     const client = new OandaPracticeMarketData(
       { tokenPresent: Boolean(token), accountIdPresent: false, apiUrl: this.credentials.apiUrl ?? "https://api-fxpractice.oanda.com", accountId: "" },
@@ -292,7 +312,7 @@ export class OandaCandlesSource implements HistoricalBarSource {
     const fromMs = input.cursor ? Number(input.cursor) : input.startMs;
     if (!Number.isFinite(fromMs)) return { ok: false, code: "INVALID", error: "oanda cursor is not epoch ms" };
     if (fromMs >= input.endMs) return { ok: true, bars: [], nextCursor: null, requestDescription: "(window exhausted)", payload: null };
-    const result = await client.candles({ instrument: input.instrumentKey, granularity: OANDA_GRANULARITY[input.interval], price: "MBA", fromMs, count: OANDA_PAGE_SIZE });
+    const result = await client.candles({ instrument: input.instrumentKey, granularity: OANDA_GRANULARITY[input.interval], price: "MBA", fromMs, count: OANDA_PAGE_SIZE, alignment: this.dailyNy17 ? "NEW_YORK_17" : "UTC" });
     if (!result.ok) {
       // A rejected token is a configuration fault (permanent for the job); the error text keeps AUTH_FAILED.
       const code = result.code === "AUTH_FAILED" ? "INVALID_CONFIGURATION" : result.code;

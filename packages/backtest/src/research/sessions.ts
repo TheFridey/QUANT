@@ -12,14 +12,17 @@ import type { MarketCalendar } from "./regime.js";
  * The holiday table is rule-based (full-day NYSE closures, plus the listed special closures); early closes do
  * not matter at this resolution. A bar dated on a computed holiday or a weekend is refused as OFF_SESSION.
  *
- * FX_24_5 (spot FX and spot metals, HORIZON): the market runs Sunday 22:00 UTC to Friday 22:00 UTC in "trading
- * days" that roll at 22:00 UTC (trading day D runs from D-1 22:00 to D 22:00). The 21:00-22:00 UTC hour of every
- * trading day is the dealers' rollover/maintenance window, and the 25 Dec and 1 Jan trading days are treated as
- * closed. Assumption, stated rather than hidden: the roll is fixed at 22:00 UTC all year; in reality it follows
- * 17:00 New York, which is 21:00 UTC during US daylight saving time, so in summer the true maintenance hour is
- * 20:00-21:00 UTC and this calendar's window is one hour late. A bar opening in the weekend closure is refused as
- * OFF_SESSION. A bar printed in the maintenance hour or on a holiday is accepted (some feeds print them), but it is
- * not a tradeable bar (`fxSessionState`), and a missing bar there is not a gap.
+ * FX_24_5 (spot FX and spot metals, HORIZON): the market runs Sunday 17:00 to Friday 17:00 America/New_York in
+ * "trading days" that roll at 17:00 New York (trading day D runs from D-1 17:00 to D 17:00 New York time), so the
+ * UTC boundary is 21:00 during US daylight saving time and 22:00 otherwise. The 17:00-18:00 New York hour that
+ * starts every trading day is the dealers' rollover/maintenance window, and the 25 Dec and 1 Jan trading days are
+ * treated as closed. A bar opening in the weekend closure is refused as OFF_SESSION. A bar printed in the
+ * maintenance hour or on a holiday is accepted (feeds print them), but it is not a tradeable bar
+ * (`fxSessionState`), and a missing bar there is not a gap. Daily bars follow the market convention (OANDA
+ * `dailyAlignment=17`, `alignmentTimezone=America/New_York`): each opens at 17:00 New York and is dated by the
+ * trading day it closes; a daily bar opening at any other time is MISALIGNED. US DST changes happen at 02:00 on
+ * a Sunday, inside the weekend closure, so every trading day is exactly 24 hours long.
+ * (horizon-calendar 1.0.0 used a fixed 22:00 UTC roll and refused real summer Sunday-open bars; replaced.)
  */
 
 export type SessionCalendar = "CRYPTO_24_7" | "US_EQUITY" | "FX_24_5";
@@ -37,33 +40,85 @@ export function regimeCalendarFor(c: SessionCalendar): MarketCalendar {
 
 export type FxSessionState = "OPEN" | "MAINTENANCE" | "HOLIDAY" | "WEEKEND";
 
-const FX_ROLL_MS = 2 * 3_600_000;
+const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
 const FX_HOLIDAYS = new Set(["12-25", "01-01"]);
 
-/** The FX trading day (YYYY-MM-DD) that the instant `t` belongs to: it rolls at 22:00 UTC. */
-export function fxTradingDay(t: number): string {
-  return new Date(t + FX_ROLL_MS).toISOString().slice(0, 10);
+function nthSundayUtc(year: number, month0: number, n: number): number {
+  const first = Date.UTC(year, month0, 1);
+  return first + ((7 - new Date(first).getUTCDay()) % 7) * DAY_MS + (n - 1) * 7 * DAY_MS;
 }
 
-/** FX/metals session state of the instant `t` (fixed 22:00 UTC roll; see the module comment for the DST caveat). */
+/** US Eastern daylight time in force at `t` (2007+ rule: second Sunday of March to first Sunday of November, 02:00 local). */
+export function usEasternDst(t: number): boolean {
+  const y = new Date(t).getUTCFullYear();
+  return t >= nthSundayUtc(y, 2, 2) + 7 * HOUR_MS && t < nthSundayUtc(y, 10, 1) + 6 * HOUR_MS;
+}
+
+/** New York wall-clock time of `t`, as a fake-UTC epoch (read it with getUTC*). Arithmetic, no Intl. */
+function nyWall(t: number): number {
+  return t - (usEasternDst(t) ? 4 : 5) * HOUR_MS;
+}
+
+/** Roll-shifted wall clock: New York time + 7 h, so 17:00 New York becomes 00:00 of the trading day it opens. */
+function fxShifted(t: number): Date {
+  return new Date(nyWall(t) + 7 * HOUR_MS);
+}
+
+/** The FX trading day (YYYY-MM-DD) that the instant `t` belongs to: it rolls at 17:00 New York. */
+export function fxTradingDay(t: number): string {
+  return fxShifted(t).toISOString().slice(0, 10);
+}
+
+/** FX/metals session state of the instant `t` (17:00 New York roll, DST-aware). */
 export function fxSessionState(t: number): FxSessionState {
-  const shifted = new Date(t + FX_ROLL_MS);
+  const shifted = fxShifted(t);
   const dow = shifted.getUTCDay();
   if (dow === 0 || dow === 6) return "WEEKEND";
   if (FX_HOLIDAYS.has(shifted.toISOString().slice(5, 10))) return "HOLIDAY";
-  // 21:00 UTC is the last hour of the trading day (23:00 in roll-shifted time).
-  if (shifted.getUTCHours() === 23) return "MAINTENANCE";
+  // 17:00-18:00 New York opens every trading day (00:00 in roll-shifted time).
+  if (shifted.getUTCHours() === 0) return "MAINTENANCE";
   return "OPEN";
+}
+
+/** New York wall-clock hour (0-23) and weekday (0 = Sunday) of `t`. */
+export function nyHourAndWeekday(t: number): { hour: number; weekday: number } {
+  const w = new Date(nyWall(t));
+  return { hour: w.getUTCHours(), weekday: w.getUTCDay() };
+}
+
+/** True when `t` is exactly 17:00:00.000 New York time: the open of an FX/metals daily bar. */
+export function isFxDailyOpen(t: number): boolean {
+  return ((nyWall(t) % DAY_MS) + DAY_MS) % DAY_MS === 17 * HOUR_MS;
+}
+
+function fxTradingDayExpected(day: string): boolean {
+  const dow = new Date(`${day}T00:00:00Z`).getUTCDay();
+  return dow !== 0 && dow !== 6 && !FX_HOLIDAYS.has(day.slice(5));
 }
 
 /** True when a bar of `barMs` opening at `t` is one the FX calendar expects to print (a missing one is a gap). */
 function fxExpectsBar(t: number, barMs: number): boolean {
-  if (barMs >= 86_400_000) {
-    const day = fxTradingDay(t);
-    const dow = new Date(`${day}T00:00:00Z`).getUTCDay();
-    return dow !== 0 && dow !== 6 && !FX_HOLIDAYS.has(day.slice(5));
-  }
+  if (barMs >= DAY_MS) return fxTradingDayExpected(fxTradingDay(t));
   return fxSessionState(t) === "OPEN";
+}
+
+/**
+ * Number of bar slots of `barMs` from `fromT` to `toT` inclusive (both bar opens) that `calendar` expects to print.
+ * CRYPTO_24_7 and US_EQUITY count every interval (the US intraday regime clock is unchanged); FX_24_5 skips the
+ * weekend, the maintenance hour and holidays. Used so regime coverage is measured on the session grid.
+ */
+export function expectedBarCount(fromT: number, toT: number, barMs: number, calendar: SessionCalendar): number {
+  if (calendar !== "FX_24_5") return Math.max(1, Math.round((toT - fromT) / barMs) + 1);
+  if (barMs >= DAY_MS) {
+    let n = 0;
+    const last = fxTradingDay(toT);
+    for (let day = fxTradingDay(fromT); day <= last; day = new Date(Date.parse(`${day}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10)) if (fxTradingDayExpected(day)) n += 1;
+    return Math.max(1, n);
+  }
+  let n = 0;
+  for (let t = fromT; t <= toT; t += barMs) if (fxExpectsBar(t, barMs)) n += 1;
+  return Math.max(1, n);
 }
 
 const NY = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
@@ -162,10 +217,17 @@ export function nextUsEquitySessionDate(ymd: string): string {
 /** Why a bar's open time does not fit the calendar (null when it fits). */
 export function sessionAlignmentIssue(t: number, barMs: number, calendar: SessionCalendar, gridOrigin: number): { code: "MISALIGNED" | "OFF_SESSION"; detail: string } | null {
   if (calendar === "FX_24_5") {
+    if (barMs >= DAY_MS) {
+      // Market convention: daily bars open at 17:00 New York (21:00Z in US summer, 22:00Z in winter).
+      if (!isFxDailyOpen(t)) return { code: "MISALIGNED", detail: `daily bar opens ${new Date(t).toISOString()}, not 17:00 New York (re-backfill with the New York 17:00 daily alignment)` };
+      const day = fxTradingDay(t);
+      const dow = new Date(`${day}T00:00:00Z`).getUTCDay();
+      return dow === 0 || dow === 6 ? { code: "OFF_SESSION", detail: `daily bar for trading day ${day} falls in the FX weekend closure` } : null;
+    }
     const off = barMs > 0 ? (((t - gridOrigin) % barMs) + barMs) % barMs : 0;
     if (off !== 0) return { code: "MISALIGNED", detail: `offset ${off} ms from the ${barMs} ms UTC grid` };
-    const weekend = barMs >= 86_400_000 ? [0, 6].includes(new Date(`${fxTradingDay(t)}T00:00:00Z`).getUTCDay()) : fxSessionState(t) === "WEEKEND";
-    return weekend ? { code: "OFF_SESSION", detail: `${new Date(t).toISOString()} is inside the FX weekend closure (Fri 22:00 to Sun 22:00 UTC)` } : null;
+    // A bar is off-session only when it lies wholly in the closure (a UTC-aligned 4-hour bar may straddle the open).
+    return fxSessionState(t) === "WEEKEND" && fxSessionState(t + barMs - 1) === "WEEKEND" ? { code: "OFF_SESSION", detail: `${new Date(t).toISOString()} is inside the FX weekend closure (Fri 17:00 to Sun 17:00 New York)` } : null;
   }
   if (calendar === "CRYPTO_24_7") {
     const off = (t - gridOrigin) % barMs;
@@ -185,16 +247,30 @@ export function sessionAlignmentIssue(t: number, barMs: number, calendar: Sessio
 export function isContiguous(prevT: number, nextT: number, barMs: number, calendar: SessionCalendar): boolean {
   if (calendar === "CRYPTO_24_7") return nextT - prevT === barMs;
   if (calendar === "FX_24_5") {
+    if (barMs >= DAY_MS) {
+      // Daily bars: the next bar's trading day must be the next expected trading day (stepping by trading day, not
+      // by 24 h of UTC, so the weekend DST change cannot shift the grid).
+      const next = fxTradingDay(nextT);
+      let day = fxTradingDay(prevT);
+      for (let k = 0; k < 10; k += 1) {
+        day = new Date(Date.parse(`${day}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10);
+        // A printed holiday bar is accepted in sequence; a missing one is skipped.
+        if (day === next) return true;
+        if (fxTradingDayExpected(day)) return false;
+      }
+      return false;
+    }
     if (nextT - prevT === barMs) return true;
     // Skip only bars the calendar does not expect (weekend, maintenance hour, holiday trading days); bounded at
     // 10 days so a long outage is a gap, not a search.
-    const limit = Math.min(nextT, prevT + 10 * 86_400_000);
+    const limit = Math.min(nextT, prevT + 10 * DAY_MS);
     for (let t = prevT + barMs; t <= limit; t += barMs) {
-      if (fxExpectsBar(t, barMs)) return t === nextT;
+      if (t === nextT) return true;
+      if (fxExpectsBar(t, barMs)) return false;
     }
     return false;
   }
-  const a =nyLocalParts(prevT).ymd;
+  const a = nyLocalParts(prevT).ymd;
   const b = nyLocalParts(nextT).ymd;
   if (barMs >= 86_400_000) return b === nextUsEquitySessionDate(a);
   if (nextT - prevT === barMs && a === b) return true;
