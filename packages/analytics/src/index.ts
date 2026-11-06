@@ -8,3 +8,4 @@ export * from "./lot-history.js";
 export * from "./entry-view.js";
 export * from "./feedback.js";
 export * from "./drawdown.js";
+export * from "./opportunity-scanner.js";
