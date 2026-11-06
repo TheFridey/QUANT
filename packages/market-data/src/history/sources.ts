@@ -294,7 +294,8 @@ export class OandaCandlesSource implements HistoricalBarSource {
     if (fromMs >= input.endMs) return { ok: true, bars: [], nextCursor: null, requestDescription: "(window exhausted)", payload: null };
     const result = await client.candles({ instrument: input.instrumentKey, granularity: OANDA_GRANULARITY[input.interval], price: "MBA", fromMs, count: OANDA_PAGE_SIZE });
     if (!result.ok) {
-      const code = result.code === "AUTH_FAILED" ? "MISSING_CREDENTIALS" : result.code === "HTTP_ERROR" ? "HTTP_ERROR" : result.code;
+      // A rejected token is a configuration fault (permanent for the job); the error text keeps AUTH_FAILED.
+      const code = result.code === "AUTH_FAILED" ? "INVALID_CONFIGURATION" : result.code;
       return { ok: false, code, error: result.error, ...(result.code === "RATE_LIMITED" ? { retryAfterMs: 60_000 } : {}) };
     }
     const { candles, request, payload } = result.data;
@@ -321,6 +322,8 @@ export class OandaCandlesSource implements HistoricalBarSource {
     // Short page or past the window end: done. An incomplete (in-progress) candle also ends the walk.
     const sawIncomplete = candles.some((c) => !c.complete);
     const done = candles.length < OANDA_PAGE_SIZE || !Number.isFinite(next) || next >= input.endMs || sawIncomplete;
-    return { ok: true, bars, nextCursor: done ? null : String(next), requestDescription: request, payload };
+    // The archived raw payload omits in-progress candles, so a rebuild from raw can never see an unclosed bar.
+    const archived = { ...(payload as Record<string, unknown>), candles: ((payload as { candles?: Array<{ complete?: unknown }> }).candles ?? []).filter((c) => c?.complete === true) };
+    return { ok: true, bars, nextCursor: done ? null : String(next), requestDescription: request, payload: archived };
   }
 }

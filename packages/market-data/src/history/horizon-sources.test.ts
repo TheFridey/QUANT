@@ -108,6 +108,13 @@ describe("OandaCandlesSource", () => {
     expect(page.bars[0]!.extra).toMatchObject({ bid_c: "1.08180", ask_c: "1.08194", spread_c: "0.00014", tickVolume: 132, priceComponents: "MBA" });
     // Short page plus an in-progress candle: the walk is done.
     expect(page.nextCursor).toBeNull();
+    // The archived raw payload never contains the in-progress candle.
+    expect((page.payload as { candles: unknown[] }).candles).toHaveLength(3);
+  });
+
+  it("treats a rejected token as a permanent configuration failure", async () => {
+    const source = new OandaCandlesSource({ token: "bad" }, { fetchImpl: (async () => jsonResponse({}, 401)) as unknown as typeof fetch });
+    expect(await source.fetchPage({ instrumentKey: "EUR_USD", interval: "5m", startMs: start, endMs: end, cursor: null })).toMatchObject({ ok: false, code: "INVALID_CONFIGURATION", error: expect.stringContaining("AUTH_FAILED") });
   });
 
   it("backfills into the warehouse with availableAt at candle close", async () => {

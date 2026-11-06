@@ -64,8 +64,8 @@ export function resolveUsdPerUnit(input: { currency: string; rates: readonly FxR
   if (currency === ACCOUNT_CURRENCY) return { ok: true, usdPerUnit: "1", path: "IDENTITY", rate: null, rateAgeMs: null };
   if (!CCY.test(currency)) return { ok: false, reason: "FX_RATE_UNAVAILABLE", detail: "NO_CONVERSION_PATH", currency };
 
-  const direct = input.rates.find((r) => norm(r.base) === currency && norm(r.quote) === ACCOUNT_CURRENCY);
-  const inverse = input.rates.find((r) => norm(r.base) === ACCOUNT_CURRENCY && norm(r.quote) === currency);
+  const direct = freshest(input.rates.filter((r) => norm(r.base) === currency && norm(r.quote) === ACCOUNT_CURRENCY), input.now);
+  const inverse = freshest(input.rates.filter((r) => norm(r.base) === ACCOUNT_CURRENCY && norm(r.quote) === currency), input.now);
   if (!direct && !inverse) {
     const anyLeg = input.rates.some((r) => norm(r.base) === currency || norm(r.quote) === currency);
     return { ok: false, reason: "FX_RATE_UNAVAILABLE", detail: anyLeg ? "NO_CONVERSION_PATH" : "MISSING_RATE", currency };
@@ -86,6 +86,20 @@ export function resolveUsdPerUnit(input: { currency: string; rates: readonly FxR
     return { ok: true, usdPerUnit: usdPerUnit.toSignificantDigits(20).toFixed(), path, rate, rateAgeMs: check.ageMs };
   }
   return { ok: false, reason: "FX_RATE_UNAVAILABLE", detail: firstRefusal ?? "MISSING_RATE", currency };
+}
+
+/** Latest observation not after `now` (no look-ahead); falls back to the first candidate so refusals stay specific. */
+function freshest(candidates: readonly FxRate[], now: Date): FxRate | undefined {
+  let best: FxRate | undefined;
+  let bestMs = Number.NEGATIVE_INFINITY;
+  for (const rate of candidates) {
+    const ms = Date.parse(rate.observedAt);
+    if (Number.isFinite(ms) && ms <= now.getTime() && ms > bestMs) {
+      best = rate;
+      bestMs = ms;
+    }
+  }
+  return best ?? candidates[0];
 }
 
 function checkRate(rate: FxRate, now: Date, maxRateAgeMs: number): { ok: true; ageMs: number } | { ok: false; detail: FxConversionRefusal } {

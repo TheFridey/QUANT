@@ -67,6 +67,11 @@ describe("resolveUsdPerUnit", () => {
     expect(r).toMatchObject({ ok: true, path: "INVERSE" });
   });
 
+  it("uses the freshest duplicate rate and never one observed after now", () => {
+    const r = resolveUsdPerUnit({ currency: "EUR", rates: [rate("EUR", "USD", "1.00", MAX_AGE * 10), rate("EUR", "USD", "1.10"), rate("EUR", "USD", "9.99", -60_000)], now: NOW, maxRateAgeMs: MAX_AGE });
+    expect(r).toMatchObject({ ok: true, usdPerUnit: "1.1", path: "DIRECT" });
+  });
+
   it("has no weekend exemption: a Friday-close USDJPY rate read on Sunday is stale", () => {
     const fridayClose = { base: "USD", quote: "JPY", mid: "150", observedAt: "2026-11-06T21:59:00.000Z", source: "test" };
     const sunday = new Date("2026-11-08T12:00:00.000Z");
