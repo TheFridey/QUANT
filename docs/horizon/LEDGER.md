@@ -2,6 +2,28 @@
 
 Operation HORIZON (multi-asset expansion). Evidence labels as in [`docs/genesis/EXECUTION_LEDGER.md`](../genesis/EXECUTION_LEDGER.md). Diagnosis: [`DIAGNOSIS.md`](DIAGNOSIS.md). Nothing here enables new trading.
 
+## Checkpoint 2: 6 Nov 2026, ~10:10 UTC (`5fe4484` deployed)
+
+Operator: "Merge and deploy". Merged #60 (`999a6ea`), #62 (`0a5559a`), #61 (`aa46037`), #63 (`5fe4484`); no conflicts; main CI green on `5fe4484`.
+
+Deploy: fast-forward `5e26943` → `5fe4484`; no migration; lockfile unchanged; no protected paths; backup `quant-20261106T100335Z.dump` (703 MB, 67 tables); snapshot `/srv/quant/releases/5e26943-20261106T100447Z`; `quant-api`, `quant-worker`, `quant-web` restarted 10:07:18 UTC. Smoke: health `ok`; 144 observations in 2 min; cycles advancing; 0 API/worker error lines; web 307; `/api/research/opportunities` 401 without a token (guarded); other tenants 200. Not verified: scanner UI in a logged-in browser.
+
+Risk config at deploy (not changed by this deploy): `maxDailyLossPct` 10, `maxTotalDrawdownPct` 30, set by the operator through the Settings panel (revision 2, `operator@quant.local`, 4 Nov 22:47 UTC). Equity 9,035.94 vs HWM 10,106.00 (10.6% drawdown, under the 30% limit); 50 orders since 4 Nov 22:44 UTC.
+
+Market probe on production (read-only, `5fe4484`, ~10:09 UTC Friday):
+
+| Instrument | Result |
+| --- | --- |
+| Solana universe | not probed (worker discovery) |
+| EUR/USD, GBP/USD, USD/JPY | Frankfurter ECB reference rate only (`REFERENCE/REFERENCE_RATE`), not tradeable; USD/JPY also needs quote→USD conversion (PCR-2) |
+| SPY | Alpaca IEX **real** quote received, `REAL_TIME/SINGLE_VENUE`; outside RTH (bid 712.54 / ask 758.52, stale overnight IEX book) — `SESSION_CLOSED: OUTSIDE_RTH` |
+| QQQ | Alpaca IEX quote, one-sided outside RTH (`ONE_SIDED_QUOTE`, `SESSION_CLOSED`) |
+| XAU/USD, WTI | `PROVIDER_NOT_CONFIGURED: oanda_practice MISSING_CREDENTIALS` |
+| SPX, NDX, FTSE, DJI | research only, no provider |
+| All non-Solana | `NOT_WIRED_INTO_PAPER_PIPELINE` (activation needs operator approval and PCR-2) |
+
+So the Alpaca data path is `VERIFIED` against the real API; OANDA is still unverified (no account).
+
 ## Checkpoint 1: 6 Nov 2026
 
 | PR | Scope | State |
