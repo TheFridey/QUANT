@@ -277,3 +277,41 @@ export function isContiguous(prevT: number, nextT: number, barMs: number, calend
   // Session boundary: the next bar is the first one printed in the next trading session.
   return b === nextUsEquitySessionDate(a);
 }
+
+/** Most ticks a weekend stub print may carry; real sessions carry thousands. */
+export const WEEKEND_STUB_MAX_TICKS = 10;
+/** Without a tick count, a weekend stub must be near-flat: high − low within this share of the close (5 bps). */
+export const WEEKEND_STUB_MAX_RANGE = 0.0005;
+
+export type StubExclusion = { t: number; reason: string };
+
+/**
+ * FX/metals providers occasionally print a stub bar after the Friday close (one to a few ticks, flat), which
+ * dates into the weekend closure. Such a bar carries no tradeable information, so it is excluded and reported
+ * rather than refusing the whole dataset. Any other off-session bar is kept, so validation still refuses it.
+ */
+export function excludeWeekendStubBars<B extends { t: number; high: number; low: number; close: number }>(
+  bars: readonly B[],
+  options: { barMs: number; calendar: SessionCalendar; tickVolumes?: ReadonlyArray<number | null>; availableAt?: readonly number[] },
+): { bars: B[]; availableAt: number[] | undefined; excluded: StubExclusion[] } {
+  if (options.calendar !== "FX_24_5" || bars.length === 0) {
+    return { bars: [...bars], availableAt: options.availableAt ? [...options.availableAt] : undefined, excluded: [] };
+  }
+  const t0 = bars[0]!.t;
+  const kept: B[] = [];
+  const keptAvailable: number[] = [];
+  const excluded: StubExclusion[] = [];
+  bars.forEach((bar, i) => {
+    const issue = sessionAlignmentIssue(bar.t, options.barMs, options.calendar, t0);
+    const ticks = options.tickVolumes?.[i] ?? null;
+    const range = bar.close > 0 ? (bar.high - bar.low) / bar.close : Infinity;
+    const stub = ticks !== null ? ticks <= WEEKEND_STUB_MAX_TICKS : range <= WEEKEND_STUB_MAX_RANGE;
+    if (issue?.code === "OFF_SESSION" && stub) {
+      excluded.push({ t: bar.t, reason: ticks !== null ? `weekend stub: ${ticks} tick(s)` : `weekend stub: range ${(range * 10_000).toFixed(2)} bps` });
+      return;
+    }
+    kept.push(bar);
+    if (options.availableAt) keptAvailable.push(options.availableAt[i]!);
+  });
+  return { bars: kept, availableAt: options.availableAt ? keptAvailable : undefined, excluded };
+}
