@@ -1,7 +1,7 @@
 import "../load-env.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { inferBarMs, MARKET_CONFIGS, runHorizonStudy, type MarketResearchConfig, type ResearchBar } from "@odin/backtest";
+import { excludeWeekendStubBars, inferBarMs, MARKET_CONFIGS, runHorizonStudy, type MarketResearchConfig, type ResearchBar } from "@odin/backtest";
 import { INTERVAL_MS, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
 import { programmeTrialCount } from "./holdout-policy.js";
@@ -50,6 +50,7 @@ async function main() {
   let datasetKey: string;
   let priorTrials: number;
   let source: Record<string, unknown>;
+  let tickVolumes: Array<number | null> | undefined;
   if (args.csvPath) {
     const text = readFileSync(args.csvPath, "utf8");
     const parsed = parseBarsCsv(text);
@@ -73,6 +74,11 @@ async function main() {
       if (rows.length > MAX_WAREHOUSE_BARS) throw new Error(`REFUSED: dataset ${dataset.id} has more than ${MAX_WAREHOUSE_BARS} available bars; this CLI reads at most ${MAX_WAREHOUSE_BARS}`);
       bars = rows.map((row) => ({ t: row.openTime.getTime(), open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close), volume: row.volume === null ? null : Number(row.volume) }));
       barAvailableAt = rows.map((row) => row.availableAt.getTime());
+      tickVolumes = rows.map((row) => {
+        const extra = row.extra && typeof row.extra === "object" && !Array.isArray(row.extra) ? (row.extra as Record<string, unknown>) : null;
+        const ticks = extra ? Number(extra.tickVolume) : NaN;
+        return Number.isFinite(ticks) ? ticks : null;
+      });
       barMs = INTERVAL_MS[dataset.interval as HistoryInterval] ?? inferBarMs(bars);
       instrument = args.instrument ?? dataset.instrumentKey;
       datasetKey = `${dataset.instrumentKey}|${dataset.interval}`;
@@ -82,6 +88,11 @@ async function main() {
       await prisma.$disconnect();
     }
   }
+  // FX/metals providers occasionally print a one-to-few-tick bar after the Friday close; exclude and report it.
+  const stubs = excludeWeekendStubBars(bars, { barMs, calendar: market.calendar, tickVolumes, availableAt: barAvailableAt });
+  bars = stubs.bars;
+  barAvailableAt = stubs.availableAt;
+  source = { ...source, excludedWeekendStubs: { count: stubs.excluded.length, bars: stubs.excluded.slice(0, 50).map((e) => ({ t: new Date(e.t).toISOString(), reason: e.reason })) } };
   const report = runHorizonStudy({
     bars,
     barMs,

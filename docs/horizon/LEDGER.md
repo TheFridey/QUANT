@@ -2,6 +2,27 @@
 
 Operation HORIZON (multi-asset expansion). Evidence labels as in [`docs/genesis/EXECUTION_LEDGER.md`](../genesis/EXECUTION_LEDGER.md). Diagnosis: [`DIAGNOSIS.md`](DIAGNOSIS.md). Nothing here enables new trading.
 
+## Checkpoint 4: 6 Nov 2026 (`bb53012` deployed; daily gold/FX studies)
+
+Operator: "Merge and deploy". Merged #65 (`cc0f64c`) and #66 (`bb53012`; #66 is docs-only and merged while its checks were still pending); main CI green on `bb53012`. Deploy: fast-forward `5fe4484` → `bb53012`, no migration, no lockfile change, no protected paths; backup `quant-20261106T114120Z.dump`; snapshot `/srv/quant/releases/5fe4484-20261106T114235Z`; api, worker, web restarted 11:42:48 UTC; health `ok`, 0 error lines, 168 observations in 2 min.
+
+Daily re-backfill with `oanda_practice_ny17` (17:00 New York alignment), 2016-11-01 → 2026-11-04, 0 rejected: EUR_USD 2,598, GBP_USD 2,602, USD_JPY 2,615, XAU_USD 2,602 bars. The first pass left three datasets empty with no error output; a rerun of each completed (OANDA practice API 504s, as before).
+
+Daily studies were then refused because OANDA prints occasional one-to-three-tick flat bars after the Friday close that date into the weekend (EUR 3, GBP 7, JPY 19, XAU 18 over ten years; median daily tick volume ~86,000). `horizon/fx-weekend-stubs` excludes and reports such stubs (≤ 10 ticks, or ≤ 5 bps range without a tick count) and still refuses any active weekend bar.
+
+### Daily gold and FX studies (`HISTORICAL_VERIFIED` as runs; no edge)
+
+That branch, CSV exports of the ny17 datasets, seed 1, prior trials 3,000, holdout never consumed; ~6.3 s and ~180 MB per run.
+
+| Market | Stubs excluded | Strategy families | ML 2.0 (1 day) | Overall |
+| --- | --- | --- | --- | --- |
+| EUR/USD | 3 | 4 INSUFFICIENT_EVIDENCE (9–26 OOS trades < 30); vol mean reversion REJECTED_OVERFIT (PBO 0.74) | NO_SKILL (AUC 0.510, lower 0.477) | NO_SKILL |
+| GBP/USD | 7 | 4 INSUFFICIENT_EVIDENCE; vol mean reversion REJECTED_OVERFIT (PBO 0.59) | NO_SKILL (AUC 0.491, lower 0.456) | NO_SKILL |
+| USD/JPY | 19 | 4 INSUFFICIENT_EVIDENCE; vol mean reversion REJECTED_OVERFIT (PBO 0.81) | NO_SKILL (AUC 0.518, lower 0.484) | NO_SKILL |
+| XAU/USD | 18 | 5 INSUFFICIENT_EVIDENCE (7–26 OOS trades) | NO_SKILL (AUC 0.505, lower 0.476) | NO_SKILL |
+
+Across the hourly and daily runs, no gold or FX strategy or model is a candidate. Ten years of daily data still yields fewer than 30 out-of-sample trades per family, so slower families need either longer history or more instruments to reach the evidence bar.
+
 ## Checkpoint 3: 6 Nov 2026 (OANDA connected; gold and FX history; first gold/FX studies)
 
 Operator created an OANDA fxTrade Practice account and set `OANDA_API_TOKEN`, `OANDA_ACCOUNT_ID`, `OANDA_API_URL` in the production `.env` (file `quant:quant 600`; values never read or printed by Claude). The first probe reported `AUTH_FAILED`: OANDA briefly answered `/instruments` with 401 "Insufficient authorization" for a newly issued token; minutes later every call returned 200 (no code change). OANDA's practice API also returned occasional Cloudflare 504s.
