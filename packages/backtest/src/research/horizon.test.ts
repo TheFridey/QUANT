@@ -366,6 +366,12 @@ describe("runHorizonStudy", () => {
     const again = runHorizonStudy({ bars: planted, barMs: H, market: FX, instrument: "EUR/USD", datasetKey: "EURUSD|1h", codeVersion: "test", priorTrials: report.programme.total, holdoutGate: gate, ml: { enabled: false } });
     expect(again.strategies.every((s) => !s.holdout.evaluated)).toBe(true);
     expect(again.verdict).not.toBe("CANDIDATE");
+    // Regression (EVIDENCE): a consumed holdout is not a pending one. Before the fix this study reported
+    // CANDIDATE_PENDING_HOLDOUT with "the holdout was withheld (no recording gate)", although a gate was
+    // present and had refused a second look.
+    expect(again.verdict).toBe("INSUFFICIENT_EVIDENCE");
+    expect(again.reasons.join(" ")).toMatch(/already consumed/);
+    expect(again.reasons.join(" ")).not.toMatch(/withheld/);
   });
 
   it("withholds the holdout without a recording gate", () => {

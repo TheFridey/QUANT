@@ -1,5 +1,6 @@
 import { validateResearchBars } from "./feature-set.js";
 import { declaredGrids, HORIZON_STRATEGIES_VERSION, horizonStrategySpecs } from "./horizon-strategies.js";
+import { composeHorizonVerdict, mlHoldoutStatus, strategyHoldoutStatus, type HoldoutStatus, type HorizonVerdict } from "./horizon-verdict.js";
 import { costBpsPerSideAt, horizonBars, legacyThresholdDiagnostic, marketConfigHash, periodsPerYearFor, pipSizeFor, validationCostBpsPerSide, type MarketResearchConfig } from "./market-config.js";
 import { Ml2Refusal, runMlPipeline, type HoldoutGate, type LearnerConfig, type Ml2Config, type Ml2Verdict } from "./ml2.js";
 import { classifyRegimes, type RegimeState } from "./regime.js";
@@ -22,7 +23,6 @@ import { DEFAULT_VALIDATION, validateStrategy, type ValidationConfig, type Verdi
 
 export const HORIZON_RUNNER_VERSION = "horizon-runner-1.0.0";
 
-export type HorizonVerdict = "CANDIDATE" | "CANDIDATE_PENDING_HOLDOUT" | "NO_SKILL" | "INSUFFICIENT_EVIDENCE" | "REJECTED_DATA";
 
 export type HorizonInput = {
   bars: readonly ResearchBar[];
@@ -61,7 +61,7 @@ export type HorizonStrategyResult = {
   dsrProgramme: { dsr: number | null; trials: number } | null;
   pbo: number | null;
   costSensitivity: Array<{ multiplier: number; netReturn: number }>;
-  holdout: { evaluated: boolean; netReturn: number | null };
+  holdout: { evaluated: boolean; netReturn: number | null; status: HoldoutStatus };
   trials: Array<{ params: Record<string, ParamValue>; window: string; fold: number | null; bars: number; trades: number; netReturn: number; perBarSharpe: number | null }>;
 };
 
@@ -76,7 +76,7 @@ export type HorizonMlResult =
       programmeTrialCount: number;
       championTrialId: string | null;
       champion: { auc: number | null; brierSkill: number | null; signals: number; expectancy1x: number | null; alwaysEnter1x: number | null; buyAndHoldPerHorizon1x: number | null; randomControlMean: number | null; randomControlPValue: number | null } | null;
-      holdout: { evaluated: boolean; reason?: string };
+      holdout: { evaluated: boolean; reason?: string; status: HoldoutStatus };
       trials: Array<{ trialId: string; family: string; status: string; auc: number | null; brierSkill: number | null; signals: number; expectancy1x: number | null; sharpe: number | null }>;
     };
 
@@ -141,7 +141,7 @@ export function runHorizonStudy(input: HorizonInput): HorizonReport {
 
   const strategies: HorizonStrategyResult[] = specs.map((spec) => {
     if (lateBars > 0) {
-      return { id: spec.id, version: spec.version, family: spec.family, verdict: "REJECTED_DATA" as Verdict, walkForwardPassed: false, reasons: [`${lateBars} bar(s) became available after their close; the bar simulator assumes availability at close`], trialCount: 0, gridAsRun: null, gridScaleFactor: null, selectedParamsByFold: [], oos: null, controls: { buyAndHoldPerBarSharpe: null, randomPerBarSharpe: null, cashPerBarSharpe: 0, beatsBuyAndHold: null, beatsRandom: null, beatsCash: null }, dsr: null, dsrProgramme: null, pbo: null, costSensitivity: [], holdout: { evaluated: false, netReturn: null }, trials: [] };
+      return { id: spec.id, version: spec.version, family: spec.family, verdict: "REJECTED_DATA" as Verdict, walkForwardPassed: false, reasons: [`${lateBars} bar(s) became available after their close; the bar simulator assumes availability at close`], trialCount: 0, gridAsRun: null, gridScaleFactor: null, selectedParamsByFold: [], oos: null, controls: { buyAndHoldPerBarSharpe: null, randomPerBarSharpe: null, cashPerBarSharpe: 0, beatsBuyAndHold: null, beatsRandom: null, beatsCash: null }, dsr: null, dsrProgramme: null, pbo: null, costSensitivity: [], holdout: { evaluated: false, netReturn: null, status: "NOT_REACHED" as HoldoutStatus }, trials: [] };
     }
     const key = `${spec.id}|${input.datasetKey}`;
     const report = validateStrategy({
@@ -192,7 +192,7 @@ export function runHorizonStudy(input: HorizonInput): HorizonReport {
       dsrProgramme: report.dsrProgramme ? { dsr: report.dsrProgramme.dsr, trials: report.dsrProgramme.trials } : null,
       pbo: report.pbo?.pbo ?? null,
       costSensitivity: report.costSensitivity,
-      holdout: { evaluated: report.holdout !== null, netReturn: report.holdout?.stats.totalReturn ?? null },
+      holdout: { evaluated: report.holdout !== null, netReturn: report.holdout?.stats.totalReturn ?? null, status: strategyHoldoutStatus({ walkForwardPassed: report.walkForwardPassed, holdoutEvaluated: report.holdout !== null, gatePresent: Boolean(gate) }) },
       trials: report.trials.map((t) => ({ params: t.params, window: t.window, fold: t.fold, bars: t.bars, trades: t.trades, netReturn: t.netReturn, perBarSharpe: t.perBarSharpe })),
     };
   });
@@ -228,7 +228,7 @@ export function runHorizonStudy(input: HorizonInput): HorizonReport {
           programmeTrialCount: report.programmeTrialCount,
           championTrialId: report.championTrialId,
           champion: champ ? { auc: champ.auc, brierSkill: champ.brierSkill, signals: champ.signals, expectancy1x: e1?.mean ?? null, alwaysEnter1x: e1?.alwaysEnter ?? null, buyAndHoldPerHorizon1x: e1?.buyAndHoldPerHorizon ?? null, randomControlMean: champ.randomControl.mean, randomControlPValue: champ.randomControl.pValue } : null,
-          holdout: report.holdout.evaluated ? { evaluated: true } : { evaluated: false, reason: report.holdout.reason },
+          holdout: report.holdout.evaluated ? { evaluated: true, status: "EVALUATED" } : { evaluated: false, reason: report.holdout.reason, status: mlHoldoutStatus(report.holdout) },
           trials: report.trials.map((t) => ({ trialId: t.trialId, family: t.family, status: t.status, auc: t.auc, brierSkill: t.brierSkill, signals: t.signals, expectancy1x: t.expectancy1x, sharpe: t.sharpe })),
         });
       } catch (error) {
@@ -238,28 +238,18 @@ export function runHorizonStudy(input: HorizonInput): HorizonReport {
     }
   }
 
-  // Overall verdict: research status only.
-  const anyCandidate = strategies.some((s) => s.verdict === "VALIDATED_CANDIDATE") || ml.some((m) => "verdict" in m && m.verdict === "CANDIDATE");
-  const anyPending = strategies.some((s) => s.walkForwardPassed && s.verdict !== "VALIDATED_CANDIDATE" && !s.holdout.evaluated) || ml.some((m) => "verdict" in m && !m.holdout.evaluated && /withheld/.test(m.holdout.reason ?? ""));
-  const ranStrategies = strategies.filter((s) => s.oos !== null && s.oos.bars > 0);
-  const ranMl = ml.filter((m) => "verdict" in m && m.verdict !== "INSUFFICIENT_EVIDENCE");
-  let verdict: HorizonVerdict;
-  if (lateBars > 0 && !ml.some((m) => "verdict" in m)) {
-    verdict = "REJECTED_DATA";
-    reasons.push(`${lateBars} bar(s) arrived after their close and ML 2.0 did not run`);
-  } else if (anyCandidate) {
-    verdict = "CANDIDATE";
-    reasons.push("At least one hypothesis passed walk-forward and a once-evaluated, recorded holdout. Research status only: never paper or live without operator approval");
-  } else if (anyPending) {
-    verdict = "CANDIDATE_PENDING_HOLDOUT";
-    reasons.push("Walk-forward passed for at least one hypothesis; the holdout was withheld (no recording gate), so this is not evidence of an edge yet");
-  } else if (ranStrategies.length > 0 || ranMl.length > 0) {
-    verdict = "NO_SKILL";
-    reasons.push(`No hypothesis survived walk-forward after costs and ${input.priorTrials + runTrials} programme trials`);
-  } else {
-    verdict = "INSUFFICIENT_EVIDENCE";
-    reasons.push(`Not enough data for any test (${bars.length} bars; market minimum ${minBars})`);
-  }
+  // Overall verdict: research status only (horizon-verdict.ts).
+  const composed = composeHorizonVerdict({
+    strategies: strategies.map((s) => ({ id: s.id, verdict: s.verdict, walkForwardPassed: s.walkForwardPassed, holdoutStatus: s.holdout.status, oos: s.oos && { bars: s.oos.bars, trades: s.oos.trades } })),
+    ml: ml.map((m) => ("verdict" in m ? { horizonBars: m.horizonBars, verdict: m.verdict, holdoutStatus: m.holdout.status } : { horizonBars: m.horizonBars, refused: m.refused })),
+    lateBars,
+    bars: bars.length,
+    minBars,
+    minOosTrades: market.minimumSample.minOosTrades,
+    programmeTrials: input.priorTrials + runTrials,
+  });
+  const verdict: HorizonVerdict = composed.verdict;
+  reasons.push(...composed.reasons);
 
   return {
     runner: HORIZON_RUNNER_VERSION,
