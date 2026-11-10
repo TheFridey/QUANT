@@ -146,3 +146,11 @@ URL → refused). A production-dump drill is still `NOT_VERIFIED` (needs VPS acc
 - RTO: restore time measured by the drill plus rebuild; record the production figure when the drill runs there.
 - Migration rollback: Prisma migrations here are forward-only. Roll back by restoring the pre-deploy
   dump into a new database and repointing `DATABASE_URL`, never by dropping tables in place.
+
+## Pipeline stall (`/api/health` degraded, `pipeline: stalled`)
+
+`/api/health` reports `degraded` when a RUNNING engine has completed no cycle for 5 minutes (detail: authenticated `/api/health/detail`).
+
+Ingest, sentinel, pulse, aegis, atlas and archivist fail after 60 s (`STAGE_TIMEOUT`, metric `odin_stage_timeout`) and the next cycle starts clean. **The executor is never timed out**, because abandoning order settlement could process it twice: an overrun only raises `odin_stage_overrun`. If the executor hangs, its queue blocks and each later cycle ends `STALE_CYCLE`.
+
+Recovery: check open positions and pending orders, then `systemctl restart quant-worker` (the stuck job is retried; backlogged jobs for dead cycles exit at once). Do not restart PostgreSQL or Redis for this.

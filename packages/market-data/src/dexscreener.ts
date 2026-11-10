@@ -307,12 +307,14 @@ function solanaMints(body: unknown): string[] {
   return unique(mints);
 }
 
+const DEXSCREENER_TIMEOUT_MS = 8_000;
+
 async function readJson(
   fetchImpl: typeof fetch,
   url: string,
 ): Promise<{ ok: true; body: unknown } | { ok: false; error: string }> {
   try {
-    const response = await fetchImpl(url, { headers: { accept: "application/json" } });
+    const response = await fetchImpl(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(DEXSCREENER_TIMEOUT_MS) });
     if (!response.ok) return { ok: false, error: `DexScreener HTTP ${response.status} for ${url}` };
     return { ok: true, body: await response.json() };
   } catch (error) {

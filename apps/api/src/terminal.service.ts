@@ -118,7 +118,6 @@ export class TerminalService {
     });
     const pipeline = pipelineHealth({
       engineStatus: engine?.status ?? null,
-      engineUpdatedAt: engine?.updatedAt ?? null,
       lastCompleteCycleAt: lastComplete?.startedAt ?? null,
       now: new Date(),
     });

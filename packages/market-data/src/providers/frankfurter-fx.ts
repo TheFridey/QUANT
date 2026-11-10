@@ -41,7 +41,7 @@ export class FrankfurterFxProvider implements MarketDataProvider {
       const session = evaluateSession({ session: instrument.session, now: at });
       try {
         const url = `${baseUrl}/latest?from=${encodeURIComponent(instrument.base)}&to=${encodeURIComponent(instrument.quote)}`;
-        const response = await fetchImpl(url, { headers: { accept: "application/json" } });
+        const response = await fetchImpl(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(8_000) });
         if (!response.ok) {
           quotes.push(nullQuote(instrument, at, session.status, `frankfurter:http_${response.status}`));
           continue;

@@ -47,8 +47,9 @@ export class StageTimeoutError extends UnrecoverableError {
 }
 
 /**
- * Promises cannot be cancelled, so a timeout abandons the work rather than stopping it. Anything it does
- * afterwards is harmless because every stage re-checks that its cycle is still RUNNING.
+ * Promises cannot be cancelled, so a timeout abandons the work rather than stopping it. Late work is safe
+ * because cycle updates apply only while the cycle is RUNNING, later stages no-op on a FAILED cycle, the
+ * high-water mark can only rise, and a day roll is compare-and-set.
  */
 export async function withStageTimeout<T>(stage: string, timeoutMs: number, run: () => Promise<T>): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -64,7 +65,7 @@ export async function withStageTimeout<T>(stage: string, timeoutMs: number, run:
   } finally {
     clearTimeout(timer);
     // A late failure of abandoned work must not become an unhandled rejection.
-    work.catch(() => undefined);
+    work.catch(() => recordMetric("odin_stage_late_error", 1, { stage }, "count"));
   }
 }
 
@@ -122,6 +123,9 @@ export class IngestProcessor extends WorkerHost {
         this.stages.ingest({ cycleId: job.data.cycleId, trigger: job.data.trigger ?? "schedule" }),
       );
       if (!result.skipped) await enqueue(this.next, "sentinel", result.cycleId);
+    } catch (error) {
+      if (error instanceof StageTimeoutError) await this.stages.failCreatedCycle(error.message);
+      throw error;
     } finally {
       await this.leases.release(lease);
     }
