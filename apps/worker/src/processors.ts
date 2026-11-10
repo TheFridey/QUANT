@@ -57,6 +57,8 @@ export async function withStageTimeout<T>(stage: string, timeoutMs: number, run:
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       recordMetric("odin_stage_timeout", 1, { stage }, "count");
+      // A late failure of abandoned work must not become an unhandled rejection.
+      work.catch(() => recordMetric("odin_stage_late_error", 1, { stage }, "count"));
       reject(new StageTimeoutError(stage, timeoutMs));
     }, timeoutMs);
   });
@@ -64,8 +66,6 @@ export async function withStageTimeout<T>(stage: string, timeoutMs: number, run:
     return await Promise.race([work, timeout]);
   } finally {
     clearTimeout(timer);
-    // A late failure of abandoned work must not become an unhandled rejection.
-    work.catch(() => recordMetric("odin_stage_late_error", 1, { stage }, "count"));
   }
 }
 
@@ -123,9 +123,6 @@ export class IngestProcessor extends WorkerHost {
         this.stages.ingest({ cycleId: job.data.cycleId, trigger: job.data.trigger ?? "schedule" }),
       );
       if (!result.skipped) await enqueue(this.next, "sentinel", result.cycleId);
-    } catch (error) {
-      if (error instanceof StageTimeoutError) await this.stages.failCreatedCycle(error.message);
-      throw error;
     } finally {
       await this.leases.release(lease);
     }

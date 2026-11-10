@@ -1,4 +1,4 @@
-import { ratchetHighWaterMark } from "./account-ratchet.js";
+import { applySessionRoll, ratchetHighWaterMark } from "./account-ratchet.js";
 import {
   ALERT_CODES,
   allocateOpportunities,
@@ -457,19 +457,11 @@ export class StageRunner {
     await this.emit(cycleId, "failed");
   }
 
-  /** A timed-out ingest job carries no cycleId, so fail the cycle it created rather than wait for the stale sweep. */
-  async failCreatedCycle(error: string): Promise<void> {
-    await this.prisma.cycleRun.updateMany({
-      where: { status: "RUNNING", stage: "created" },
-      data: { status: "FAILED", error: error.slice(0, 500), finishedAt: this.now() },
-    });
-  }
-
   private async observe(cycleId: string, now: Date): Promise<void> {
     const config = await this.config();
     if (this.dataMode === "demo") {
-      await this.prisma.cycleRun.update({
-        where: { id: cycleId },
+      await this.prisma.cycleRun.updateMany({
+        where: { id: cycleId, status: "RUNNING" },
         data: { dataState: "DEMO", observationCount: 0, error: "Demo mode does not synthesize prices" },
       });
       await upsertDecision(this.prisma, cycleId, emptyDecision("DATA_DEMO", "Demo mode does not synthesize prices"));
@@ -477,8 +469,8 @@ export class StageRunner {
     }
     if (this.dataMode === "replay") {
       const copied = await this.copyReplay(cycleId, config, now);
-      await this.prisma.cycleRun.update({
-        where: { id: cycleId },
+      await this.prisma.cycleRun.updateMany({
+        where: { id: cycleId, status: "RUNNING" },
         data: { dataState: copied > 0 ? "REPLAY" : "STALE", observationCount: copied, error: copied > 0 ? null : "No stored observations to replay" },
       });
       return;
@@ -557,8 +549,8 @@ export class StageRunner {
     const result = await discoveryPromise;
 
     if (!result.ok && paperExtras.length === 0 && mandatoryByAddress.size === 0) {
-      await this.prisma.cycleRun.update({
-        where: { id: cycleId },
+      await this.prisma.cycleRun.updateMany({
+        where: { id: cycleId, status: "RUNNING" },
         data: { dataState: "STALE", observationCount: 0, error: result.error },
       });
       await upsertDecision(this.prisma, cycleId, emptyDecision("UPSTREAM_UNAVAILABLE", result.error));
@@ -785,16 +777,7 @@ export class StageRunner {
       startingBalanceUsd: account.startingBalanceUsd.toString(),
     });
     if (sessionRoll.rolled) {
-      // Compare-and-set on the session this reader saw, so a stage finishing late cannot undo a newer roll.
-      await db.paperAccount.updateMany({
-        where: { id: account.id, sessionStartedAt: account.sessionStartedAt },
-        data: {
-          sessionStartedAt: sessionRoll.sessionStartedAt,
-          sessionStartEquityUsd: sessionRoll.sessionStartEquityUsd,
-          // A roll resets the low; within a day it only moves down, via the atomic write below.
-          sessionLowEquityUsd: sessionRoll.sessionLowEquityUsd,
-        },
-      });
+      await applySessionRoll(db, account.id, account.sessionStartedAt, sessionRoll);
     }
     if (sessionRoll.highWaterMarkUsd !== (account.highWaterMarkUsd?.toString() ?? null)) {
       await ratchetHighWaterMark(db, account.id, sessionRoll.highWaterMarkUsd);

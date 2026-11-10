@@ -1,3 +1,4 @@
+import { setMetricSink } from "@odin/shared";
 import { UnrecoverableError, type Job } from "bullmq";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { failIfExhausted, STAGE_TIMEOUT_MS, StageTimeoutError, withStageLease, withStageOverrunAlert, withStageTimeout } from "./processors.js";
@@ -26,7 +27,26 @@ describe("stage timeouts", () => {
 
   it("passes through a stage's own error unchanged, so normal retries still apply", async () => {
     const boom = new Error("db down");
+    const metrics: string[] = [];
+    setMetricSink((line) => metrics.push(line.metric));
     await expect(withStageTimeout("pulse", 1_000, async () => Promise.reject(boom))).rejects.toBe(boom);
+    setMetricSink(null);
+    expect(metrics).not.toContain("odin_stage_late_error");
+  });
+
+  it("records a late-error metric only for work that failed after being abandoned", async () => {
+    const metrics: string[] = [];
+    setMetricSink((line) => metrics.push(line.metric));
+    let failLate: (e: Error) => void = () => undefined;
+    const pending = withStageTimeout("pulse", 1_000, () => new Promise<void>((_r, reject) => (failLate = reject)));
+    const result = expect(pending).rejects.toBeInstanceOf(StageTimeoutError);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await result;
+    expect(metrics).toEqual(["odin_stage_timeout"]);
+    failLate(new Error("late"));
+    await vi.advanceTimersByTimeAsync(0);
+    setMetricSink(null);
+    expect(metrics).toEqual(["odin_stage_timeout", "odin_stage_late_error"]);
   });
 
   it("does not raise an unhandled rejection when abandoned work fails later", async () => {
