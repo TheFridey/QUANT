@@ -1474,3 +1474,193 @@ model ShadowOutcome {
 
   prediction ShadowPrediction @relation(fields: [predictionId], references: [id], onDelete: Restrict)
 }
+
+/// EVIDENCE: one declared research campaign (datasets x hypotheses, limits, validation policy). Immutable
+/// (DB trigger). `specCanonical` is the exact canonical JSON text; `specHash` is its SHA-256 (CHECK), so the
+/// same declaration always maps to the same campaign.
+model ResearchCampaign {
+  id            String   @id @default(cuid())
+  name          String
+  specVersion   String
+  specCanonical String
+  specHash      String   @unique
+  synthetic     Boolean  @default(false)
+  createdBy     String
+  createdAt     DateTime @default(now())
+
+  runs ResearchCampaignRun[]
+
+  @@index([createdAt])
+}
+
+/// EVIDENCE: one execution of a campaign. Immutable (DB trigger). runNumber 1 is the first run; a higher number
+/// is an intentional rerun and needs a reason. A retry never creates a run.
+model ResearchCampaignRun {
+  id          String   @id @default(cuid())
+  campaignId  String
+  runNumber   Int
+  reason      String
+  requestedBy String
+  /// Git commit the run is pinned to; units refuse to execute under any other code version.
+  codeVersion String
+  /// Runner, strategy-library, market-config, feature and label versions in force when the run was declared.
+  versions    Json
+  createdAt   DateTime @default(now())
+
+  campaign ResearchCampaign          @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  state    ResearchCampaignRunState?
+  units    ResearchCampaignUnit[]
+  events   ResearchCampaignEvent[]
+
+  @@unique([campaignId, runNumber])
+  @@index([createdAt])
+}
+
+/// EVIDENCE: mutable execution state of a run (one row per run). Never holds results.
+model ResearchCampaignRunState {
+  runId             String    @id
+  /// QUEUED | RUNNING | COMPLETED | COMPLETED_WITH_FAILURES | CANCELLED
+  state             String    @default("QUEUED")
+  cancelRequestedAt DateTime?
+  cancelRequestedBy String?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  updatedAt         DateTime  @updatedAt
+
+  run ResearchCampaignRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@index([state])
+}
+
+/// EVIDENCE: one hypothesis on one dataset within a run. Identity columns are immutable (DB trigger allows
+/// updates to execution-state columns only); `version` is bumped on every claim and transition and
+/// `leaseOwner`/`leaseExpiresAt` fence a claim to one executor.
+model ResearchCampaignUnit {
+  id             String    @id @default(cuid())
+  runId          String
+  seq            Int
+  datasetKey     String
+  /// STRATEGY | ML2
+  hypothesisKind String
+  hypothesisId   String
+  /// Upper bound on trials this unit may run (declared grid x folds), fixed when the run is declared.
+  plannedTrials  Int
+  /// SHA-256 of the unit's canonical specification (dataset declaration, hypothesis, validation, versions).
+  unitSpecHash   String
+  /// PENDING | RUNNING | SUCCEEDED | REFUSED | FAILED | ABANDONED | CANCELLED
+  state          String    @default("PENDING")
+  attempts       Int       @default(0)
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
+  version        Int       @default(0)
+  lastError      String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  updatedAt      DateTime  @updatedAt
+
+  run     ResearchCampaignRun      @relation(fields: [runId], references: [id], onDelete: Restrict)
+  results ResearchCampaignResult[]
+
+  @@unique([runId, seq])
+  @@index([state, leaseExpiresAt])
+}
+
+/// EVIDENCE: immutable result of one phase of a unit (DB trigger). At most one row per unit and phase, so a
+/// retry or a duplicate delivery can neither overwrite a result nor add a second one.
+model ResearchCampaignResult {
+  id                String   @id @default(cuid())
+  unitId            String
+  /// DATA_REFUSAL | WALK_FORWARD | HOLDOUT
+  phase             String
+  verdict           String
+  reasons           String[]
+  walkForwardPassed Boolean
+  /// NOT_REACHED | WITHHELD | ALREADY_CONSUMED | EVALUATED | CONSUMED_RESULT_LOST
+  holdoutStatus     String
+  trialCount        Int
+  /// Programme-wide trial count this result was deflated by (frozen in the trial reservation).
+  priorTrials       Int
+  /// Dataset identity: source, instrument, interval, calendar, alignment, content hash, exclusions, availability policy.
+  dataset           Json
+  /// Code, runner, config and feature versions and hashes, seeds, declared search space, cost assumptions.
+  provenance        Json
+  /// Compact outcome for listings (no per-trial rows).
+  summary           Json
+  /// Full hypothesis result including every trial, as exact canonical JSON text.
+  detailCanonical   String
+  /// SHA-256 of the canonical deterministic content (dataset, provenance, summary, detail; no timings).
+  resultHash        String
+  runtimeMs         Int
+  peakRssMb         Float
+  createdAt         DateTime @default(now())
+
+  unit ResearchCampaignUnit @relation(fields: [unitId], references: [id], onDelete: Restrict)
+
+  @@unique([unitId, phase])
+  @@index([verdict])
+}
+
+/// EVIDENCE: append-only execution log of a run (claims, failed attempts with their errors, lease reclaims,
+/// cancellations, refusals). Failed attempts are kept.
+model ResearchCampaignEvent {
+  id        String   @id @default(cuid())
+  runId     String
+  unitId    String?
+  kind      String
+  actor     String
+  detail    Json
+  createdAt DateTime @default(now())
+
+  run ResearchCampaignRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@index([runId, createdAt])
+  @@index([unitId, createdAt])
+}
+
+/// EVIDENCE: append-only programme-wide trial ledger. RESERVED is written (and committed) before a unit runs
+/// any trial, at the unit's planned upper bound; SETTLED records the actual count when the unit's result is
+/// stored. A unit with no SETTLED row counts at its full reservation for ever. LEGACY_DECLARED records
+/// historical trials that were run before this ledger existed.
+model ResearchTrialLedger {
+  id          String   @id @default(cuid())
+  /// LEGACY_DECLARED | RESERVED | SETTLED
+  kind        String
+  unitId      String?
+  trials      Int
+  /// RESERVED only: the programme count seen under the accounting lock, which the unit is deflated by.
+  priorTrials Int?
+  actor       String
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@unique([unitId, kind])
+  @@index([kind])
+}
+
+/// EVIDENCE: append-only holdout ledger. AUTHORIZED is an operator's time-limited permission for one frozen
+/// walk-forward result. CONSUME_INTENT is committed before the holdout is read, so a crash or rollback after
+/// that point can never make the period unseen. RESULT_RECORDED / RESULT_LOST close the intent.
+model ResearchHoldoutLedger {
+  id            String    @id @default(cuid())
+  /// AUTHORIZED | CONSUME_INTENT | RESULT_RECORDED | RESULT_LOST
+  kind          String
+  unitId        String
+  /// Name-independent hypothesis lineage (strategy family or ML label horizon).
+  lineageKey    String
+  /// Instrument reduced to upper-case letters and digits, so EUR_USD, EUR/USD and eurusd are one instrument.
+  instrumentKey String
+  barMs         Int
+  periodStart   DateTime
+  periodEnd     DateTime
+  datasetHash   String
+  /// SHA-256 binding the row to the frozen walk-forward result and this period.
+  subjectHash   String
+  actor         String
+  expiresAt     DateTime?
+  resultHash    String?
+  note          String?
+  createdAt     DateTime  @default(now())
+
+  @@index([instrumentKey, barMs, lineageKey])
+  @@index([unitId, kind])
+}
