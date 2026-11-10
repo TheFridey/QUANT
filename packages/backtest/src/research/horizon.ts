@@ -2,7 +2,7 @@ import { validateResearchBars } from "./feature-set.js";
 import { declaredGrids, HORIZON_STRATEGIES_VERSION, horizonStrategySpecs } from "./horizon-strategies.js";
 import { composeHorizonVerdict, mlHoldoutStatus, strategyHoldoutStatus, type HoldoutStatus, type HorizonVerdict } from "./horizon-verdict.js";
 import { costBpsPerSideAt, horizonBars, legacyThresholdDiagnostic, marketConfigHash, periodsPerYearFor, pipSizeFor, validationCostBpsPerSide, type MarketResearchConfig } from "./market-config.js";
-import { Ml2Refusal, runMlPipeline, type HoldoutGate, type LearnerConfig, type Ml2Config, type Ml2Verdict } from "./ml2.js";
+import { Ml2Refusal, runMlPipeline, type HoldoutGate, type LearnerConfig, type Ml2Config, type Ml2Report, type Ml2Verdict } from "./ml2.js";
 import { classifyRegimes, type RegimeState } from "./regime.js";
 import { expectedBarCount, regimeCalendarFor } from "./sessions.js";
 import type { ResearchBar } from "./simulate.js";
@@ -42,6 +42,8 @@ export type HorizonInput = {
   validation?: Partial<Pick<ValidationConfig, "folds" | "holdoutFraction" | "seed" | "maxDrawdown">>;
   /** Restrict to these strategy ids (default: all applicable). */
   strategies?: string[];
+  /** Receives the full ML 2.0 report of each horizon (artefacts, holdout span); the HorizonReport keeps a summary. */
+  onMlReport?: (horizonBars: number, report: Ml2Report) => void;
 };
 
 export type HorizonStrategyResult = {
@@ -217,6 +219,7 @@ export function runHorizonStudy(input: HorizonInput): HorizonReport {
           holdout: gate ? { gate, key: `ml2|${input.datasetKey}|h${horizon}` } : undefined,
         });
         runTrials += report.trialCount;
+        input.onMlReport?.(horizon, report);
         const champ = report.championTrialId ? report.walkForward[report.championTrialId] : undefined;
         const e1 = champ?.expectancy.find((e) => e.costMultiplier === 1);
         ml.push({

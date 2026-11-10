@@ -12,6 +12,10 @@
     "./ml2": {
       "types": "./dist/ml2-runtime.d.ts",
       "default": "./dist/ml2-runtime.js"
+    },
+    "./research": {
+      "types": "./dist/research-runtime.d.ts",
+      "default": "./dist/research-runtime.js"
     }
   },
   "scripts": {

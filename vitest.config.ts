@@ -21,7 +21,9 @@ const alias = [
   { find: /^@odin\/analytics$/, replacement: resolve(root, "packages/analytics/src/index.ts") },
   { find: /^@odin\/backtest$/, replacement: resolve(root, "packages/backtest/src/index.ts") },
   { find: /^@odin\/backtest\/ml2$/, replacement: resolve(root, "packages/backtest/src/ml2-runtime.ts") },
+  { find: /^@odin\/backtest\/research$/, replacement: resolve(root, "packages/backtest/src/research-runtime.ts") },
   { find: /^@odin\/evolution$/, replacement: resolve(root, "packages/evolution/src/index.ts") },
+  { find: /^@odin\/evolution\/campaign$/, replacement: resolve(root, "packages/evolution/src/campaign/index.ts") },
   { find: /^@odin\/evolution\/genesis$/, replacement: resolve(root, "packages/evolution/src/genesis/index.ts") },
 ];
 
