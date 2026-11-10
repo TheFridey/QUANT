@@ -2,6 +2,14 @@
 
 Operation HORIZON (multi-asset expansion). Evidence labels as in [`docs/genesis/EXECUTION_LEDGER.md`](../genesis/EXECUTION_LEDGER.md). Diagnosis: [`DIAGNOSIS.md`](DIAGNOSIS.md). Nothing here enables new trading.
 
+## Checkpoint 6: 10 Nov 2026 (`926bb42` deployed; stage timeouts live)
+
+Operator: "Yes, build it", then "Merge and deploy". [#69](https://github.com/TheFridey/QUANT/pull/69) merged as `926bb42`; main CI green, including the Postgres high-water-mark and day-roll guards.
+
+Non-executor stages fail after 60 s; the executor is never abandoned and only raises `odin_stage_overrun`. `/api/health` and `/api/ready` report `degraded` when a RUNNING engine has completed no cycle for 5 minutes. quant-safety-reviewer: CHANGES REQUESTED twice (including a late stage lowering the high-water mark, which would have loosened the total-drawdown limit), both fixed; final verdict APPROVE at `a275b56`. Accepted residuals, no risk effect: stale fairness cursor from a late sentinel, late display and equity-snapshot writes, existing 60 s stage-lease TTL. A timed-out scheduled ingest waits for the 120 s stale sweep. The cause of the 9 Nov hang remains `NOT_VERIFIED`.
+
+Deploy: fast-forward `62e2787` → `926bb42`; no migration; lockfile unchanged; backup `quant-20261110T112009Z.dump`; snapshot `/srv/quant/releases/62e2787-20261110T112204Z`; `quant-api` and `quant-worker` restarted 11:22:12 UTC with one open position. Smoke: health `ok`; `/api/ready` 200; five cycles `COMPLETE` in about 1 s each at the normal 20 s cadence; 168 observations in 2 min; 0 error lines; web 307; other tenants 200; limits unchanged (10% daily, 30% total); HWM unchanged at 10,106.00. Not verified: the timeout firing against a real hang in production.
+
 ## Checkpoint 5: 10 Nov 2026 (`62e2787` deployed; pipeline stall found and cleared)
 
 Operator: "Merge and deploy" (#67), then "Restart worker". #67 merged as `62e2787`; main CI green. Fast-forward `bb53012` → `62e2787`: research code and docs only, no migration, no lockfile change; backup `quant-20261110T101356Z.dump` (1.1 GB); snapshot `/srv/quant/releases/bb53012-20261110T101549Z`; packages and worker rebuilt. Daily gold study run directly from the production warehouse: 18 weekend stubs excluded using real tick counts; NO_SKILL, matching the local run.
