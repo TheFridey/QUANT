@@ -2,6 +2,20 @@
 
 Operation HORIZON (multi-asset expansion). Evidence labels as in [`docs/genesis/EXECUTION_LEDGER.md`](../genesis/EXECUTION_LEDGER.md). Diagnosis: [`DIAGNOSIS.md`](DIAGNOSIS.md). Nothing here enables new trading.
 
+## Checkpoint 5: 10 Nov 2026 (`62e2787` deployed; pipeline stall found and cleared)
+
+Operator: "Merge and deploy" (#67), then "Restart worker". #67 merged as `62e2787`; main CI green. Fast-forward `bb53012` → `62e2787`: research code and docs only, no migration, no lockfile change; backup `quant-20261110T101356Z.dump` (1.1 GB); snapshot `/srv/quant/releases/bb53012-20261110T101549Z`; packages and worker rebuilt. Daily gold study run directly from the production warehouse: 18 weekend stubs excluded using real tick counts; NO_SKILL, matching the local run.
+
+### Incident: paper pipeline stalled 9 Nov 16:00 UTC → 10 Nov 10:29 UTC (~18.5 h)
+
+- **Symptom:** every `CycleRun` from 2026-11-09 16:00:00 UTC ended `FAILED` / `STALE_CYCLE` at stage `created`; cycle starts slowed from every 20 s to every ~130 s; last order 15:50 UTC on 9 Nov. API health stayed `ok`, so nothing alerted.
+- **Cause (observed):** one BullMQ `sentinel` job (`cyc_23905992-…`, processedOn 16:00:00.468Z) never settled while the live worker kept renewing its lock; `odin.sentinel` runs at concurrency 1, so 502 jobs queued behind it. The job wrote no decisions and logged nothing after starting. Which await hung is `NOT_VERIFIED` (inferred: a call without a timeout in the plan load).
+- **Exposure:** no open positions or pending orders during the stall, so no stops were missed. Not caused by a deploy (worker unchanged since 6 Nov 11:42 UTC).
+- **Fix:** `quant-worker` restarted 10:29:31 UTC. Backlog cleared; cycles `COMPLETE` every 20 s in 1–3 s; 0 worker error lines; 96 observations in 2 min at ~90 s after restart (still ramping).
+- **Follow-up needed:** a hard timeout per pipeline stage and a health signal on cycle completion, so a hung stage fails fast and is visible. The root cause can recur until then.
+
+Also noted: database 7.8 GB (2.5 GB on 3 Nov); `AgentDecision` 4.3 GB / 4.8 M rows, still no retention. 69 GB disk free. Equity 8,187.94 vs HWM 10,106.00 (19.0% drawdown; limit 30%).
+
 ## Checkpoint 4: 6 Nov 2026 (`bb53012` deployed; daily gold/FX studies)
 
 Operator: "Merge and deploy". Merged #65 (`cc0f64c`) and #66 (`bb53012`; #66 is docs-only and merged while its checks were still pending); main CI green on `bb53012`. Deploy: fast-forward `5fe4484` → `bb53012`, no migration, no lockfile change, no protected paths; backup `quant-20261106T114120Z.dump`; snapshot `/srv/quant/releases/5fe4484-20261106T114235Z`; api, worker, web restarted 11:42:48 UTC; health `ok`, 0 error lines, 168 observations in 2 min.
