@@ -1,3 +1,4 @@
+import { programmeTrials } from "@odin/evolution/campaign";
 import type { PrismaClient } from "@odin/shared/db";
 
 /**
@@ -16,7 +17,11 @@ export async function holdoutAvailable(
   return prior === null;
 }
 
-/** Every selection trial ever recorded (training and full-grid windows), across all runs, datasets and versions. */
-export async function programmeTrialCount(prisma: Pick<PrismaClient, "researchTrial">): Promise<number> {
-  return prisma.researchTrial.count({ where: { window: { in: ["TRAIN", "FULL_GRID"] } } });
+/**
+ * Every trial the programme has run: the ASCEND registry rows (training and full-grid windows), every campaign
+ * unit (its settled count, or its full reservation while unsettled), and declared legacy trials. One number
+ * for every tool, so a study outside a campaign is deflated by campaign trials too.
+ */
+export async function programmeTrialCount(prisma: PrismaClient): Promise<number> {
+  return (await programmeTrials(prisma)).total;
 }
