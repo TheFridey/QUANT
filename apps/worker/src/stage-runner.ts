@@ -1,3 +1,4 @@
+import { applySessionRoll, ratchetHighWaterMark } from "./account-ratchet.js";
 import {
   ALERT_CODES,
   allocateOpportunities,
@@ -441,11 +442,11 @@ export class StageRunner {
     await this.persistTradeReconstruction(cycleId);
     await this.persistLotMemory(cycleId);
     await this.persistObservability(cycleId);
-    await this.prisma.cycleRun.update({
-      where: { id: cycleId },
+    const completed = await this.prisma.cycleRun.updateMany({
+      where: { id: cycleId, status: "RUNNING" },
       data: { stage: "complete", status: "COMPLETE", finishedAt: this.now(), orderCount: orders },
     });
-    await this.emit(cycleId, "complete");
+    if (completed.count > 0) await this.emit(cycleId, "complete");
   }
 
   async fail(cycleId: string, error: string): Promise<void> {
@@ -459,8 +460,8 @@ export class StageRunner {
   private async observe(cycleId: string, now: Date): Promise<void> {
     const config = await this.config();
     if (this.dataMode === "demo") {
-      await this.prisma.cycleRun.update({
-        where: { id: cycleId },
+      await this.prisma.cycleRun.updateMany({
+        where: { id: cycleId, status: "RUNNING" },
         data: { dataState: "DEMO", observationCount: 0, error: "Demo mode does not synthesize prices" },
       });
       await upsertDecision(this.prisma, cycleId, emptyDecision("DATA_DEMO", "Demo mode does not synthesize prices"));
@@ -468,8 +469,8 @@ export class StageRunner {
     }
     if (this.dataMode === "replay") {
       const copied = await this.copyReplay(cycleId, config, now);
-      await this.prisma.cycleRun.update({
-        where: { id: cycleId },
+      await this.prisma.cycleRun.updateMany({
+        where: { id: cycleId, status: "RUNNING" },
         data: { dataState: copied > 0 ? "REPLAY" : "STALE", observationCount: copied, error: copied > 0 ? null : "No stored observations to replay" },
       });
       return;
@@ -548,8 +549,8 @@ export class StageRunner {
     const result = await discoveryPromise;
 
     if (!result.ok && paperExtras.length === 0 && mandatoryByAddress.size === 0) {
-      await this.prisma.cycleRun.update({
-        where: { id: cycleId },
+      await this.prisma.cycleRun.updateMany({
+        where: { id: cycleId, status: "RUNNING" },
         data: { dataState: "STALE", observationCount: 0, error: result.error },
       });
       await upsertDecision(this.prisma, cycleId, emptyDecision("UPSTREAM_UNAVAILABLE", result.error));
@@ -635,8 +636,8 @@ export class StageRunner {
     const total = liveCount + demoCount + delayedCount;
     const state: DataState =
       liveCount > 0 ? "LIVE" : delayedCount > 0 ? "DELAYED" : demoCount > 0 ? "DEMO" : "STALE";
-    await this.prisma.cycleRun.update({
-      where: { id: cycleId },
+    await this.prisma.cycleRun.updateMany({
+      where: { id: cycleId, status: "RUNNING" },
       data: {
         dataState: state,
         observationCount: total,
@@ -775,20 +776,11 @@ export class StageRunner {
       equityTrusted: valuation.valuation === "LIVE" || valuation.valuation === "CASH_ONLY",
       startingBalanceUsd: account.startingBalanceUsd.toString(),
     });
-    if (
-      sessionRoll.rolled ||
-      sessionRoll.highWaterMarkUsd !== (account.highWaterMarkUsd?.toString() ?? null)
-    ) {
-      await db.paperAccount.update({
-        where: { id: account.id },
-        data: {
-          sessionStartedAt: sessionRoll.sessionStartedAt,
-          sessionStartEquityUsd: sessionRoll.sessionStartEquityUsd,
-          highWaterMarkUsd: sessionRoll.highWaterMarkUsd,
-          // A roll resets the low; within a day it only moves down, via the atomic write below.
-          ...(sessionRoll.rolled ? { sessionLowEquityUsd: sessionRoll.sessionLowEquityUsd } : {}),
-        },
-      });
+    if (sessionRoll.rolled) {
+      await applySessionRoll(db, account.id, account.sessionStartedAt, sessionRoll);
+    }
+    if (sessionRoll.highWaterMarkUsd !== (account.highWaterMarkUsd?.toString() ?? null)) {
+      await ratchetHighWaterMark(db, account.id, sessionRoll.highWaterMarkUsd);
     }
     if (
       !sessionRoll.rolled &&
@@ -1699,12 +1691,7 @@ export class StageRunner {
         }),
       },
     });
-    if (hwm) {
-      await this.prisma.paperAccount.update({
-        where: { id: ctx.accountId },
-        data: { highWaterMarkUsd: hwm },
-      });
-    }
+    if (hwm) await ratchetHighWaterMark(this.prisma, ctx.accountId, hwm);
   }
 
   /** Flush in-cycle observability counters into durable ObservabilityEvent rows. */
@@ -1783,8 +1770,8 @@ export class StageRunner {
   }
 
   private async advance(cycleId: string, stage: string): Promise<void> {
-    await this.prisma.cycleRun.update({ where: { id: cycleId }, data: { stage } });
-    await this.emit(cycleId, stage);
+    const advanced = await this.prisma.cycleRun.updateMany({ where: { id: cycleId, status: "RUNNING" }, data: { stage } });
+    if (advanced.count > 0) await this.emit(cycleId, stage);
   }
 
   private async emit(cycleId: string, stage: string): Promise<void> {

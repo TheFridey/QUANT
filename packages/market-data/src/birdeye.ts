@@ -3,6 +3,8 @@ import type { Candle, HistoricalProvider, HolderStats, ProviderResult, TokenSecu
 
 const BASE = "https://public-api.birdeye.so";
 
+const BIRDEYE_TIMEOUT_MS = 4_000;
+
 export class BirdeyeClient implements HistoricalProvider {
   readonly id = "birdeye";
 
@@ -80,6 +82,7 @@ export class BirdeyeClient implements HistoricalProvider {
           "X-API-KEY": this.apiKey ?? "",
           "x-chain": "solana",
         },
+        signal: AbortSignal.timeout(BIRDEYE_TIMEOUT_MS),
       });
       if (!response.ok) {
         return { ok: false, code: "UPSTREAM", error: `Birdeye HTTP ${response.status}` };

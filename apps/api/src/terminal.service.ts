@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { pipelineHealth } from "./pipeline-health.js";
 import { InjectQueue } from "@nestjs/bullmq";
 import {
   alertAckDoesNotClearSafety,
@@ -110,6 +111,16 @@ export class TerminalService {
     const latest = await this.prisma.marketObservation.findFirst({ orderBy: { receivedAt: "desc" } });
     const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     const cycle = await this.prisma.cycleRun.findFirst({ orderBy: { startedAt: "desc" } });
+    const lastComplete = await this.prisma.cycleRun.findFirst({
+      where: { status: "COMPLETE" },
+      orderBy: { startedAt: "desc" },
+      select: { startedAt: true },
+    });
+    const pipeline = pipelineHealth({
+      engineStatus: engine?.status ?? null,
+      lastCompleteCycleAt: lastComplete?.startedAt ?? null,
+      now: new Date(),
+    });
     const config = this.readConfig(engine?.config);
     const dataState = latest && config
       ? classifyFreshness({
@@ -121,7 +132,9 @@ export class TerminalService {
         })
       : null;
     return {
-      status: postgres && redis ? "ok" : "degraded",
+      status: postgres && redis && pipeline === "ok" ? "ok" : "degraded",
+      pipeline,
+      lastCompleteCycleAt: lastComplete?.startedAt.toISOString() ?? null,
       postgres: postgres ? "up" : "down",
       redis: redis ? "up" : "down",
       engine: engine?.status ?? null,
