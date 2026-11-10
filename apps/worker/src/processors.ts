@@ -1,7 +1,7 @@
 import { InjectQueue, OnWorkerEvent, Processor, WorkerHost } from "@nestjs/bullmq";
 import { QUEUES, recordMetric, stageJobId, timed } from "@odin/shared";
 import type { DistributedLease } from "@odin/risk-engine";
-import { Job, Queue } from "bullmq";
+import { Job, Queue, UnrecoverableError } from "bullmq";
 import { StageLeaseService } from "./stage-lease.js";
 import { StageRunner } from "./stage-runner.js";
 
@@ -32,12 +32,62 @@ export class StageLeaseBusyError extends Error {
   }
 }
 
+/** A healthy stage takes seconds; ingest and the plan load only wait on calls with their own timeouts. */
+export const STAGE_TIMEOUT_MS = 60_000;
+
+/**
+ * A stage that never settles would hold its concurrency-1 queue forever while BullMQ keeps renewing the
+ * lock (9 Nov 2026: one hung sentinel job stalled the pipeline for 18 hours). Not retried: the cycle fails
+ * now and the next scheduled cycle starts clean.
+ */
+export class StageTimeoutError extends UnrecoverableError {
+  constructor(stage: string, timeoutMs: number) {
+    super(`STAGE_TIMEOUT: ${stage} did not finish within ${timeoutMs} ms`);
+  }
+}
+
+/**
+ * Promises cannot be cancelled, so a timeout abandons the work rather than stopping it. Anything it does
+ * afterwards is harmless because every stage re-checks that its cycle is still RUNNING.
+ */
+export async function withStageTimeout<T>(stage: string, timeoutMs: number, run: () => Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const work = run();
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      recordMetric("odin_stage_timeout", 1, { stage }, "count");
+      reject(new StageTimeoutError(stage, timeoutMs));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+    // A late failure of abandoned work must not become an unhandled rejection.
+    work.catch(() => undefined);
+  }
+}
+
+/**
+ * The executor settles orders, so it is never abandoned: a retry alongside a still-running settlement could
+ * process it twice. An overrun only raises a metric, and the pipeline health signal reports the stall.
+ */
+export async function withStageOverrunAlert<T>(stage: string, timeoutMs: number, run: () => Promise<T>): Promise<T> {
+  const timer = setTimeout(() => recordMetric("odin_stage_overrun", 1, { stage }, "count"), timeoutMs);
+  try {
+    return await run();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function withStageLease(
   leases: Pick<StageLeaseService, "tryAcquireStage" | "release">,
   stage: string,
   cycleId: string,
   run: () => Promise<void>,
   queuedAt?: number,
+  guard: <T>(stage: string, timeoutMs: number, run: () => Promise<T>) => Promise<T> = withStageTimeout,
 ): Promise<void> {
   // Audit F5: queue lag = time from enqueue to the worker picking the job up.
   if (queuedAt) recordMetric("odin_queue_lag_ms", Date.now() - queuedAt, { stage });
@@ -47,7 +97,7 @@ export async function withStageLease(
     throw new StageLeaseBusyError(stage, cycleId);
   }
   try {
-    await timed("odin_stage_duration_ms", { stage }, run);
+    await guard(stage, STAGE_TIMEOUT_MS, () => timed("odin_stage_duration_ms", { stage }, run));
   } finally {
     await leases.release(lease);
   }
@@ -68,7 +118,9 @@ export class IngestProcessor extends WorkerHost {
     try {
       lease = await this.leases.tryAcquireIngest();
       if (!lease) return;
-      const result = await this.stages.ingest({ cycleId: job.data.cycleId, trigger: job.data.trigger ?? "schedule" });
+      const result = await withStageTimeout("ingest", STAGE_TIMEOUT_MS, () =>
+        this.stages.ingest({ cycleId: job.data.cycleId, trigger: job.data.trigger ?? "schedule" }),
+      );
       if (!result.skipped) await enqueue(this.next, "sentinel", result.cycleId);
     } finally {
       await this.leases.release(lease);
@@ -192,7 +244,7 @@ export class ExecutorProcessor extends WorkerHost {
     await withStageLease(this.leases, "executor", job.data.cycleId, async () => {
       await this.stages.executor(job.data.cycleId!);
       await enqueue(this.next, "archivist", job.data.cycleId!);
-    }, job.timestamp);
+    }, job.timestamp, withStageOverrunAlert);
   }
 
   @OnWorkerEvent("failed")
@@ -232,6 +284,6 @@ export async function failIfExhausted(
   // The lease holder owns this stage and enqueues the next one; never fail the cycle under it.
   if (error.name === "StageLeaseBusyError") return;
   const attempts = job.opts.attempts ?? 1;
-  if (job.attemptsMade < attempts) return;
+  if (!(error instanceof StageTimeoutError) && job.attemptsMade < attempts) return;
   await stages.fail(job.data.cycleId, error.message);
 }
