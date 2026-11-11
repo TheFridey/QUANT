@@ -55,6 +55,8 @@ const noise = barsToCsv(syntheticFxBreakoutBars({ start: "2024-06-02T22:00:00Z",
 const plantedFile = writeCsv("planted.csv", planted);
 const noiseFile = writeCsv("noise.csv", noise);
 
+/** Strategies whose family (the holdout lineage) is BREAKOUT. */
+const BREAKOUT_FAMILY = ["hz_atr_breakout", "hz_vol_expansion", "hz_session_breakout"];
 const ALL_STRATEGIES = ["hz_atr_breakout", "hz_vol_expansion", "hz_mtf_trend", "hz_vol_mean_reversion", "hz_regime_breakout", "hz_session_breakout"];
 
 function spec(name: string, over: { datasets?: unknown[]; strategies?: string[]; limits?: Record<string, number>; instrument?: string; file?: { path: string; sha256: string } } = {}) {
@@ -166,7 +168,8 @@ describe.skipIf(!enabled)("research campaigns (Postgres, synthetic fixtures)", (
     expect(units.filter((u) => u.datasetKey === "noise" && u.results[0]!.walkForwardPassed)).toHaveLength(0);
     for (const u of units.filter((x) => !x.results[0]!.walkForwardPassed)) expect(u.results[0]!.reasons.length).toBeGreaterThan(0);
     for (const u of plantedPass) expect(u.results[0]!.verdict).toBe("INSUFFICIENT_EVIDENCE"); // pending holdout is not a candidate
-    passed = { unitId: plantedPass[0]!.id, strategy: plantedPass[0]!.hypothesisId, runId: run.id };
+    const chosen = plantedPass.find((u) => BREAKOUT_FAMILY.includes(u.hypothesisId)) ?? plantedPass[0]!;
+    passed = { unitId: chosen.id, strategy: chosen.hypothesisId, runId: run.id };
 
     // Programme count rose by exactly the trials that ran; nothing is left outstanding.
     const ran = units.reduce((n, u) => n + u.results[0]!.trialCount, 0);
@@ -404,15 +407,18 @@ describe.skipIf(!enabled)("research campaigns (Postgres, synthetic fixtures)", (
     const { run } = await declare(spec("second look", { datasets: [
       { key: "renamed", source: { kind: "FILE", ...plantedFile }, market: "FX", instrument: `eur_x${TAG.toLowerCase()}`, interval: "1h", asOf: "2026-01-01T00:00:00Z" },
       { key: "appended", source: { kind: "FILE", ...longer }, market: "FX", instrument: `fx:EURX${TAG}`, interval: "1h", asOf: "2026-01-01T00:00:00Z" },
-    ], strategies: [passed.strategy] }));
+    ], strategies: BREAKOUT_FAMILY, limits: { maxConcurrency: 1 } }));
+    // The holdout already read belongs to the breakout family; the family, not the strategy name, is the lineage.
+    expect(BREAKOUT_FAMILY).toContain(passed.strategy);
     await workRun(prisma, run.id, deps("second"));
-    const [renamed, appended] = await unitsOf(run.id);
-    // Identical bars pass walk-forward exactly as before, so the authorisation question does arise.
-    expect(renamed!.results[0]!.walkForwardPassed).toBe(true);
-    await expect(authorizeHoldout(prisma, { unitId: renamed!.id, operator: "rhys", ttlMs: 3_600_000 })).rejects.toThrow(/HOLDOUT_ALREADY_CONSUMED.*only bars after that period/);
-    if (appended!.results[0]!.walkForwardPassed) await expect(authorizeHoldout(prisma, { unitId: appended!.id, operator: "rhys", ttlMs: 3_600_000 })).rejects.toThrow(/HOLDOUT_ALREADY_CONSUMED/);
-    expect(await prisma.researchHoldoutLedger.count({ where: { unitId: { in: [renamed!.id, appended!.id] } } })).toBe(0);
-  }, 120_000);
+    const units = await unitsOf(run.id);
+    // Whether a given family member clears deflation depends on the programme count, which differs between
+    // databases. At least one must pass, and every one that does must be refused: sibling strategies included.
+    const eligible = units.filter((u) => u.results[0]!.walkForwardPassed);
+    expect(eligible.filter((u) => u.datasetKey === "renamed").length, "a breakout family member should pass on the renamed, identical bars").toBeGreaterThan(0);
+    for (const u of eligible) await expect(authorizeHoldout(prisma, { unitId: u.id, operator: "rhys", ttlMs: 3_600_000 }), `${u.datasetKey}/${u.hypothesisId}`).rejects.toThrow(/HOLDOUT_ALREADY_CONSUMED.*only bars after that period/);
+    expect(await prisma.researchHoldoutLedger.count({ where: { unitId: { in: units.map((u) => u.id) } } })).toBe(0);
+  }, 300_000);
 
   it("a consumed holdout whose result is lost is recorded as lost, never recomputed, and blocks the period", async () => {
     // A different instrument, so the period is unconsumed; find a family that passes walk-forward on it.
