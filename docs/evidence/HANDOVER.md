@@ -4,7 +4,7 @@ For a fresh session. Verify the branch and files before relying on anything here
 
 ## Where things are
 
-- Branch `evidence/research-campaigns`, 13 commits on top of `origin/main` `8317aff`. Pushed as [PR #71](https://github.com/TheFridey/QUANT/pull/71). **Not merged, not deployed.** Production is untouched.
+- Branch `evidence/research-campaigns`, 13 commits on top of `origin/main` `8317aff`. Merged as `eba979f` ([PR #71](https://github.com/TheFridey/QUANT/pull/71)) and deployed on 11 Nov 2026 (record: `docs/horizon/LEDGER.md`, checkpoint 7). The worker job and the shadow service are off. 
 - Design: [`ADR-0001-research-campaigns.md`](ADR-0001-research-campaigns.md) (includes the review outcome and what was not fixed). Operations: [`../RUNBOOKS.md`](../RUNBOOKS.md), "Research campaigns". Demonstration: [`demo/README.md`](demo/README.md), observed run in [`demo/RESULTS.md`](demo/RESULTS.md).
 - Code: `packages/evolution/src/campaign/` (library), `apps/worker/src/research/campaign-*.ts` and `network-guard.ts` (CLI, runner, evaluator), `apps/worker/src/campaign-job.ts` (worker job, off by default), `apps/api/src/campaigns.controller.ts`, `apps/web/src/components/terminal/sections/research-campaigns.tsx`, migration `20261110120000_evidence_research_campaigns`.
 - No protected path was edited. `.claude/protected-edits.unlock` existed before this work; it was not created or used here.
@@ -43,7 +43,6 @@ Baseline before the work (main `8317aff`): 1,167 unit tests passed with the same
 - **Real campaign on gold/FX**: needs warehouse data, which is only in production. Command shape is in `demo/README.md`. Expect the recorded result (no candidate) to repeat; the campaign makes it reproducible.
 - **Declare the unrecorded legacy trials** in production (about 3,000 from earlier HORIZON CLI runs): `campaign-cli declare-legacy-trials --count N --by NAME --note "…"`. Until then the production programme count understates.
 - **Decisions**: the deflated-Sharpe variance floor; whether a lost holdout may be recomputed; the staleness limit and observation length to use when a real model is first registered.
-- **Deploy order** when it is deployed: migrate first, then restart.
 - `quant-safety-reviewer`: CHANGES REQUESTED (small) on `fc8ffd8`; after the fixes in `79b6ffe`, **APPROVE WITH NOTES** on `8de63d6`. Its two low notes are addressed in the commit after that (minimum-sample guard moved off the closing paths; runbook wording on the CLI environment). Carried notes: no test enforces "no writes to trading tables" (the import-boundary test cannot see Prisma capability), and the CLI started by the worker job is not detached, so a ceiling kill can leave an evaluator running until its own runtime limit.
 
 ## Next work, in order of value
