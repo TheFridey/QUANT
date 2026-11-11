@@ -245,15 +245,16 @@ export function evaluateUnit(job: UnitJob): UnitEvaluation {
   return finish({
     phase: holdoutMode ? "HOLDOUT" : "WALK_FORWARD",
     verdict: m.verdict,
-    reasons: m.reasons,
+    reasons: holdoutMode ? m.reasons : m.reasons.filter((r) => !/^deployment check:/.test(r)),
     walkForwardPassed,
     holdoutStatus,
     trialCount: m.trialCount,
     priorTrials: job.priorTrials,
     dataset: identity,
     provenance: { ...provenance, labelSpec: full?.labelSpec ?? null, labelSpecHash: full?.labelSpecHash ?? null, featureSetHash: full?.featureSet.hash ?? null, featureSet: full ? { name: full.featureSet.spec.name, version: full.featureSet.spec.version, features: full.featureSet.spec.features } : null, causality: full?.causality ?? null, mlData: full?.data ?? null },
-    summary: { kind: "ML2", id: job.unit.hypothesisId, horizonBars: m.horizonBars, horizonTradingHours: m.horizonTradingHours, championTrialId: m.championTrialId, champion: m.champion, walkForwardBrier: champ?.brier ?? null, holdout: holdoutMode && full?.holdout.evaluated ? { evaluated: true, rows: full.holdout.rows, brierSkill: full.holdout.champion.brierSkill, ece: full.holdout.champion.ece, signals: full.holdout.champion.signals, expectancy: full.holdout.champion.expectancy } : { evaluated: false }, holdoutPeriod, walkForwardHash, drift: full ? { brierDecay: full.drift.brierDecay } : null, deployment: full?.deployment ?? null },
-    detail: { ml: m, model: artefact && full ? { artefact, artefactCanonical: canonicalJson(artefact), family: artefact.family, walkForwardBrier: champ?.brier ?? null, labelSpec: full.labelSpec, featureSetHash: full.featureSet.hash, calendar: full.calendar, barMs } : null },
+    summary: { kind: "ML2", id: job.unit.hypothesisId, horizonBars: m.horizonBars, horizonTradingHours: m.horizonTradingHours, championTrialId: m.championTrialId, champion: m.champion, walkForwardBrier: champ?.brier ?? null, holdout: holdoutMode && full?.holdout.evaluated ? { evaluated: true, rows: full.holdout.rows, brierSkill: full.holdout.champion.brierSkill, ece: full.holdout.champion.ece, signals: full.holdout.champion.signals, expectancy: full.holdout.champion.expectancy } : { evaluated: false }, holdoutPeriod, walkForwardHash, // Drift and the deployment check read holdout-period features, so they are stored only once the holdout has been read.
+    drift: holdoutMode && full ? { brierDecay: full.drift.brierDecay } : null, deployment: holdoutMode ? full?.deployment ?? null : null },
+    detail: { ml: holdoutMode ? m : { ...m, reasons: m.reasons.filter((r) => !/^deployment check:/.test(r)) }, model: artefact && full ? { artefact, artefactCanonical: canonicalJson(artefact), family: artefact.family, walkForwardBrier: champ?.brier ?? null, labelSpec: full.labelSpec, featureSetHash: full.featureSet.hash, calendar: full.calendar, barMs } : null },
     walkForwardHash,
     holdoutPeriod,
   });

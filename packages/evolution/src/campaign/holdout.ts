@@ -1,7 +1,7 @@
 import { Prisma, toJson, type PrismaClient } from "@odin/shared/db";
 import { canonicalHash } from "../genesis/canonical.js";
 import type { UnitEvaluation } from "./evaluate.js";
-import { normaliseInstrument } from "./spec.js";
+import { marketFor, normaliseInstrument } from "./spec.js";
 import { CampaignError, insertHoldoutResult, logEvent, specOf } from "./store.js";
 import { campaignTx } from "./tx.js";
 
@@ -74,6 +74,11 @@ export async function holdoutContext(db: Db, unitId: string): Promise<HoldoutCon
     throw new CampaignError("NOT_ELIGIBLE", `unit ${unitId}: the walk-forward result lacks a holdout period or identity`);
   }
   const { spec } = specOf(unit.run.campaign);
+  // A hypothesis below its market's minimum sample can never be a candidate, so it must not spend the period.
+  const declared = spec.datasets.find((d) => d.key === unit.datasetKey);
+  const minTrades = declared ? marketFor(declared).minimumSample.minOosTrades : 0;
+  const oosTrades = obj(summary.oos).trades;
+  if (unit.hypothesisKind === "STRATEGY" && typeof oosTrades === "number" && oosTrades < minTrades) throw new CampaignError("NOT_ELIGIBLE", `unit ${unitId} has ${oosTrades} out-of-sample trades, below the market minimum of ${minTrades}; it could not become a candidate, so its holdout is not read`);
   const base = {
     unitId,
     hypothesisId: unit.hypothesisId,
@@ -113,8 +118,9 @@ export async function priorHoldoutAccess(db: Db, c: HoldoutContext): Promise<{ p
   // Bars this lineage has already been walked forward on, in another unit, are not a holdout.
   const seen = await db.researchCampaignResult.findMany({
     where: { phase: "WALK_FORWARD", unitId: { not: c.unitId }, dataset: { path: ["instrumentKey"], equals: c.instrumentKey }, provenance: { path: ["lineageKey"], equals: c.lineageKey } },
-    orderBy: { createdAt: "asc" },
-    take: 1_000,
+    // Newest first: the most recent results are the ones most likely to reach furthest forward.
+    orderBy: { createdAt: "desc" },
+    take: 2_000,
     select: { unitId: true, summary: true, createdAt: true },
   });
   for (const row of seen) {

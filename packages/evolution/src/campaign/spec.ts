@@ -87,18 +87,19 @@ export const campaignSpecSchema = z
     hypotheses: z.array(hypothesisSchema).min(1).max(CAMPAIGN_LIMIT_BOUNDS.hypotheses),
     validation: z
       .object({
-        folds: z.int().min(2).max(10).default(DEFAULT_VALIDATION.folds),
-        holdoutFraction: z.number().min(0.1).max(0.4).default(DEFAULT_VALIDATION.holdoutFraction),
+        // Bounded BELOW by the validated defaults: fewer folds or a smaller holdout would be an easier test.
+        folds: z.int().min(DEFAULT_VALIDATION.folds).max(10).default(DEFAULT_VALIDATION.folds),
+        holdoutFraction: z.number().min(DEFAULT_VALIDATION.holdoutFraction).max(0.4).default(DEFAULT_VALIDATION.holdoutFraction),
         seed: z.int().min(0).max(2_147_483_647),
       })
       .strict(),
     ml: z
       .object({
         seed: z.int().min(0).max(2_147_483_647),
-        /** Resampling effort only; none of these is an acceptance threshold. */
-        bootstrapResamples: z.int().min(20).max(5_000).default(DEFAULT_ML2_CONFIG.bootstrapResamples),
-        randomControls: z.int().min(10).max(5_000).default(DEFAULT_ML2_CONFIG.randomControls),
-        prefixProbes: z.int().min(1).max(64).default(DEFAULT_ML2_CONFIG.prefixProbes),
+        /** Resampling effort. Bounded below by the protocol defaults: fewer resamples make the acceptance intervals noisier. */
+        bootstrapResamples: z.int().min(DEFAULT_ML2_CONFIG.bootstrapResamples).max(5_000).default(DEFAULT_ML2_CONFIG.bootstrapResamples),
+        randomControls: z.int().min(DEFAULT_ML2_CONFIG.randomControls).max(5_000).default(DEFAULT_ML2_CONFIG.randomControls),
+        prefixProbes: z.int().min(DEFAULT_ML2_CONFIG.prefixProbes).max(64).default(DEFAULT_ML2_CONFIG.prefixProbes),
       })
       .strict(),
     limits: z

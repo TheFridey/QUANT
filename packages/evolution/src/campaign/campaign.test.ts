@@ -14,7 +14,7 @@ const baseSpec = (over: Record<string, unknown> = {}) => ({
   datasets: [{ key: "d1", source: { kind: "FILE", path: "x.csv", sha256: "a".repeat(64) }, market: "FX", instrument: "EUR/USD", interval: "1h", asOf: "2026-01-01T00:00:00Z" }],
   hypotheses: [{ kind: "STRATEGY", id: "hz_atr_breakout" }, { kind: "ML2" }],
   validation: { seed: 1 },
-  ml: { seed: 1, bootstrapResamples: 50, randomControls: 20, prefixProbes: 2 },
+  ml: { seed: 1 },
   limits: { maxTrials: 5000, maxRuntimeMsPerUnit: 60_000, maxMemoryMbPerUnit: 512, maxConcurrency: 1, maxAttemptsPerUnit: 2 },
   holdoutPolicy: "WITHHELD_UNLESS_AUTHORIZED",
   ...over,
@@ -46,7 +46,10 @@ describe("campaign specification", () => {
   it("has no field through which a result could widen a grid or lower an acceptance rule", () => {
     for (const extra of [{ minDsr: 0.5 }, { grid: { lookback: [1, 2, 3] } }, { maxPbo: 0.9 }, { minOosTrades: 5 }]) expect(() => planCampaign(baseSpec(extra))).toThrow(/CAMPAIGN_SPEC/);
     expect(() => planCampaign(baseSpec({ hypotheses: [{ kind: "STRATEGY", id: "hz_atr_breakout", grid: { atrMult: [0.1] } }] }))).toThrow(/CAMPAIGN_SPEC/);
-    expect(() => planCampaign(baseSpec({ validation: { seed: 1, holdoutFraction: 0 } }))).toThrow(/CAMPAIGN_SPEC/);
+    // Validation and resampling settings cannot go below the validated defaults (an easier or noisier test).
+    for (const validation of [{ seed: 1, holdoutFraction: 0.1 }, { seed: 1, holdoutFraction: 0 }, { seed: 1, folds: 2 }]) expect(() => planCampaign(baseSpec({ validation })), JSON.stringify(validation)).toThrow(/CAMPAIGN_SPEC/);
+    for (const ml of [{ seed: 1, bootstrapResamples: 20 }, { seed: 1, randomControls: 10 }, { seed: 1, prefixProbes: 1 }]) expect(() => planCampaign(baseSpec({ ml })), JSON.stringify(ml)).toThrow(/CAMPAIGN_SPEC/);
+    expect(() => planCampaign(baseSpec({ validation: { seed: 1, holdoutFraction: 0.3, folds: 6 }, ml: { seed: 1, bootstrapResamples: 1000 } }))).not.toThrow();
     expect(() => planCampaign(baseSpec({ holdoutPolicy: "EVALUATE" }))).toThrow(/CAMPAIGN_SPEC/);
   });
 

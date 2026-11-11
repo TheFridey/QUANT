@@ -43,7 +43,14 @@ function writeCsv(name: string, text: string) {
   return { path: name, sha256: createHash("sha256").update(text).digest("hex") };
 }
 
-const planted = barsToCsv(syntheticFxBreakoutBars({ start: "2024-06-02T22:00:00Z", bars: 4000, seed: 42 }));
+/**
+ * A deliberately strong planted pattern. The programme trial count in a shared test database only ever grows
+ * (the ledger is append-only), and a weak pattern stops clearing the deflated-Sharpe bar after a few thousand
+ * trials. This one still passes at a million. If these tests ever start failing on "should leave a family
+ * pending", the test database has outgrown the fixture: recreate it.
+ */
+const PLANT = { every: 30, jump: 8, drift: 1.5, len: 12 };
+const planted = barsToCsv(syntheticFxBreakoutBars({ start: "2024-06-02T22:00:00Z", bars: 4000, seed: 42, plant: PLANT }));
 const noise = barsToCsv(syntheticFxBreakoutBars({ start: "2024-06-02T22:00:00Z", bars: 3000, seed: 7, plant: null }));
 const plantedFile = writeCsv("planted.csv", planted);
 const noiseFile = writeCsv("noise.csv", noise);
@@ -358,6 +365,7 @@ describe.skipIf(!enabled)("research campaigns (Postgres, synthetic fixtures)", (
   });
 
   it("an authorised holdout is evaluated exactly once, concurrently and on retry, and stays research-only", async () => {
+    const promotionsBefore = await prisma.strategyPromotion.count();
     const auth = await authorizeHoldout(prisma, { unitId: passed.unitId, operator: "rhys", ttlMs: 3_600_000, note: "integration test" });
     expect(auth.authorisation.actor).toBe("operator:rhys");
     expect(auth.priorLooks).toBe(0);
@@ -387,12 +395,12 @@ describe.skipIf(!enabled)("research campaigns (Postgres, synthetic fixtures)", (
     await expect(prisma.researchHoldoutLedger.create({ data: copy })).rejects.toThrow();
     // Reading the holdout adds no trials and creates nothing that could trade.
     expect(await prisma.researchTrialLedger.count({ where: { unitId: passed.unitId } })).toBe(2);
-    expect(await prisma.strategyPromotion.count()).toBe(0);
+    expect(await prisma.strategyPromotion.count()).toBe(promotionsBefore);
   }, 120_000);
 
   it("the same period cannot be bought again: renamed instrument, new dataset key, appended data, new campaign", async () => {
     // The same bars under another spelling and key, and a longer dataset (appended bars) whose holdout overlaps.
-    const longer = writeCsv("appended.csv", barsToCsv(syntheticFxBreakoutBars({ start: "2024-06-02T22:00:00Z", bars: 4400, seed: 42 })));
+    const longer = writeCsv("appended.csv", barsToCsv(syntheticFxBreakoutBars({ start: "2024-06-02T22:00:00Z", bars: 4400, seed: 42, plant: PLANT })));
     const { run } = await declare(spec("second look", { datasets: [
       { key: "renamed", source: { kind: "FILE", ...plantedFile }, market: "FX", instrument: `eur_x${TAG.toLowerCase()}`, interval: "1h", asOf: "2026-01-01T00:00:00Z" },
       { key: "appended", source: { kind: "FILE", ...longer }, market: "FX", instrument: `fx:EURX${TAG}`, interval: "1h", asOf: "2026-01-01T00:00:00Z" },
@@ -450,30 +458,30 @@ describe.skipIf(!enabled)("research campaigns (Postgres, synthetic fixtures)", (
     expect(await prisma.researchHoldoutLedger.count({ where: { unitId: { in: units.map((u) => u.id) } } })).toBe(0);
   }, 300_000);
 
-  it("a good holdout result survives a failed write, a process that cannot reproduce the walk-forward reads nothing, and a finished run cannot be cancelled", async () => {
-    const { run } = await declare(spec("write retry", { instrument: `NZD/X${TAG}`, strategies: ALL_STRATEGIES, limits: { maxConcurrency: 1 } }));
-    await workRun(prisma, run.id, deps("retry-wf"));
-    const eligible = (await unitsOf(run.id)).filter((u) => u.results[0]!.walkForwardPassed);
-    expect(eligible.length).toBeGreaterThanOrEqual(2);
-    const [first, second] = eligible;
+  it("a process that cannot reproduce the walk-forward reads nothing, a read that never started cannot be closed as lost, and a finished run cannot be cancelled", async () => {
+    const { run } = await declare(spec("reproduce", { instrument: `NZD/X${TAG}`, strategies: ALL_STRATEGIES, limits: { maxConcurrency: 1 } }));
+    await workRun(prisma, run.id, deps("reproduce-wf"));
+    const first = (await unitsOf(run.id)).find((u) => u.results[0]!.walkForwardPassed)!;
+    expect(first, "the planted pattern should leave a family pending").toBeTruthy();
+
+    // Closing a read as lost needs a read: a unit with no intent cannot be closed.
+    const { recordHoldoutLost } = await import("@odin/evolution/campaign");
+    await expect(recordHoldoutLost(prisma, { unitId: first.id, actor: "it", why: "nothing was read" })).rejects.toThrow(/NO_INTENT/);
+    expect(await prisma.researchCampaignResult.count({ where: { unitId: first.id, phase: "HOLDOUT" } })).toBe(0);
 
     // A process whose walk-forward differs (other runtime, other build) is refused before anything is consumed.
-    await authorizeHoldout(prisma, { unitId: first!.id, operator: "rhys", ttlMs: 3_600_000 });
+    await authorizeHoldout(prisma, { unitId: first.id, operator: "rhys+ops@example.com", ttlMs: 3_600_000 });
     const drifting: Evaluator = async (job, limits, signal) => {
       const out = await inProcess(job, limits, signal);
       return { ...out, evaluation: { ...out.evaluation, walkForwardHash: "0".repeat(64) } };
     };
     const readsBefore = holdoutReads;
-    await expect(evaluateHoldout(prisma, first!.id, deps("drift", { evaluator: drifting }))).rejects.toThrow(/WALK_FORWARD_NOT_REPRODUCED.*the holdout was not read/);
+    await expect(evaluateHoldout(prisma, first.id, deps("drift", { evaluator: drifting }))).rejects.toThrow(/WALK_FORWARD_NOT_REPRODUCED.*the holdout was not read/);
     expect(holdoutReads).toBe(readsBefore);
-    expect(await prisma.researchHoldoutLedger.count({ where: { unitId: first!.id, kind: "CONSUME_INTENT" } })).toBe(0);
+    expect(await prisma.researchHoldoutLedger.count({ where: { unitId: first.id, kind: "CONSUME_INTENT" } })).toBe(0);
     // The authorisation is still good for a process that does reproduce it.
-    expect((await evaluateHoldout(prisma, first!.id, deps("ok"))).status).toBe("RECORDED");
-
-    // Closing a read as lost needs a read: a unit with no intent cannot be closed.
-    const { recordHoldoutLost } = await import("@odin/evolution/campaign");
-    await expect(recordHoldoutLost(prisma, { unitId: second!.id, actor: "it", why: "nothing was read" })).rejects.toThrow(/NO_INTENT/);
-    expect(await prisma.researchCampaignResult.count({ where: { unitId: second!.id, phase: "HOLDOUT" } })).toBe(0);
+    expect((await evaluateHoldout(prisma, first.id, deps("ok"))).status).toBe("RECORDED");
+    expect(holdoutReads).toBe(readsBefore + 1);
 
     // Everything in this run is finished: cancelling it changes nothing.
     expect(await cancelRun(prisma, { runId: run.id, actor: "operator:it", now: new Date() })).toEqual({ cancelled: 0, state: "COMPLETED" });

@@ -86,7 +86,7 @@ async function main(): Promise<void> {
 
   if (command === "synthetic-fixture") {
     const kind = arg(flags, 0, "fixture kind");
-    const bars = kind === "fx-breakout" ? syntheticFxBreakoutBars({ start: "2024-06-02T22:00:00Z", bars: 4000, seed: 42 }) : kind === "volume-spike-4h" ? syntheticVolumeSpikeBars({ start: "2020-01-01T00:00:00Z", bars: 7000, seed: 31, barMs: 14_400_000, boostBars: 6 }) : null;
+    const bars = kind === "fx-breakout" ? syntheticFxBreakoutBars({ start: "2024-06-02T22:00:00Z", bars: 4000, seed: 42, plant: { every: 30, jump: 8, drift: 1.5, len: 12 } }) : kind === "volume-spike-4h" ? syntheticVolumeSpikeBars({ start: "2020-01-01T00:00:00Z", bars: 7000, seed: 31, barMs: 14_400_000, boostBars: 6 }) : null;
     if (!bars) throw new Error("fixture kind must be fx-breakout or volume-spike-4h");
     writeFileSync(arg(flags, 1, "output path"), barsToCsv(bars));
     return print({ synthetic: true, kind, bars: bars.length, note: "Constructed series with a planted edge. Not market data; a result on it is not evidence of an edge." });

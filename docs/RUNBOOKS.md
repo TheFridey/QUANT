@@ -172,7 +172,7 @@ Run from `apps/worker` after `pnpm build` (CLI: `node dist/src/research/campaign
 | Rerun on purpose | `start <campaignId> --by NAME --rerun --reason "…"` | a new run number; earlier runs untouched |
 | Authorise a holdout | `authorize-holdout <unitId> --operator NAME [--ttl-hours 24]`, or the button in the terminal (ADMIN) | one `AUTHORIZED` ledger row |
 | Read the holdout once | `evaluate-holdout <unitId>` | consume intent, then the result or `RESULT_LOST` |
-| Observe prospectively | `register-model <unitId> --by NAME --instrument-key KEY --max-staleness-days N`, then `observe <modelVersionId> --operator NAME --reason "…"` | model registry rows; scored only when `GENESIS_SHADOW_ENABLED=true` |
+| Observe prospectively | `register-model <unitId> --by NAME --instrument-key KEY --max-staleness-days N --observe-signals N`, then `observe <modelVersionId> --operator NAME --reason "…"` | model registry rows; scored only when `GENESIS_SHADOW_ENABLED=true` |
 | Trial count | `trials`; `declare-legacy-trials --count N --by NAME --note "…"` | (second form) one ledger row |
 
 Recovery:
@@ -184,7 +184,9 @@ Recovery:
 - **Holdout `RESULT_LOST`:** the period is spent for that hypothesis family. Do not try to re-evaluate: collect bars after the period, or use prospective observation.
 - **Never** delete or update rows in `ResearchTrialLedger`, `ResearchHoldoutLedger`, `ResearchCampaignResult` or `ResearchCampaignEvent` (the database refuses it).
 
-Worker job: off unless `RESEARCH_CAMPAIGN_WORKER_ENABLED=true` (then `RESEARCH_CAMPAIGN_TICK_MS`, default 60 s, and `RESEARCH_CAMPAIGN_MAX_UNITS`, 1 to 5). It starts the CLI as a separate process; evaluation never runs in the trading worker. It only works runs pinned to the deployed commit, and does not evaluate holdouts.
+Worker job: off unless `RESEARCH_CAMPAIGN_WORKER_ENABLED=true` (then `RESEARCH_CAMPAIGN_TICK_MS`, default 60 s, and `RESEARCH_CAMPAIGN_MAX_UNITS`, 1 to 5). It starts the CLI as a separate, low-priority process with only the database URL and commit in its environment; evaluation never runs in the trading worker. It only works runs pinned to the deployed commit, and does not evaluate holdouts.
+
+**Deploy order: run `pnpm db:deploy` before restarting the API or worker.** The research CLIs read the trial ledger and fail without it. The Market Scanner keeps working and shows research evidence as unavailable until the tables exist.
 
 Migration `20261110120000_evidence_research_campaigns` adds eight tables and changes none. Rollback: the tables are unused by trading, so a forward fix is preferred; if they must go, restore from the pre-deploy dump as for any migration.
 

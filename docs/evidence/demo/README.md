@@ -30,7 +30,7 @@ $CLI evaluate-holdout <unitId>                  # reads the holdout once; a seco
 For the ML 2.0 unit on the volume-spike series, if its holdout verdict is `CANDIDATE`:
 
 ```bash
-$CLI register-model <unitId> --by demo --instrument-key SYNTHETIC:SYN-SPIKE-4H --max-staleness-days 730
+$CLI register-model <unitId> --by demo --instrument-key SYNTHETIC:SYN-SPIKE-4H --max-staleness-days 730 --observe-signals 30
 $CLI observe <modelVersionId> --operator <you> --reason "synthetic demonstration"
 ```
 

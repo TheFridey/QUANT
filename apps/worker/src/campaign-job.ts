@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { constants, setPriority } from "node:os";
 import { resolve } from "node:path";
 import { InjectQueue, Processor, WorkerHost } from "@nestjs/bullmq";
 import { Injectable, OnModuleInit } from "@nestjs/common";
@@ -18,8 +19,25 @@ import { workerLog } from "./logger.js";
 export const RESEARCH_CAMPAIGN_QUEUE = "odin.research-campaign";
 export const RESEARCH_CAMPAIGN_FLAG = "RESEARCH_CAMPAIGN_WORKER_ENABLED";
 
-/** Hard ceiling on one tick; a campaign's own per-unit runtime limit is enforced inside the CLI process. */
-const TICK_CEILING_MS = 3_900_000;
+/**
+ * Ceiling on one tick: the longest a unit may run (the specification's hard limit of 60 minutes) for each unit
+ * the tick may handle, plus a margin. The CLI stops itself well before this in normal operation; an evaluator
+ * also carries its own runtime limit, so nothing started here can outlive it for long.
+ */
+const UNIT_CEILING_MS = 3_600_000;
+const TICK_MARGIN_MS = 300_000;
+
+/** Only what the campaign CLI needs. The worker's other secrets (provider keys, JWT secret) are not passed on. */
+const CLI_ENV_KEYS = ["PATH", "Path", "NODE_ENV", "DATABASE_URL", "GIT_COMMIT", "SystemRoot", "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE"];
+
+function lowerPriority(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try {
+    setPriority(pid, constants.priority.PRIORITY_LOW);
+  } catch {
+    // Best effort: research must yield to trading, but a host that refuses the call still runs it bounded.
+  }
+}
 
 export function campaignWorkerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env[RESEARCH_CAMPAIGN_FLAG] === "true";
@@ -43,7 +61,10 @@ export function runCampaignTick(env: NodeJS.ProcessEnv = process.env, options: {
   if (!campaignWorkerEnabled(env)) return Promise.resolve({ status: "DISABLED" });
   const cli = options.cliPath ?? resolve(__dirname, "research/campaign-cli.js");
   return new Promise((done) => {
-    const child = spawn(process.execPath, [cli, "work-next", "--max-units", String(campaignMaxUnits(env))], { stdio: ["ignore", "pipe", "pipe"], env });
+    const units = campaignMaxUnits(env);
+    const childEnv = Object.fromEntries(CLI_ENV_KEYS.filter((k) => env[k] !== undefined).map((k) => [k, env[k]]));
+    const child = spawn(process.execPath, [cli, "work-next", "--max-units", String(units)], { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
+    lowerPriority(child.pid);
     let output = "";
     let timedOut = false;
     const keep = (chunk: Buffer) => {
@@ -54,7 +75,7 @@ export function runCampaignTick(env: NodeJS.ProcessEnv = process.env, options: {
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
-    }, options.ceilingMs ?? TICK_CEILING_MS);
+    }, options.ceilingMs ?? units * UNIT_CEILING_MS + TICK_MARGIN_MS);
     child.on("error", (error) => {
       clearTimeout(timer);
       done({ status: "RAN", exitCode: null, timedOut, output: error.message });

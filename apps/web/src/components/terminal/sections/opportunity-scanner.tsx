@@ -37,7 +37,8 @@ export type ScannerMarket = {
     liveQuote: { ready: boolean; state: string; reasons: Reason[] };
     execution: { ready: boolean; state: string; blockers: Reason[] };
   };
-  research: {
+  researchUnavailable?: boolean;
+  research: null | {
     history: Array<{ datasetId: string; sourceId: string; interval: string; bars: number; firstOpen: string | null; lastOpen: string | null }>;
     results: Array<{ campaignName: string; unitId: string; hypothesisId: string; interval: string; stage: string | null; status: string; verdict: string; why: string; createdAt: string }>;
     summary: { hypothesesTested: number; rejected: number; pendingHoldout: number; holdoutPassed: number; underObservation: number; latestAt: string | null };
@@ -127,6 +128,7 @@ export function assetClassLabel(assetClass: string): string {
 
 /** Research history held for a market: independent of live quotes and of any execution path. */
 export function researchHistoryLabel(market: ScannerMarket): string {
+  if (!market.research) return "unavailable (unknown)";
   const { history } = market.research;
   if (history.length === 0) return "none stored";
   return history.map((h) => `${h.bars.toLocaleString("en-GB")} ${h.interval} bars to ${h.lastOpen?.slice(0, 10) ?? "?"}`).join(" · ");
@@ -134,6 +136,7 @@ export function researchHistoryLabel(market: ScannerMarket): string {
 
 /** Campaign outcomes for a market. No campaign means the answer is unknown, never "no edge" and never zero. */
 export function researchEvidenceLabel(market: ScannerMarket): string {
+  if (!market.research) return "unavailable (unknown)";
   const s = market.research.summary;
   if (s.hypothesesTested === 0) return "no campaign has run (unknown)";
   const parts = [`${s.hypothesesTested} tested`, `${s.rejected} rejected`];
@@ -399,7 +402,9 @@ function MarketDiagnostics({ id }: { id: string | null }) {
         </div>
         <div>
           <h3 className="text-[10px] uppercase tracking-[0.14em] text-muted">Research evidence</h3>
-          {market.research.results.length === 0 ? (
+          {!market.research ? (
+            <p className="mt-1 text-muted">Research evidence could not be read. It is unknown, not empty.</p>
+          ) : market.research.results.length === 0 ? (
             <p className="mt-1 text-muted">No campaign has run on this market. Its research result is unknown, not zero.</p>
           ) : (
             <ul className="mt-1 space-y-1" aria-label="Campaign results">

@@ -127,7 +127,7 @@ async function main() {
   console.log(
     JSON.stringify(
       {
-        mode: "READ_ONLY",
+        mode: warehouse ? "STUDY_NOT_STORED_TRIALS_COUNTED" : "READ_ONLY",
         evidence: "RESEARCH_ONLY",
         source,
         trialsRecorded,

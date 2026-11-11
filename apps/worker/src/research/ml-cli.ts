@@ -165,7 +165,7 @@ async function main() {
   console.log(
     JSON.stringify(
       {
-        mode: "READ_ONLY",
+        mode: !args.csvPath ? "STUDY_NOT_STORED_TRIALS_COUNTED" : "READ_ONLY",
         evidence: "RESEARCH_ONLY",
         protocol: ML2_PROTOCOL_VERSION,
         codeVersion: process.env.GIT_COMMIT ?? "unknown",

@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants, setPriority, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   beginHoldout,
@@ -53,6 +53,12 @@ export const childProcessEvaluator: Evaluator = (job, limits, signal) =>
     const outPath = join(dir, "out.json");
     writeFileSync(jobPath, JSON.stringify(job));
     const child = spawn(process.execPath, [`--max-old-space-size=${limits.maxMemoryMb}`, resolve(__dirname, "campaign-evaluator.js"), jobPath, outPath, String(limits.maxRuntimeMs), String(limits.maxMemoryMb)], { stdio: ["ignore", "ignore", "pipe"], env: { NODE_ENV: process.env.NODE_ENV ?? "production", PATH: process.env.PATH ?? "" } });
+    try {
+      // Research yields the CPU to everything else on the host.
+      if (child.pid !== undefined) setPriority(child.pid, constants.priority.PRIORITY_LOW);
+    } catch {
+      // Best effort; the runtime and memory limits still apply.
+    }
     let stderr = "";
     let why: EvaluatorFailure | null = null;
     child.stderr.on("data", (chunk: Buffer) => {

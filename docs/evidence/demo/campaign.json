@@ -6,7 +6,7 @@
   "datasets": [
     {
       "key": "synthetic-fx-breakout-1h",
-      "source": { "kind": "FILE", "path": "synthetic-fx-breakout.csv", "sha256": "7bef1423afc6ce01db2364dc597c8e66c2943425b1a4a251d37f086f3d816116" },
+      "source": { "kind": "FILE", "path": "synthetic-fx-breakout.csv", "sha256": "2d0b98114e7d112581d65e8072487c198f5b97c36de38cc537ce46b725884c04" },
       "market": "FX",
       "instrument": "SYN-FX/USD",
       "interval": "1h",
@@ -30,7 +30,7 @@
     { "kind": "ML2" }
   ],
   "validation": { "folds": 4, "holdoutFraction": 0.2, "seed": 1 },
-  "ml": { "seed": 1, "bootstrapResamples": 200, "randomControls": 100, "prefixProbes": 8 },
+  "ml": { "seed": 1 },
   "limits": { "maxTrials": 2000, "maxRuntimeMsPerUnit": 300000, "maxMemoryMbPerUnit": 1024, "maxConcurrency": 1, "maxAttemptsPerUnit": 2 },
   "holdoutPolicy": "WITHHELD_UNLESS_AUTHORIZED"
 }

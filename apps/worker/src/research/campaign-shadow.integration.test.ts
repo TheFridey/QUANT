@@ -58,7 +58,7 @@ describe.skipIf(!enabled)("campaign result to prospective shadow observation (Po
       datasets: [{ key: "spike", source: { kind: "FILE", path: "spike.csv", sha256: createHash("sha256").update(csv).digest("hex") }, market: "CRYPTO", instrument, interval: "4h", asOf: new Date().toISOString() }],
       hypotheses: [{ kind: "ML2" }],
       validation: { seed: 1 },
-      ml: { seed: 1, bootstrapResamples: 200, randomControls: 100 },
+      ml: { seed: 1 },
       limits: { maxTrials: 100, maxRuntimeMsPerUnit: 600_000, maxMemoryMbPerUnit: 2048, maxConcurrency: 1, maxAttemptsPerUnit: 2 },
       holdoutPolicy: "WITHHELD_UNLESS_AUTHORIZED",
     }, "it");
