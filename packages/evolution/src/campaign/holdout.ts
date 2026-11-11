@@ -50,9 +50,11 @@ export type HoldoutContext = {
   priorTrials: number;
   subjectHash: string;
   maxRuntimeMs: number;
+  /** Why this unit may not start a holdout read (below the market minimum sample), or null. */
+  underSampled: string | null;
 };
 
-export function holdoutSubjectHash(c: Omit<HoldoutContext, "subjectHash" | "runId" | "priorTrials" | "maxRuntimeMs" | "interval" | "warehouseDatasetId" | "hypothesisKind">): string {
+export function holdoutSubjectHash(c: Omit<HoldoutContext, "subjectHash" | "runId" | "priorTrials" | "maxRuntimeMs" | "interval" | "warehouseDatasetId" | "hypothesisKind" | "underSampled">): string {
   return canonicalHash({ unitId: c.unitId, hypothesisId: c.hypothesisId, lineageKey: c.lineageKey, instrumentKey: c.instrumentKey, barMs: c.barMs, periodStart: c.periodStart, periodEnd: c.periodEnd, datasetHash: c.datasetHash, walkForwardHash: c.walkForwardHash, walkForwardResultHash: c.walkForwardResultHash });
 }
 
@@ -75,10 +77,11 @@ export async function holdoutContext(db: Db, unitId: string): Promise<HoldoutCon
   }
   const { spec } = specOf(unit.run.campaign);
   // A hypothesis below its market's minimum sample can never be a candidate, so it must not spend the period.
+  // Checked where a read is authorised or started, not here: this context also serves closing an existing read.
   const declared = spec.datasets.find((d) => d.key === unit.datasetKey);
   const minTrades = declared ? marketFor(declared).minimumSample.minOosTrades : 0;
   const oosTrades = obj(summary.oos).trades;
-  if (unit.hypothesisKind === "STRATEGY" && typeof oosTrades === "number" && oosTrades < minTrades) throw new CampaignError("NOT_ELIGIBLE", `unit ${unitId} has ${oosTrades} out-of-sample trades, below the market minimum of ${minTrades}; it could not become a candidate, so its holdout is not read`);
+  const underSampled = unit.hypothesisKind === "STRATEGY" && typeof oosTrades === "number" && oosTrades < minTrades ? `unit ${unitId} has ${oosTrades} out-of-sample trades, below the market minimum of ${minTrades}; it could not become a candidate, so its holdout is not read` : null;
   const base = {
     unitId,
     hypothesisId: unit.hypothesisId,
@@ -91,7 +94,7 @@ export async function holdoutContext(db: Db, unitId: string): Promise<HoldoutCon
     walkForwardHash: summary.walkForwardHash,
     walkForwardResultHash: wf.resultHash,
   };
-  return { ...base, runId: unit.runId, hypothesisKind: unit.hypothesisKind, interval: String(dataset.interval), warehouseDatasetId: source.kind === "WAREHOUSE" && typeof source.datasetId === "string" ? source.datasetId : null, priorTrials: wf.priorTrials, subjectHash: holdoutSubjectHash(base), maxRuntimeMs: spec.limits.maxRuntimeMsPerUnit };
+  return { ...base, runId: unit.runId, hypothesisKind: unit.hypothesisKind, interval: String(dataset.interval), warehouseDatasetId: source.kind === "WAREHOUSE" && typeof source.datasetId === "string" ? source.datasetId : null, priorTrials: wf.priorTrials, subjectHash: holdoutSubjectHash(base), maxRuntimeMs: spec.limits.maxRuntimeMsPerUnit, underSampled };
 }
 
 export type PriorAccess = { source: "CAMPAIGN_LEDGER" | "LEGACY_REGISTRY" | "WALK_FORWARD_SEEN"; unitId: string | null; lineageKey: string; periodStart: string | null; periodEnd: string | null; consumedAt: string; why: string };
@@ -147,6 +150,7 @@ export async function authorizeHoldout(prisma: PrismaClient, input: { unitId: st
   if (!/^[A-Za-z0-9_.@+-]{1,120}$/.test(operator)) throw new CampaignError("OPERATOR_REQUIRED", "authorisation needs an operator identity");
   if (!(input.ttlMs >= 60_000 && input.ttlMs <= MAX_HOLDOUT_AUTHORISATION_MS)) throw new CampaignError("BAD_TTL", `authorisation lifetime must be between 1 minute and ${MAX_HOLDOUT_AUTHORISATION_MS / 86_400_000} days`);
   const c = await holdoutContext(prisma, input.unitId);
+  if (c.underSampled) throw new CampaignError("NOT_ELIGIBLE", c.underSampled);
   const intent = await prisma.researchHoldoutLedger.findFirst({ where: { unitId: c.unitId, kind: "CONSUME_INTENT" } });
   if (intent) throw new CampaignError("ALREADY_CONSUMED", `unit ${c.unitId} already consumed its holdout at ${intent.createdAt.toISOString()}`);
   const prior = await priorHoldoutAccess(prisma, c);
@@ -193,6 +197,7 @@ export async function beginHoldout(prisma: PrismaClient, input: { unitId: string
       const stale = rows.some((r) => r.kind === "AUTHORIZED");
       throw new CampaignError("NOT_AUTHORIZED", stale ? `unit ${c.unitId}: its holdout authorisation has expired or was given for a different result` : `unit ${c.unitId}: no operator has authorised a holdout read; the holdout stays withheld`);
     }
+    if (c.underSampled) throw new CampaignError("NOT_ELIGIBLE", c.underSampled);
     const prior = await priorHoldoutAccess(tx, c);
     if (prior.blocking.length) throw new CampaignError("HOLDOUT_ALREADY_CONSUMED", `${c.lineageKey} ${prior.blocking[0]!.why}`);
     await tx.researchHoldoutLedger.create({

@@ -184,7 +184,7 @@ Recovery:
 - **Holdout `RESULT_LOST`:** the period is spent for that hypothesis family. Do not try to re-evaluate: collect bars after the period, or use prospective observation.
 - **Never** delete or update rows in `ResearchTrialLedger`, `ResearchHoldoutLedger`, `ResearchCampaignResult` or `ResearchCampaignEvent` (the database refuses it).
 
-Worker job: off unless `RESEARCH_CAMPAIGN_WORKER_ENABLED=true` (then `RESEARCH_CAMPAIGN_TICK_MS`, default 60 s, and `RESEARCH_CAMPAIGN_MAX_UNITS`, 1 to 5). It starts the CLI as a separate, low-priority process with only the database URL and commit in its environment; evaluation never runs in the trading worker. It only works runs pinned to the deployed commit, and does not evaluate holdouts.
+Worker job: off unless `RESEARCH_CAMPAIGN_WORKER_ENABLED=true` (then `RESEARCH_CAMPAIGN_TICK_MS`, default 60 s, and `RESEARCH_CAMPAIGN_MAX_UNITS`, 1 to 5). It starts the CLI as a separate, low-priority process and passes it only the database URL and commit (the CLI still reads the host `.env` itself, as every research CLI does); evaluation never runs in the trading worker. It only works runs pinned to the deployed commit, and does not evaluate holdouts.
 
 **Deploy order: run `pnpm db:deploy` before restarting the API or worker.** The research CLIs read the trial ledger and fail without it. The Market Scanner keeps working and shows research evidence as unavailable until the tables exist.
 

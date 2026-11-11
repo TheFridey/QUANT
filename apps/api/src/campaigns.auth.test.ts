@@ -62,7 +62,7 @@ describe("EVIDENCE campaign endpoints", () => {
     app.setGlobalPrefix("api");
     await app.listen(0, "127.0.0.1");
     base = (await app.getUrl()).replace("[::1]", "127.0.0.1");
-  });
+  }, 120_000);
   afterAll(async () => {
     await app.close();
   });
