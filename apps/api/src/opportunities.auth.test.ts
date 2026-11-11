@@ -27,6 +27,8 @@ const prismaStub = {
   ledgerEntry: { findMany: stub("ledgerEntry.findMany", []) },
   position: { findMany: stub("position.findMany", []) },
   order: { findMany: stub("order.findMany", []) },
+  historicalDataset: { findMany: stub("historicalDataset.findMany", []) },
+  researchCampaignResult: { findMany: stub("researchCampaignResult.findMany", []) },
   marketObservation: { findFirst: stub("marketObservation.findFirst", null), findMany: stub("marketObservation.findMany", []) },
 };
 const auth = {
@@ -100,6 +102,8 @@ describe("HORIZON opportunity scanner endpoints", () => {
       "ledgerEntry.findMany": OPPORTUNITY_BOUNDS.realisedEntries,
       "position.findMany": OPPORTUNITY_BOUNDS.positions,
       "marketObservation.findMany": OPPORTUNITY_BOUNDS.volatilityPoints,
+      "historicalDataset.findMany": 2_000,
+      "researchCampaignResult.findMany": 300,
     };
     const listed = calls.filter((c) => c.name in limits);
     expect(listed.length).toBeGreaterThanOrEqual(4);

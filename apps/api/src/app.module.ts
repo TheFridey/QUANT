@@ -14,6 +14,7 @@ import { LabController } from "./lab.controller.js";
 import { LabService } from "./lab.service.js";
 import { OperatorCapacityService } from "./operator-capacity.service.js";
 import { OperatorController } from "./operator.controller.js";
+import { CampaignsController } from "./campaigns.controller.js";
 import { OpportunitiesController } from "./opportunities.controller.js";
 import { OpportunitiesService } from "./opportunities.service.js";
 import { TerminalController } from "./terminal.controller.js";
@@ -38,7 +39,7 @@ import { FeedbackService } from "./feedback.service.js";
     }),
     BullModule.registerQueue({ name: QUEUES.ingest }),
   ],
-  controllers: [AuthController, TerminalController, TradeLotsController, FeedbackController, OperatorController, LabController, EvolutionController, ResearchLoopController, DataQualityController, OpportunitiesController],
+  controllers: [AuthController, TerminalController, TradeLotsController, FeedbackController, OperatorController, LabController, EvolutionController, ResearchLoopController, DataQualityController, OpportunitiesController, CampaignsController],
   providers: [
     { provide: PrismaClient, useFactory: () => createPrismaClient() },
     AuthService,

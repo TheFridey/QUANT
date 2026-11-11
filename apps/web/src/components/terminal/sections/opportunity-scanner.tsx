@@ -33,6 +33,15 @@ export type ScannerMarket = {
     session: { status: string; reason: string };
     quote: { ageMs: number | null; dataState: string | null; price: number | null; spreadBps: number | null; liquidityUsd: number | null };
   };
+  readinessSplit: {
+    liveQuote: { ready: boolean; state: string; reasons: Reason[] };
+    execution: { ready: boolean; state: string; blockers: Reason[] };
+  };
+  research: {
+    history: Array<{ datasetId: string; sourceId: string; interval: string; bars: number; firstOpen: string | null; lastOpen: string | null }>;
+    results: Array<{ campaignName: string; unitId: string; hypothesisId: string; interval: string; stage: string | null; status: string; verdict: string; why: string; createdAt: string }>;
+    summary: { hypothesesTested: number; rejected: number; pendingHoldout: number; holdoutPassed: number; underObservation: number; latestAt: string | null };
+  };
   observedAt: string | null;
   volatility: { samples: number; stdevLogReturnBps: number | null; regime: string };
   cost: { totalBps: number; feeBps: number; spreadBps: number; slippageBps: number; basis: string };
@@ -116,6 +125,23 @@ export function assetClassLabel(assetClass: string): string {
   return ASSET_CLASS_LABEL[assetClass] ?? assetClass;
 }
 
+/** Research history held for a market: independent of live quotes and of any execution path. */
+export function researchHistoryLabel(market: ScannerMarket): string {
+  const { history } = market.research;
+  if (history.length === 0) return "none stored";
+  return history.map((h) => `${h.bars.toLocaleString("en-GB")} ${h.interval} bars to ${h.lastOpen?.slice(0, 10) ?? "?"}`).join(" · ");
+}
+
+/** Campaign outcomes for a market. No campaign means the answer is unknown, never "no edge" and never zero. */
+export function researchEvidenceLabel(market: ScannerMarket): string {
+  const s = market.research.summary;
+  if (s.hypothesesTested === 0) return "no campaign has run (unknown)";
+  const parts = [`${s.hypothesesTested} tested`, `${s.rejected} rejected`];
+  if (s.pendingHoldout) parts.push(`${s.pendingHoldout} pending holdout`);
+  if (s.holdoutPassed) parts.push(`${s.holdoutPassed} passed holdout (research only)`);
+  return parts.join(" · ");
+}
+
 const bps = (value: number | null | undefined) => (value === null || value === undefined || !Number.isFinite(value) ? "—" : `${value.toFixed(1)} bps`);
 
 /** The first reason at the blocking rung: why this market cannot trade (or is research only). */
@@ -181,6 +207,10 @@ function MarketReadinessRow({ market, selected, onSelect }: { market: ScannerMar
         </div>
       </div>
       <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
+        <Fact label="Live market data" value={market.readinessSplit.liveQuote.ready ? "live quote" : market.readinessSplit.liveQuote.state.replaceAll("_", " ").toLowerCase()} />
+        <Fact label="Execution path" value={market.readinessSplit.execution.ready ? "paper-executable" : `${market.readinessSplit.execution.state.replaceAll("_", " ").toLowerCase()} (${market.readinessSplit.execution.blockers.length} blocker${market.readinessSplit.execution.blockers.length === 1 ? "" : "s"})`} />
+        <Fact label="Research history" value={researchHistoryLabel(market)} />
+        <Fact label="Research evidence" value={researchEvidenceLabel(market)} />
         <Fact label="Provider" value={`${market.provider.id ?? "none"} · ${market.provider.readiness}`} />
         <Fact label="Session" value={`${market.readiness.session.status} (${market.readiness.session.reason})`} />
         <Fact label="Quote" value={quote.ageMs === null ? "none" : `${quote.dataState ?? "?"} · ${formatAge(quote.ageMs)} old`} />
@@ -353,6 +383,35 @@ function MarketDiagnostics({ id }: { id: string | null }) {
         ) : (
           <p className="text-muted">No model evidence: the scanner abstains for this market.</p>
         )}
+        <div>
+          <h3 className="text-[10px] uppercase tracking-[0.14em] text-muted">Market data</h3>
+          <p className="mt-1">
+            Live quote: <span className="mono">{market.readinessSplit.liveQuote.state}</span>. Research history: {researchHistoryLabel(market)}.
+          </p>
+          <p className="mt-1 text-muted">Stored history can be researched whether or not a live quote or an execution path exists.</p>
+        </div>
+        <div>
+          <h3 className="text-[10px] uppercase tracking-[0.14em] text-muted">Execution</h3>
+          <p className="mt-1">
+            <span className="mono">{market.readinessSplit.execution.state}</span>
+            {market.readinessSplit.execution.blockers.length ? `: ${market.readinessSplit.execution.blockers.map((b) => b.code).join(", ")}` : ""}
+          </p>
+        </div>
+        <div>
+          <h3 className="text-[10px] uppercase tracking-[0.14em] text-muted">Research evidence</h3>
+          {market.research.results.length === 0 ? (
+            <p className="mt-1 text-muted">No campaign has run on this market. Its research result is unknown, not zero.</p>
+          ) : (
+            <ul className="mt-1 space-y-1" aria-label="Campaign results">
+              {market.research.results.slice(0, 12).map((r) => (
+                <li key={r.unitId}>
+                  <span className="mono">{r.hypothesisId}</span> {r.interval} · <span className="mono">{r.status}</span> — <span className="text-muted">{r.why}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-1 text-muted">A historical result, even one that passed its holdout, is not an executable strategy.</p>
+        </div>
         <div>
           <h3 className="text-[10px] uppercase tracking-[0.14em] text-muted">Readiness checks</h3>
           {market.readiness.reasons.length === 0 ? (

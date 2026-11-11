@@ -264,6 +264,32 @@ export function evaluateReadiness(input: {
   };
 }
 
+/**
+ * The readiness ladder answers one question (can this market be paper-traded now?) with one state. An operator
+ * also needs two separate facts that the single state hides: whether usable market data exists, and whether an
+ * execution path exists. A market can have years of research history and a live quote yet no execution path,
+ * or the reverse. Derived from the same reasons, so the two views can never disagree with the ladder.
+ */
+export type ReadinessSplit = {
+  liveQuote: { ready: boolean; state: "LIVE_QUOTE" | "NO_PROVIDER" | "PROVIDER_NOT_CONFIGURED" | "SESSION_CLOSED" | "NO_RECENT_QUOTE" | "REFERENCE_ONLY" | "STALE"; reasons: ScannerReason[] };
+  execution: { ready: boolean; state: "PAPER_EXECUTABLE" | "RESEARCH_ONLY_BY_DESIGN" | "NOT_SUPPORTED" | "BLOCKED"; blockers: ScannerReason[] };
+};
+
+const QUOTE_STAGES: readonly ReadinessState[] = ["NO_PROVIDER", "PROVIDER_NOT_CONFIGURED", "SESSION_CLOSED", "NO_RECENT_QUOTE", "REFERENCE_ONLY", "STALE"];
+
+export function splitReadiness(readiness: Pick<ReadinessResult, "reasons" | "paperExecutable">): ReadinessSplit {
+  const quoteReasons = readiness.reasons.filter((r) => QUOTE_STAGES.includes(r.stage));
+  const first = QUOTE_STAGES.find((stage) => quoteReasons.some((r) => r.stage === stage));
+  const blockers = readiness.reasons.filter((r) => !QUOTE_STAGES.includes(r.stage));
+  const path = blockers.some((r) => r.stage === "NOT_SUPPORTED") ? "NOT_SUPPORTED" : blockers.some((r) => r.stage === "RESEARCH_ONLY") ? "RESEARCH_ONLY_BY_DESIGN" : blockers.length ? "BLOCKED" : "PAPER_EXECUTABLE";
+  // An execution path with no live quote still cannot fill: `ready` needs both, exactly as the ladder does.
+  const quoteBlocks = path === "PAPER_EXECUTABLE" && !readiness.paperExecutable;
+  return {
+    liveQuote: { ready: first === undefined, state: (first ?? "LIVE_QUOTE") as ReadinessSplit["liveQuote"]["state"], reasons: quoteReasons },
+    execution: { ready: readiness.paperExecutable, state: quoteBlocks ? "BLOCKED" : path, blockers: quoteBlocks ? quoteReasons : blockers },
+  };
+}
+
 export type VolatilityRegime = "INSUFFICIENT_DATA" | "CALM" | "NORMAL" | "TURBULENT";
 export type VolatilityView = { samples: number; stdevLogReturnBps: number | null; regime: VolatilityRegime };
 
