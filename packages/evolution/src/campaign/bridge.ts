@@ -3,7 +3,7 @@ import type { PrismaClient } from "@odin/shared/db";
 import { isOperatorActor } from "../genesis/model-lifecycle.js";
 import { currentModelState, registerModel, transitionModel, type ModelVersionRow } from "../genesis/model-registry.js";
 import { verifyStoredPrediction } from "../genesis/shadow.js";
-import { prospectiveEvidence, type ProspectiveEvidence, type ProspectiveRow } from "./stages.js";
+import { prospectiveEvidence, TARGET_EFFECTIVE_SIGNALS_BOUNDS, type ProspectiveEvidence, type ProspectiveRow } from "./stages.js";
 import { CampaignError, logEvent } from "./store.js";
 
 /**
@@ -45,7 +45,8 @@ export function shadowBlocker(input: { hypothesisKind: string; calendar: string 
  * Registers the frozen champion of a unit whose holdout passed. Idempotent: the same result always maps to
  * the same model version. The model starts EXPERIMENTAL and is not observed until an operator says so.
  */
-export async function registerCampaignModel(prisma: PrismaClient, input: { unitId: string; registeredBy: string; instrumentKeys: string[]; maxStalenessDays: number }): Promise<{ status: "REGISTERED" | "ALREADY_REGISTERED"; model: ModelVersionRow }> {
+export async function registerCampaignModel(prisma: PrismaClient, input: { unitId: string; registeredBy: string; instrumentKeys: string[]; maxStalenessDays: number; targetEffectiveSignals: number }): Promise<{ status: "REGISTERED" | "ALREADY_REGISTERED"; model: ModelVersionRow }> {
+  if (!(Number.isInteger(input.targetEffectiveSignals) && input.targetEffectiveSignals >= TARGET_EFFECTIVE_SIGNALS_BOUNDS.min && input.targetEffectiveSignals <= TARGET_EFFECTIVE_SIGNALS_BOUNDS.max)) throw new CampaignError("OBSERVATION_LENGTH_REQUIRED", `declare, before observation starts, how many independent signals the evidence will be judged on (${TARGET_EFFECTIVE_SIGNALS_BOUNDS.min} to ${TARGET_EFFECTIVE_SIGNALS_BOUNDS.max}); there is no default`);
   if (!(Number.isFinite(input.maxStalenessDays) && input.maxStalenessDays >= 1 && input.maxStalenessDays <= MAX_STALENESS_DAYS)) throw new CampaignError("STALENESS_REQUIRED", `state how old the frozen model may be while it is observed (1 to ${MAX_STALENESS_DAYS} days); there is no default`);
   const unit = await prisma.researchCampaignUnit.findUnique({ where: { id: input.unitId }, include: { run: { include: { campaign: true } }, results: true } });
   if (!unit) throw new CampaignError("NOT_FOUND", `unit ${input.unitId}`);
@@ -73,7 +74,7 @@ export async function registerCampaignModel(prisma: PrismaClient, input: { unitI
     datasetHashes: [dataset.contentHash],
     labelDefinition: model.labelSpec as LabelSpec,
     hyperparameters: { learnerFamily: String(model.family ?? "unknown"), searchSpaceHash: String(obj(holdout.provenance).searchSpaceHash ?? "") },
-    trainingProtocol: { protocol: String(obj(obj(holdout.provenance).versions).ml2Protocol ?? ""), target: "NET_POSITIVE", shadow: { barMs, instrumentKeys: keys, maxStalenessMs: Math.round(input.maxStalenessDays * 86_400_000) }, campaign: { campaignId: unit.run.campaignId, specHash: unit.run.campaign.specHash, runId: unit.runId, runNumber: unit.run.runNumber, unitId: unit.id, synthetic } },
+    trainingProtocol: { protocol: String(obj(obj(holdout.provenance).versions).ml2Protocol ?? ""), target: "NET_POSITIVE", shadow: { barMs, instrumentKeys: keys, maxStalenessMs: Math.round(input.maxStalenessDays * 86_400_000) }, campaign: { campaignId: unit.run.campaignId, specHash: unit.run.campaign.specHash, runId: unit.runId, runNumber: unit.run.runNumber, unitId: unit.id, synthetic, targetEffectiveSignals: input.targetEffectiveSignals } },
     validation: { verdict: "CANDIDATE", walkForwardBrier: typeof summary.walkForwardBrier === "number" ? summary.walkForwardBrier : null, walkForwardResultHash: wf.resultHash, holdoutResultHash: holdout.resultHash, programmeTrials: holdout.priorTrials + holdout.trialCount, synthetic },
     evidenceLinks: [`campaign:${unit.run.campaignId}/run:${unit.run.runNumber}/unit:${unit.seq}`],
     codeCommit: unit.run.codeVersion,
@@ -111,8 +112,8 @@ export const PROSPECTIVE_ROW_LIMIT = 5_000;
 
 /** Prospective evidence of one registered model from its stored shadow rows (newest rows, bounded). */
 export async function modelProspectiveEvidence(prisma: PrismaClient, model: Pick<ModelVersionRow, "id" | "validation" | "trainingProtocol" | "artefact" | "labelDefinition">, now: Date = new Date()): Promise<ProspectiveEvidence> {
-  const rows = await prisma.shadowPrediction.findMany({ where: { modelVersionId: model.id }, include: { outcome: true }, orderBy: { decisionTime: "desc" }, take: PROSPECTIVE_ROW_LIMIT });
-  rows.reverse();
+  // The EARLIEST rows of the cohort, in order: the judged sample is a fixed prefix, so later rows must not push it out.
+  const rows = await prisma.shadowPrediction.findMany({ where: { modelVersionId: model.id }, include: { outcome: true }, orderBy: { decisionTime: "asc" }, take: PROSPECTIVE_ROW_LIMIT });
   const shadow = obj(obj(model.trainingProtocol).shadow);
   const validation = obj(model.validation);
   let featureNames: string[] = [];
@@ -145,5 +146,6 @@ export async function modelProspectiveEvidence(prisma: PrismaClient, model: Pick
     referenceBrier: typeof validation.walkForwardBrier === "number" ? validation.walkForwardBrier : null,
     featureNames,
     now: now.getTime(),
+    targetEffectiveSignals: Number(obj(obj(model.trainingProtocol).campaign).targetEffectiveSignals ?? TARGET_EFFECTIVE_SIGNALS_BOUNDS.max),
   });
 }

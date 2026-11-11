@@ -36,7 +36,7 @@ import { currentCodeVersion, evaluateHoldout, workRun } from "./campaign-runner.
  *   cancel <runId> --by NAME
  *   authorize-holdout <unitId> --operator NAME [--ttl-hours N] [--note TEXT]
  *   evaluate-holdout <unitId>                 reads the holdout once; needs a current authorisation
- *   register-model <unitId> --by NAME --instrument-key KEY[,KEY] --max-staleness-days N
+ *   register-model <unitId> --by NAME --instrument-key KEY[,KEY] --max-staleness-days N --observe-signals N
  *   observe <modelVersionId> --operator NAME --reason TEXT    start prospective (shadow) observation
  *   trials                                    programme-wide trial count
  *   declare-legacy-trials --count N --by NAME --note TEXT
@@ -154,7 +154,7 @@ async function main(): Promise<void> {
       case "evaluate-holdout":
         return print(await evaluateHoldout(prisma, arg(flags, 0, "unitId"), deps));
       case "register-model": {
-        const out = await registerCampaignModel(prisma, { unitId: arg(flags, 0, "unitId"), registeredBy: need(flags, "by"), instrumentKeys: need(flags, "instrument-key").split(","), maxStalenessDays: Number(need(flags, "max-staleness-days")) });
+        const out = await registerCampaignModel(prisma, { unitId: arg(flags, 0, "unitId"), registeredBy: need(flags, "by"), instrumentKeys: need(flags, "instrument-key").split(","), maxStalenessDays: Number(need(flags, "max-staleness-days")), targetEffectiveSignals: Number(need(flags, "observe-signals")) });
         return print({ status: out.status, modelVersionId: out.model.id, family: out.model.family, version: out.model.version, artefactHash: out.model.artefactHash, state: "EXPERIMENTAL unless already moved", note: "Not observed until an operator runs `observe`. Evidence label only; no trading authority." });
       }
       case "observe":

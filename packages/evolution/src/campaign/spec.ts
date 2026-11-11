@@ -131,6 +131,11 @@ export function marketFor(dataset: Pick<CampaignDataset, "market" | "costOverrid
   const base = MARKET_CONFIGS[dataset.market];
   const o = dataset.costOverrides;
   if (!o || (o.feeBpsPerSide === undefined && o.spreadFull === undefined && o.slippagePerSide === undefined)) return base;
+  // An override may make the study harder, never easier: a cost below the market default would lower the bar
+  // a hypothesis has to clear in walk-forward and in its holdout.
+  for (const [name, value, floor] of [["feeBpsPerSide", o.feeBpsPerSide, base.cost.feeBpsPerSide], ["spreadFull", o.spreadFull, base.cost.spreadFull], ["slippagePerSide", o.slippagePerSide, base.cost.slippagePerSide]] as const) {
+    if (value !== undefined && value < floor) throw new CampaignSpecError(`costOverrides.${name} ${value} is below the ${dataset.market} default ${floor}; a campaign may raise cost assumptions, not lower them`);
+  }
   return {
     ...base,
     cost: {
@@ -227,7 +232,8 @@ export function planCampaign(raw: unknown): { spec: CampaignSpec; specCanonical:
           searchSpace,
           searchSpaceHash: canonicalHash(searchSpace),
           horizonBars: bars,
-          lineageKey: `ML2:NET_POSITIVE:h${bars}`,
+          // One lineage for every ML 2.0 study of the target: horizon, bar size, folds, seed and learner are tuning choices.
+          lineageKey: "ML2:NET_POSITIVE",
         };
       }
       const id = `${unit.datasetKey}|${unit.hypothesisId}`;

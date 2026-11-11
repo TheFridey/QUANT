@@ -115,7 +115,7 @@ export async function runDetail(prisma: PrismaClient, runId: string, now: Date =
       holdoutLedger: ledger.map((l) => ({ kind: l.kind, actor: l.actor, createdAt: l.createdAt.toISOString(), expiresAt: l.expiresAt?.toISOString() ?? null, note: l.note })),
       model,
       prospective,
-      stage: evidenceStage({ hypothesisKind: u.hypothesisKind as "STRATEGY" | "ML2", unitState: u.state, lastError: u.lastError, walkForward: wf, holdout, holdoutAuthorised: authorised, model, prospective, shadowBlocker: blocker }),
+      stage: evidenceStage({ hypothesisKind: u.hypothesisKind as "STRATEGY" | "ML2", unitState: u.state, lastError: u.lastError, walkForward: wf, holdout, holdoutAuthorised: authorised, holdoutIntentOpen: ledger.some((l) => l.kind === "CONSUME_INTENT") && !holdout, model, prospective, shadowBlocker: blocker }),
     });
   }
   return {

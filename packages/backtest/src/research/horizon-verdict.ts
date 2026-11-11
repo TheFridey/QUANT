@@ -71,6 +71,10 @@ export function composeHorizonVerdict(input: {
     ...mlRan.filter((m) => m.holdoutStatus === "ALREADY_CONSUMED").map((m) => `ml2:h${m.horizonBars}`),
   ];
   const underSampled = strategies.filter((s) => s.walkForwardPassed && s.holdoutStatus === "WITHHELD" && !meetsSample(s)).map((s) => s.id);
+  const failedHoldout = [
+    ...strategies.filter((s) => s.walkForwardPassed && s.holdoutStatus === "EVALUATED" && s.verdict !== "VALIDATED_CANDIDATE").map((s) => s.id),
+    ...mlRan.filter((m) => m.holdoutStatus === "EVALUATED" && m.verdict !== "CANDIDATE").map((m) => `ml2:h${m.horizonBars}`),
+  ];
   const ranStrategies = strategies.filter((s) => s.oos !== null && s.oos.bars > 0);
   const ranMl = mlRan.filter((m) => m.verdict !== "INSUFFICIENT_EVIDENCE");
 
@@ -90,6 +94,9 @@ export function composeHorizonVerdict(input: {
   } else if (underSampled.length > 0) {
     verdict = "INSUFFICIENT_EVIDENCE";
     reasons.push(`Walk-forward passed for ${underSampled.join(", ")} with fewer than the market minimum of ${input.minOosTrades} out-of-sample trades`);
+  } else if (failedHoldout.length > 0) {
+    verdict = "NO_SKILL";
+    reasons.push(`${failedHoldout.join(", ")} passed walk-forward but failed the once-read holdout; no hypothesis is a candidate after ${input.programmeTrials} programme trials`);
   } else if (ranStrategies.length > 0 || ranMl.length > 0) {
     verdict = "NO_SKILL";
     reasons.push(`No hypothesis survived walk-forward after costs and ${input.programmeTrials} programme trials`);

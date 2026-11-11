@@ -29,7 +29,8 @@ type Tx = Prisma.TransactionClient;
 type Db = PrismaClient | Tx;
 
 export const MAX_HOLDOUT_AUTHORISATION_MS = 7 * 86_400_000;
-const HOLDOUT_RESULT_GRACE_MS = 60_000;
+/** Closing an open intent as lost is irreversible, so the wait is generous: twice the runtime limit plus this. */
+const HOLDOUT_RESULT_GRACE_MS = 600_000;
 
 export type HoldoutContext = {
   unitId: string;
@@ -88,45 +89,66 @@ export async function holdoutContext(db: Db, unitId: string): Promise<HoldoutCon
   return { ...base, runId: unit.runId, hypothesisKind: unit.hypothesisKind, interval: String(dataset.interval), warehouseDatasetId: source.kind === "WAREHOUSE" && typeof source.datasetId === "string" ? source.datasetId : null, priorTrials: wf.priorTrials, subjectHash: holdoutSubjectHash(base), maxRuntimeMs: spec.limits.maxRuntimeMsPerUnit };
 }
 
-export type PriorAccess = { source: "CAMPAIGN_LEDGER" | "LEGACY_REGISTRY"; unitId: string | null; lineageKey: string; periodStart: string | null; periodEnd: string | null; consumedAt: string };
+export type PriorAccess = { source: "CAMPAIGN_LEDGER" | "LEGACY_REGISTRY" | "WALK_FORWARD_SEEN"; unitId: string | null; lineageKey: string; periodStart: string | null; periodEnd: string | null; consumedAt: string; why: string };
 
 /**
- * Earlier reads of this instrument and bar size whose period overlaps `c`'s. `blocking` are those of the same
- * lineage (or, in the legacy registry, of the same strategy id on any dataset of the instrument).
+ * Earlier use of this instrument that stands in the way of reading `c`'s holdout. Identity is the normalised
+ * instrument, the lineage and the calendar period: the bar size is deliberately NOT part of it, because 1h and
+ * 4h bars over the same weeks are the same market history and a second interval would be a free second look.
+ * `blocking`:
+ *  - an earlier holdout read by the same lineage whose period overlaps;
+ *  - an earlier walk-forward by the same lineage (another unit) that already tested bars inside this period
+ *    as in-sample or walk-forward data: declaring an earlier as-of instant must not turn bars the lineage has
+ *    already been scored on into a "holdout";
+ *  - an ASCEND-registry access by the same strategy id on any dataset of the instrument (no period recorded).
+ * `priorLooks` counts every earlier read of an overlapping period on the instrument, any lineage, any interval.
  */
 export async function priorHoldoutAccess(db: Db, c: HoldoutContext): Promise<{ priorLooks: number; blocking: PriorAccess[] }> {
-  const overlapping = await db.researchHoldoutLedger.findMany({
-    where: { kind: "CONSUME_INTENT", instrumentKey: c.instrumentKey, barMs: c.barMs, unitId: { not: c.unitId }, periodStart: { lt: c.periodEnd }, periodEnd: { gt: c.periodStart } },
+  const overlap = { kind: "CONSUME_INTENT", instrumentKey: c.instrumentKey, unitId: { not: c.unitId }, periodStart: { lt: c.periodEnd }, periodEnd: { gt: c.periodStart } };
+  const [priorLooks, sameLineage] = await Promise.all([
+    db.researchHoldoutLedger.count({ where: overlap }),
+    db.researchHoldoutLedger.findMany({ where: { ...overlap, lineageKey: c.lineageKey }, orderBy: { createdAt: "asc" }, take: 100 }),
+  ]);
+  const blocking: PriorAccess[] = sameLineage.map((r) => ({ source: "CAMPAIGN_LEDGER" as const, unitId: r.unitId, lineageKey: r.lineageKey, periodStart: r.periodStart.toISOString(), periodEnd: r.periodEnd.toISOString(), consumedAt: r.createdAt.toISOString(), why: `already read an overlapping holdout of ${c.instrumentKey} (${r.periodStart.toISOString()} to ${r.periodEnd.toISOString()}); only bars after that period can confirm this hypothesis` }));
+  // Bars this lineage has already been walked forward on, in another unit, are not a holdout.
+  const seen = await db.researchCampaignResult.findMany({
+    where: { phase: "WALK_FORWARD", unitId: { not: c.unitId }, dataset: { path: ["instrumentKey"], equals: c.instrumentKey }, provenance: { path: ["lineageKey"], equals: c.lineageKey } },
     orderBy: { createdAt: "asc" },
-    take: 500,
+    take: 1_000,
+    select: { unitId: true, summary: true, createdAt: true },
   });
-  const blocking: PriorAccess[] = overlapping
-    .filter((r) => r.lineageKey === c.lineageKey)
-    .map((r) => ({ source: "CAMPAIGN_LEDGER" as const, unitId: r.unitId, lineageKey: r.lineageKey, periodStart: r.periodStart.toISOString(), periodEnd: r.periodEnd.toISOString(), consumedAt: r.createdAt.toISOString() }));
-  // The ASCEND registry records no period, so any access by this strategy id on a dataset of the instrument blocks.
-  const datasets = await db.historicalDataset.findMany({ where: { interval: c.interval }, select: { id: true, instrumentKey: true }, take: 5_000 });
+  for (const row of seen) {
+    const start = obj(obj(row.summary).holdoutPeriod).start;
+    if (typeof start === "string" && Date.parse(start) > c.periodStart.getTime()) {
+      blocking.push({ source: "WALK_FORWARD_SEEN", unitId: row.unitId, lineageKey: c.lineageKey, periodStart: null, periodEnd: start, consumedAt: row.createdAt.toISOString(), why: `was already walked forward on ${c.instrumentKey} bars up to ${start} (unit ${row.unitId}), which lie inside this holdout period; those bars are not unseen` });
+      break;
+    }
+  }
+  // The ASCEND registry records no period, so an access by this strategy id on any dataset of the instrument blocks.
+  // Rows written by campaign units are covered, with their periods, by the ledger above.
+  const datasets = await db.historicalDataset.findMany({ select: { id: true, instrumentKey: true }, orderBy: { id: "asc" }, take: 5_000 });
   const siblings = datasets.filter((d) => normaliseInstrument(d.instrumentKey) === c.instrumentKey).map((d) => d.id);
   const legacy = siblings.length
-    ? await db.researchHoldoutAccess.findMany({ where: { strategyId: c.hypothesisId, datasetId: { in: siblings }, runId: { not: `campaign-unit:${c.unitId}` } }, take: 100 })
+    ? await db.researchHoldoutAccess.findMany({ where: { strategyId: c.hypothesisId, datasetId: { in: siblings }, NOT: { runId: { startsWith: "campaign-unit:" } } }, take: 100 })
     : [];
-  for (const row of legacy) blocking.push({ source: "LEGACY_REGISTRY", unitId: null, lineageKey: `strategyId:${row.strategyId}`, periodStart: null, periodEnd: null, consumedAt: row.consumedAt.toISOString() });
-  return { priorLooks: overlapping.length + legacy.length, blocking };
+  for (const row of legacy) blocking.push({ source: "LEGACY_REGISTRY", unitId: null, lineageKey: `strategyId:${row.strategyId}`, periodStart: null, periodEnd: null, consumedAt: row.consumedAt.toISOString(), why: `strategy ${row.strategyId} already consumed a holdout on ${c.instrumentKey} in the ASCEND registry (no period recorded, so every period is treated as spent)` });
+  return { priorLooks: priorLooks + legacy.length, blocking };
 }
 
 /** Operator authorisation of one holdout read for one frozen walk-forward result. Append-only; expires. */
 export async function authorizeHoldout(prisma: PrismaClient, input: { unitId: string; operator: string; ttlMs: number; note?: string; now?: Date }) {
   const operator = input.operator.trim();
-  if (!/^[A-Za-z0-9_.@-]{1,120}$/.test(operator)) throw new CampaignError("OPERATOR_REQUIRED", "authorisation needs an operator identity");
+  if (!/^[A-Za-z0-9_.@+-]{1,120}$/.test(operator)) throw new CampaignError("OPERATOR_REQUIRED", "authorisation needs an operator identity");
   if (!(input.ttlMs >= 60_000 && input.ttlMs <= MAX_HOLDOUT_AUTHORISATION_MS)) throw new CampaignError("BAD_TTL", `authorisation lifetime must be between 1 minute and ${MAX_HOLDOUT_AUTHORISATION_MS / 86_400_000} days`);
   const c = await holdoutContext(prisma, input.unitId);
   const intent = await prisma.researchHoldoutLedger.findFirst({ where: { unitId: c.unitId, kind: "CONSUME_INTENT" } });
   if (intent) throw new CampaignError("ALREADY_CONSUMED", `unit ${c.unitId} already consumed its holdout at ${intent.createdAt.toISOString()}`);
   const prior = await priorHoldoutAccess(prisma, c);
-  if (prior.blocking.length) throw new CampaignError("HOLDOUT_ALREADY_CONSUMED", `${c.lineageKey} already read an overlapping holdout of ${c.instrumentKey} (${prior.blocking.length} earlier access(es), first ${prior.blocking[0]!.consumedAt}); only bars after that period can confirm this hypothesis`);
+  if (prior.blocking.length) throw new CampaignError("HOLDOUT_ALREADY_CONSUMED", `${c.lineageKey} ${prior.blocking[0]!.why}`);
   const now = input.now ?? new Date();
   // createdAt is written explicitly so the lifetime check does not depend on two clocks.
   const row = await prisma.researchHoldoutLedger.create({
-    data: { kind: "AUTHORIZED", unitId: c.unitId, lineageKey: c.lineageKey, instrumentKey: c.instrumentKey, barMs: c.barMs, periodStart: c.periodStart, periodEnd: c.periodEnd, datasetHash: c.datasetHash, subjectHash: c.subjectHash, actor: `operator:${operator}`, createdAt: now, expiresAt: new Date(now.getTime() + input.ttlMs), note: `${input.note?.trim() ?? ""}${input.note ? " | " : ""}prior looks at an overlapping period of this instrument: ${prior.priorLooks}`.slice(0, 2000) },
+    data: { kind: "AUTHORIZED", unitId: c.unitId, lineageKey: c.lineageKey, instrumentKey: c.instrumentKey, barMs: c.barMs, periodStart: c.periodStart, periodEnd: c.periodEnd, datasetHash: c.datasetHash, subjectHash: c.subjectHash, actor: `operator:${operator}`, createdAt: now, expiresAt: new Date(now.getTime() + input.ttlMs), note: `${input.note?.trim() ?? ""}${input.note ? " | " : ""}prior looks at an overlapping period of this instrument (any hypothesis, any interval): ${prior.priorLooks}`.slice(0, 2000) },
   });
   await logEvent(prisma, { runId: c.runId, unitId: c.unitId, kind: "HOLDOUT_AUTHORIZED", actor: row.actor, detail: { expiresAt: row.expiresAt, subjectHash: c.subjectHash, priorLooks: prior.priorLooks, period: { start: c.periodStart, end: c.periodEnd } } });
   return { authorisation: row, priorLooks: prior.priorLooks, context: c };
@@ -139,7 +161,7 @@ export type BeginHoldout =
   | { status: "RESULT_LOST" };
 
 /**
- * Commits the intent to read a holdout. Serialised per instrument and bar size, so two executors cannot both
+ * Commits the intent to read a holdout. Serialised per instrument, so two executors cannot both
  * consume, and a second call for a unit whose intent exists never reads again: it reports the stored close,
  * or (once the runtime limit has passed without a result) records the result as lost.
  */
@@ -147,13 +169,16 @@ export async function beginHoldout(prisma: PrismaClient, input: { unitId: string
   const c = await holdoutContext(prisma, input.unitId);
   const now = input.now ?? new Date();
   return campaignTx(prisma, async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`holdout:${c.instrumentKey}|${c.barMs}`}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`holdout:${c.instrumentKey}`}))`;
     const rows = await tx.researchHoldoutLedger.findMany({ where: { unitId: c.unitId }, orderBy: { createdAt: "asc" } });
     const intent = rows.find((r) => r.kind === "CONSUME_INTENT");
     if (intent) {
       const close = rows.find((r) => r.kind === "RESULT_RECORDED" || r.kind === "RESULT_LOST");
       if (close) return { status: "ALREADY_CLOSED" as const, closedAs: close.kind };
-      if (now.getTime() < intent.createdAt.getTime() + c.maxRuntimeMs + HOLDOUT_RESULT_GRACE_MS) return { status: "IN_PROGRESS" as const, since: intent.createdAt.toISOString() };
+      // Both instants come from the database clock, so two hosts with different clocks agree on the window.
+      const clock = await tx.$queryRaw<Array<{ now: Date }>>`SELECT now() AS now`;
+      const dbNow = clock[0]?.now ?? now;
+      if (dbNow.getTime() < intent.createdAt.getTime() + 2 * c.maxRuntimeMs + HOLDOUT_RESULT_GRACE_MS) return { status: "IN_PROGRESS" as const, since: intent.createdAt.toISOString() };
       await closeLost(tx, c, input.actor, `no result was stored within the runtime limit after the intent of ${intent.createdAt.toISOString()}`);
       return { status: "RESULT_LOST" as const };
     }
@@ -163,13 +188,13 @@ export async function beginHoldout(prisma: PrismaClient, input: { unitId: string
       throw new CampaignError("NOT_AUTHORIZED", stale ? `unit ${c.unitId}: its holdout authorisation has expired or was given for a different result` : `unit ${c.unitId}: no operator has authorised a holdout read; the holdout stays withheld`);
     }
     const prior = await priorHoldoutAccess(tx, c);
-    if (prior.blocking.length) throw new CampaignError("HOLDOUT_ALREADY_CONSUMED", `${c.lineageKey} already read an overlapping holdout of ${c.instrumentKey}; the holdout is not read again`);
+    if (prior.blocking.length) throw new CampaignError("HOLDOUT_ALREADY_CONSUMED", `${c.lineageKey} ${prior.blocking[0]!.why}`);
     await tx.researchHoldoutLedger.create({
       data: { kind: "CONSUME_INTENT", unitId: c.unitId, lineageKey: c.lineageKey, instrumentKey: c.instrumentKey, barMs: c.barMs, periodStart: c.periodStart, periodEnd: c.periodEnd, datasetHash: c.datasetHash, subjectHash: c.subjectHash, actor: input.actor, note: `authorised by ${authorisation.actor} (${authorisation.id}); prior looks ${prior.priorLooks}` },
     });
     // Shared with the ASCEND CLIs and the research loop, so they also see this instrument's holdout as spent.
     if (c.warehouseDatasetId) {
-      await tx.researchHoldoutAccess.create({ data: { strategyId: c.hypothesisId, strategyVersion: `campaign:${c.lineageKey}`, datasetId: c.warehouseDatasetId, runId: `campaign-unit:${c.unitId}` } });
+      await tx.researchHoldoutAccess.create({ data: { strategyId: c.hypothesisId, strategyVersion: `campaign-unit:${c.unitId}`, datasetId: c.warehouseDatasetId, runId: `campaign-unit:${c.unitId}` } });
     }
     await logEvent(tx, { runId: c.runId, unitId: c.unitId, kind: "HOLDOUT_INTENT_COMMITTED", actor: input.actor, detail: { authorisedBy: authorisation.actor, priorLooks: prior.priorLooks, period: { start: c.periodStart, end: c.periodEnd } } });
     return { status: "INTENT_COMMITTED" as const, context: c, priorLooks: prior.priorLooks };
@@ -177,6 +202,9 @@ export async function beginHoldout(prisma: PrismaClient, input: { unitId: string
 }
 
 async function closeLost(tx: Tx, c: HoldoutContext, actor: string, why: string): Promise<void> {
+  // Only a committed read can be lost. Without an intent nothing was consumed and nothing may be closed.
+  const intent = await tx.researchHoldoutLedger.findFirst({ where: { unitId: c.unitId, kind: "CONSUME_INTENT" }, select: { id: true } });
+  if (!intent) throw new CampaignError("NO_INTENT", `unit ${c.unitId} has no committed consume intent; there is no holdout read to close`);
   const wf = await tx.researchCampaignResult.findUniqueOrThrow({ where: { unitId_phase: { unitId: c.unitId, phase: "WALK_FORWARD" } } });
   const reason = `Holdout consumed but its result was not stored (${why}). The outcome may have been seen, so it is not recomputed: this hypothesis needs bars after ${c.periodEnd.toISOString()}`;
   await tx.researchHoldoutLedger.create({ data: { kind: "RESULT_LOST", unitId: c.unitId, lineageKey: c.lineageKey, instrumentKey: c.instrumentKey, barMs: c.barMs, periodStart: c.periodStart, periodEnd: c.periodEnd, datasetHash: c.datasetHash, subjectHash: c.subjectHash, actor, note: why.slice(0, 2000) } });

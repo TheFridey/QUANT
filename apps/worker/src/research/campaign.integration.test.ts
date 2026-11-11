@@ -67,8 +67,11 @@ function spec(name: string, over: { datasets?: unknown[]; strategies?: string[];
 describe.skipIf(!enabled)("research campaigns (Postgres, synthetic fixtures)", () => {
   let prisma: PrismaClient;
   let calls = 0;
+  /** Evaluations that read a holdout. */
+  let holdoutReads = 0;
   const inProcess: Evaluator = async (job) => {
     calls += 1;
+    if (job.mode === "HOLDOUT") holdoutReads += 1;
     const started = Date.now();
     return { evaluation: evaluateUnit(job), runtimeMs: Date.now() - started, peakRssMb: 1 };
   };
@@ -163,12 +166,10 @@ describe.skipIf(!enabled)("research campaigns (Postgres, synthetic fixtures)", (
     const after = await programmeTrials(prisma);
     expect(after.total - before.total).toBe(ran);
     expect(after.campaignOutstanding).toBe(before.campaignOutstanding);
-    // Each unit was deflated by the count before it plus the units settled before it (sequential run).
-    let expectedPrior = before.total;
-    for (const u of units) {
-      expect(u.results[0]!.priorTrials).toBe(expectedPrior);
-      expectedPrior += u.results[0]!.trialCount;
-    }
+    // Each unit is deflated by everything outside the run plus every OTHER unit of the run at its planned
+    // bound: the same number whatever order the units ran in.
+    const runPlanned = units.reduce((n, u) => n + u.plannedTrials, 0);
+    for (const u of units) expect(u.results[0]!.priorTrials).toBe(before.total + runPlanned - u.plannedTrials);
 
     // Deterministic replay: the stored inputs (declaration, file hash, frozen prior trials) reproduce the stored hash.
     const { spec: stored, units: plan } = specOf(await prisma.researchCampaign.findFirstOrThrow({ where: { runs: { some: { id: run.id } } } }));
@@ -267,10 +268,9 @@ describe.skipIf(!enabled)("research campaigns (Postgres, synthetic fixtures)", (
         reserveTrials(other, { unitId: units[1]!.id, runId: run.id, planned: units[1]!.plannedTrials, maxTrials: 5000, actor: "c1" }),
       ]);
       if (r0.status === "REFUSED" || r1.status === "REFUSED") throw new Error("unexpected refusal");
-      const priors = [r0.priorTrials, r1.priorTrials].sort((x, y) => x - y);
-      expect(priors[0]).toBe(before.total);
-      // Whoever went second saw the first one's full reservation.
-      expect([before.total + units[0]!.plannedTrials, before.total + units[1]!.plannedTrials]).toContain(priors[1]);
+      // Whichever connection won the lock, each unit counts the other at its full planned bound.
+      expect(r0.priorTrials).toBe(before.total + units[1]!.plannedTrials);
+      expect(r1.priorTrials).toBe(before.total + units[0]!.plannedTrials);
       expect((await programmeTrials(prisma)).total).toBe(before.total + units[0]!.plannedTrials + units[1]!.plannedTrials);
       // Idempotent: asking again returns the same frozen count and adds nothing.
       const again = await reserveTrials(other, { unitId: units[0]!.id, runId: run.id, planned: units[0]!.plannedTrials, maxTrials: 5000, actor: "c1" });
@@ -361,12 +361,14 @@ describe.skipIf(!enabled)("research campaigns (Postgres, synthetic fixtures)", (
     const auth = await authorizeHoldout(prisma, { unitId: passed.unitId, operator: "rhys", ttlMs: 3_600_000, note: "integration test" });
     expect(auth.authorisation.actor).toBe("operator:rhys");
     expect(auth.priorLooks).toBe(0);
-    const callsBefore = calls;
+    const readsBefore = holdoutReads;
     const [a, b] = await Promise.all([evaluateHoldout(prisma, passed.unitId, deps("h-a")), evaluateHoldout(prisma, passed.unitId, deps("h-b"))]);
     expect([a.status, b.status].sort()).toEqual(["IN_PROGRESS", "RECORDED"]);
-    expect(calls - callsBefore).toBe(1);
+    // Only the call that stored the result reports a verdict.
+    expect([a, b].filter((r) => r.verdict !== undefined)).toHaveLength(1);
+    expect(holdoutReads - readsBefore).toBe(1);
     expect((await evaluateHoldout(prisma, passed.unitId, deps("h-c"))).status).toBe("ALREADY_CLOSED");
-    expect(calls - callsBefore).toBe(1);
+    expect(holdoutReads - readsBefore).toBe(1);
 
     const results = await prisma.researchCampaignResult.findMany({ where: { unitId: passed.unitId }, orderBy: { createdAt: "asc" } });
     expect(results.map((r) => r.phase)).toEqual(["WALK_FORWARD", "HOLDOUT"]);
@@ -412,20 +414,100 @@ describe.skipIf(!enabled)("research campaigns (Postgres, synthetic fixtures)", (
     expect(unit).toBeTruthy();
     await authorizeHoldout(prisma, { unitId: unit.id, operator: "rhys", ttlMs: 3_600_000 });
     let holdoutCalls = 0;
-    const dies: Evaluator = async () => {
+    // Dies while reading the holdout (the walk-forward rehearsal before the intent succeeds).
+    const dies: Evaluator = async (job, limits, signal) => {
+      if (job.mode !== "HOLDOUT") return inProcess(job, limits, signal);
       holdoutCalls += 1;
       throw new EvaluatorFailure("CRASHED", "evaluator killed after reading the holdout (simulated)");
     };
     const first = await evaluateHoldout(prisma, unit.id, deps("lost-a", { evaluator: dies }));
     expect(first.status).toBe("RESULT_LOST");
     // Retry with a healthy evaluator: the holdout is not read again.
-    const retry = await evaluateHoldout(prisma, unit.id, deps("lost-b", { evaluator: async (j, l, s) => { holdoutCalls += 1; return inProcess(j, l, s); } }));
+    const readsBefore = holdoutReads;
+    const retry = await evaluateHoldout(prisma, unit.id, deps("lost-b"));
     expect(retry.status).toBe("ALREADY_CLOSED");
     expect(holdoutCalls).toBe(1);
+    expect(holdoutReads).toBe(readsBefore);
     const result = await prisma.researchCampaignResult.findUniqueOrThrow({ where: { unitId_phase: { unitId: unit.id, phase: "HOLDOUT" } } });
     expect(result).toMatchObject({ verdict: "HOLDOUT_CONSUMED_RESULT_LOST", holdoutStatus: "CONSUMED_RESULT_LOST" });
     expect(result.reasons[0]).toMatch(/not recomputed.*needs bars after/);
     // The intent survives; a fresh authorisation for the same unit is refused.
     await expect(authorizeHoldout(prisma, { unitId: unit.id, operator: "rhys", ttlMs: 3_600_000 })).rejects.toThrow(/ALREADY_CONSUMED/);
   }, 300_000);
+
+  it("an earlier as-of instant cannot turn bars the lineage was already tested on into a holdout", async () => {
+    // Same series and family as the shared run, cut earlier: its last 20% lies inside bars the family was
+    // already walked forward on (the shared run's pre-holdout span).
+    const lines = planted.trimEnd().split("\n");
+    const cutAsOf = new Date(Date.parse(lines[3401]!.split(",")[0]!)).toISOString(); // 3,400 bars available
+    const { run } = await declare(spec("earlier as-of", { datasets: [{ key: "truncated", source: { kind: "FILE", ...plantedFile }, market: "FX", instrument: EUR, interval: "1h", asOf: cutAsOf }], strategies: ALL_STRATEGIES, limits: { maxConcurrency: 1 } }));
+    await workRun(prisma, run.id, deps("asof"));
+    const units = await unitsOf(run.id);
+    expect((units[0]!.results[0]!.dataset as { bars: number }).bars).toBe(3400);
+    const eligible = units.filter((u) => u.results[0]!.walkForwardPassed);
+    expect(eligible.length, "the truncated planted series should still leave a family pending").toBeGreaterThan(0);
+    for (const u of eligible) await expect(authorizeHoldout(prisma, { unitId: u.id, operator: "rhys", ttlMs: 3_600_000 })).rejects.toThrow(/HOLDOUT_ALREADY_CONSUMED.*(already walked forward|already read an overlapping holdout)/);
+    expect(await prisma.researchHoldoutLedger.count({ where: { unitId: { in: units.map((u) => u.id) } } })).toBe(0);
+  }, 300_000);
+
+  it("a good holdout result survives a failed write, a process that cannot reproduce the walk-forward reads nothing, and a finished run cannot be cancelled", async () => {
+    const { run } = await declare(spec("write retry", { instrument: `NZD/X${TAG}`, strategies: ALL_STRATEGIES, limits: { maxConcurrency: 1 } }));
+    await workRun(prisma, run.id, deps("retry-wf"));
+    const eligible = (await unitsOf(run.id)).filter((u) => u.results[0]!.walkForwardPassed);
+    expect(eligible.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = eligible;
+
+    // A process whose walk-forward differs (other runtime, other build) is refused before anything is consumed.
+    await authorizeHoldout(prisma, { unitId: first!.id, operator: "rhys", ttlMs: 3_600_000 });
+    const drifting: Evaluator = async (job, limits, signal) => {
+      const out = await inProcess(job, limits, signal);
+      return { ...out, evaluation: { ...out.evaluation, walkForwardHash: "0".repeat(64) } };
+    };
+    const readsBefore = holdoutReads;
+    await expect(evaluateHoldout(prisma, first!.id, deps("drift", { evaluator: drifting }))).rejects.toThrow(/WALK_FORWARD_NOT_REPRODUCED.*the holdout was not read/);
+    expect(holdoutReads).toBe(readsBefore);
+    expect(await prisma.researchHoldoutLedger.count({ where: { unitId: first!.id, kind: "CONSUME_INTENT" } })).toBe(0);
+    // The authorisation is still good for a process that does reproduce it.
+    expect((await evaluateHoldout(prisma, first!.id, deps("ok"))).status).toBe("RECORDED");
+
+    // Closing a read as lost needs a read: a unit with no intent cannot be closed.
+    const { recordHoldoutLost } = await import("@odin/evolution/campaign");
+    await expect(recordHoldoutLost(prisma, { unitId: second!.id, actor: "it", why: "nothing was read" })).rejects.toThrow(/NO_INTENT/);
+    expect(await prisma.researchCampaignResult.count({ where: { unitId: second!.id, phase: "HOLDOUT" } })).toBe(0);
+
+    // Everything in this run is finished: cancelling it changes nothing.
+    expect(await cancelRun(prisma, { runId: run.id, actor: "operator:it", now: new Date() })).toEqual({ cancelled: 0, state: "COMPLETED" });
+    expect((await prisma.researchCampaignRunState.findUniqueOrThrow({ where: { runId: run.id } })).cancelRequestedAt).toBeNull();
+  }, 300_000);
+
+  it("two executors with a concurrency limit of one never hold two units, and the run still finishes COMPLETED", async () => {
+    const { run } = await declare(spec("limit one", { strategies: ["hz_atr_breakout", "hz_vol_expansion", "hz_mtf_trend", "hz_vol_mean_reversion"], limits: { maxConcurrency: 1 } }));
+    let active = 0;
+    let peak = 0;
+    const tracked: Evaluator = async (job, limits, signal) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 150)); // hold the unit across an await, so a second claim could interleave
+      try {
+        return await inProcess(job, limits, signal);
+      } finally {
+        active -= 1;
+      }
+    };
+    const work = async (owner: string) => {
+      const handled = [];
+      for (let i = 0; i < 40; i += 1) {
+        const out = await workRun(prisma, run.id, deps(owner, { evaluator: tracked }));
+        handled.push(...out.handled);
+        if (out.stopped === "NOTHING_CLAIMABLE") break;
+        await new Promise((r) => setTimeout(r, 50)); // CONCURRENCY_LIMIT: the other executor holds the slot
+      }
+      return handled;
+    };
+    const [a, b] = await Promise.all([work("one-a"), work("one-b")]);
+    expect(peak).toBe(1);
+    expect(a.length + b.length).toBe(4);
+    expect((await unitsOf(run.id)).every((u) => u.state === "SUCCEEDED" && u.results.length === 1)).toBe(true);
+    expect((await prisma.researchCampaignRunState.findUniqueOrThrow({ where: { runId: run.id } })).state).toBe("COMPLETED");
+  }, 120_000);
 });

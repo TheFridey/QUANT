@@ -61,6 +61,9 @@ describe("HORIZON verdict composition", () => {
     const out = compose([s("failed-holdout", { verdict: "REJECTED_OVERFIT", walkForwardPassed: true, holdoutStatus: "EVALUATED" })], [{ horizonBars: 8, verdict: "REJECTED_OVERFIT", holdoutStatus: "EVALUATED" }]);
     expect(out.verdict).toBe("NO_SKILL");
     expect(out.pending).toEqual([]);
+    // It did survive walk-forward; the reason must say what actually failed.
+    expect(out.reasons[0]).toMatch(/failed-holdout.*passed walk-forward but failed the once-read holdout/);
+    expect(out.reasons[0]).not.toMatch(/No hypothesis survived walk-forward/);
   });
 
   it("a holdout consumed by an earlier run is not pending and says so", () => {

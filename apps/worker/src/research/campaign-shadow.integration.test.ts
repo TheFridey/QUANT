@@ -74,7 +74,7 @@ describe.skipIf(!enabled)("campaign result to prospective shadow observation (Po
     expect(unit.walkForward).toMatchObject({ walkForwardPassed: true, holdoutStatus: "WITHHELD", verdict: "INSUFFICIENT_EVIDENCE" });
     expect(unit.stage).toMatchObject({ stage: "PENDING_HOLDOUT", status: "WITHHELD", executable: false });
     // Not eligible for observation before its holdout: eligibility is not relaxed.
-    await expect(registerCampaignModel(prisma, { unitId: unit.id, registeredBy: "it", instrumentKeys: [`SYNTHETIC:SYN${tag}`], maxStalenessDays: 730 })).rejects.toThrow(/NOT_ELIGIBLE/);
+    await expect(registerCampaignModel(prisma, { unitId: unit.id, registeredBy: "it", instrumentKeys: [`SYNTHETIC:SYN${tag}`], maxStalenessDays: 730, targetEffectiveSignals: 30 })).rejects.toThrow(/NOT_ELIGIBLE/);
 
     // 3. Holdout evaluated once, under authorisation.
     await authorizeHoldout(prisma, { unitId: unit.id, operator: "rhys", ttlMs: 3_600_000 });
@@ -85,13 +85,15 @@ describe.skipIf(!enabled)("campaign result to prospective shadow observation (Po
     expect(unit.stage.missing.join(" ")).toMatch(/prospective observation/);
 
     // A synthetic model can never be pointed at a real instrument, and the staleness limit has no default.
-    await expect(registerCampaignModel(prisma, { unitId: unit.id, registeredBy: "it", instrumentKeys: ["EUR_USD"], maxStalenessDays: 730 })).rejects.toThrow(/SYNTHETIC_ONLY/);
-    await expect(registerCampaignModel(prisma, { unitId: unit.id, registeredBy: "it", instrumentKeys: [`SYNTHETIC:SYN${tag}`], maxStalenessDays: Number.NaN })).rejects.toThrow(/STALENESS_REQUIRED/);
+    await expect(registerCampaignModel(prisma, { unitId: unit.id, registeredBy: "it", instrumentKeys: ["EUR_USD"], maxStalenessDays: 730, targetEffectiveSignals: 30 })).rejects.toThrow(/SYNTHETIC_ONLY/);
+    await expect(registerCampaignModel(prisma, { unitId: unit.id, registeredBy: "it", instrumentKeys: [`SYNTHETIC:SYN${tag}`], maxStalenessDays: Number.NaN, targetEffectiveSignals: 30 })).rejects.toThrow(/STALENESS_REQUIRED/);
+    // The observation length is declared before observation starts; there is no default and no small value.
+    await expect(registerCampaignModel(prisma, { unitId: unit.id, registeredBy: "it", instrumentKeys: [`SYNTHETIC:SYN${tag}`], maxStalenessDays: 730, targetEffectiveSignals: 5 })).rejects.toThrow(/OBSERVATION_LENGTH_REQUIRED/);
     const key = `SYNTHETIC:SYN${tag}`;
-    const registered = await registerCampaignModel(prisma, { unitId: unit.id, registeredBy: "it", instrumentKeys: [key], maxStalenessDays: 730 });
+    const registered = await registerCampaignModel(prisma, { unitId: unit.id, registeredBy: "it", instrumentKeys: [key], maxStalenessDays: 730, targetEffectiveSignals: 30 });
     expect(registered.status).toBe("REGISTERED");
     expect(registered.model.family).toBe("campaign-ml2-synthetic");
-    expect((await registerCampaignModel(prisma, { unitId: unit.id, registeredBy: "it", instrumentKeys: [key], maxStalenessDays: 730 })).status).toBe("ALREADY_REGISTERED");
+    expect((await registerCampaignModel(prisma, { unitId: unit.id, registeredBy: "it", instrumentKeys: [key], maxStalenessDays: 730, targetEffectiveSignals: 30 })).status).toBe("ALREADY_REGISTERED");
     // Registered but not observed: the shadow service ignores it until an operator acts.
     expect((await currentModelState(prisma, registered.model.id)).state).toBe("EXPERIMENTAL");
     const source: ShadowBarSource = {
@@ -140,6 +142,8 @@ describe.skipIf(!enabled)("campaign result to prospective shadow observation (Po
     expect(unit.prospective!.meanNetSignals).toBeNull();
     expect(unit.prospective!.netAdvantage).toBeNull();
     expect(unit.stage.missing.join(" ")).toMatch(/0 independent resolved outcomes \(need 30\)/);
+    expect(unit.stage.missing.join(" ")).toMatch(/0 of the 30 independent signals declared at registration/);
+    expect(unit.prospective!.observation).toEqual({ targetEffectiveSignals: 30, reached: false, judgedOn: "NOT_YET_JUDGED" });
 
     // Nothing on the trading path was created or changed anywhere along the way.
     expect(await snapshot()).toBe(before);

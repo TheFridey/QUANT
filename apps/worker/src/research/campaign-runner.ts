@@ -52,7 +52,7 @@ export const childProcessEvaluator: Evaluator = (job, limits, signal) =>
     const jobPath = join(dir, "job.json");
     const outPath = join(dir, "out.json");
     writeFileSync(jobPath, JSON.stringify(job));
-    const child = spawn(process.execPath, [`--max-old-space-size=${limits.maxMemoryMb}`, resolve(__dirname, "campaign-evaluator.js"), jobPath, outPath], { stdio: ["ignore", "ignore", "pipe"], env: { NODE_ENV: process.env.NODE_ENV ?? "production", PATH: process.env.PATH ?? "" } });
+    const child = spawn(process.execPath, [`--max-old-space-size=${limits.maxMemoryMb}`, resolve(__dirname, "campaign-evaluator.js"), jobPath, outPath, String(limits.maxRuntimeMs), String(limits.maxMemoryMb)], { stdio: ["ignore", "ignore", "pipe"], env: { NODE_ENV: process.env.NODE_ENV ?? "production", PATH: process.env.PATH ?? "" } });
     let stderr = "";
     let why: EvaluatorFailure | null = null;
     child.stderr.on("data", (chunk: Buffer) => {
@@ -142,7 +142,7 @@ export async function workRun(prisma: PrismaClient, runId: string, deps: RunnerD
     if (options.maxUnits !== undefined && handled.length >= options.maxUnits) return { handled, stopped: "MAX_UNITS" };
     const claim = await claimUnit(prisma, { runId, owner: deps.owner, leaseMs, now: now() });
     if (claim.kind === "NONE") return { handled, stopped: claim.reason };
-    let unit: UnitRow = claim.unit;
+    const unit: UnitRow = claim.unit;
     const planned = plan.find((p) => p.seq === unit.seq)!;
     const dataset = spec.datasets.find((d) => d.key === planned.datasetKey)!;
     const push = (outcome: UnitOutcome["outcome"], detail: string) => {
@@ -175,7 +175,7 @@ export async function workRun(prisma: PrismaClient, runId: string, deps: RunnerD
       continue;
     }
     // 3. The first unit of a dataset pins its content for the run; a later unit or retry must see the same bars.
-    const pins = await prisma.researchCampaignEvent.findMany({ where: { runId, kind: "DATASET_PINNED" }, select: { detail: true } });
+    const pins = await prisma.researchCampaignEvent.findMany({ where: { runId, kind: "DATASET_PINNED" }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { detail: true } });
     const pinned = pins.map((p) => p.detail as { datasetKey?: string; contentHash?: string }).find((d) => d.datasetKey === dataset.key);
     if (!pinned) await logEvent(prisma, { runId, unitId: unit.id, kind: "DATASET_PINNED", actor: deps.owner, detail: { datasetKey: dataset.key, contentHash: pre.identity.contentHash, bars: pre.identity.bars, firstT: pre.identity.firstT, lastT: pre.identity.lastT } });
     else if (pinned.contentHash !== pre.identity.contentHash) {
@@ -192,26 +192,23 @@ export async function workRun(prisma: PrismaClient, runId: string, deps: RunnerD
     const abort = new AbortController();
     let leaseLost = false;
     let cancelled = false;
-    let beating = false;
+    let inflight: Promise<void> | null = null;
     const heartbeat = setInterval(() => {
-      if (beating) return;
-      beating = true;
-      void renewLease(prisma, { unit, owner: deps.owner, leaseMs, now: now() })
+      if (inflight) return;
+      inflight = renewLease(prisma, { unit, owner: deps.owner, leaseMs, now: now() })
         .then((check) => {
           if (!check.ok) {
             leaseLost = true;
             abort.abort("lease lost to another executor");
-          } else {
-            unit = check.unit;
-            if (check.cancelRequested) {
-              cancelled = true;
-              abort.abort("run cancelled");
-            }
+          } else if (check.cancelRequested) {
+            cancelled = true;
+            abort.abort("run cancelled");
           }
         })
+        // A failed renewal call is not a lost lease: the claim is fenced by owner and attempt, so the next beat retries.
         .catch(() => undefined)
         .finally(() => {
-          beating = false;
+          inflight = null;
         });
     }, Math.max(1_000, Math.floor(leaseMs / 4)));
     let result: EvaluatorResult | null = null;
@@ -222,8 +219,7 @@ export async function workRun(prisma: PrismaClient, runId: string, deps: RunnerD
       failure = error instanceof Error ? error : new Error(String(error));
     } finally {
       clearInterval(heartbeat);
-      // Let an in-flight renewal finish so `unit.version` is current before the fenced write below.
-      for (let i = 0; i < 100 && beating; i += 1) await new Promise((r) => setTimeout(r, 20));
+      if (inflight) await inflight;
     }
     if (leaseLost) {
       push("LEASE_LOST", "another executor took the unit over; nothing was written by this one");
@@ -246,35 +242,60 @@ export async function workRun(prisma: PrismaClient, runId: string, deps: RunnerD
 }
 
 /**
- * Evaluates one authorised holdout, once. The consume intent is committed before the evaluator starts; if the
- * evaluation then fails for any reason the result is recorded as lost and is never recomputed.
+ * Evaluates one authorised holdout, once.
+ *  1. An intent that already exists is resolved first (in progress, closed, or lost): nothing is read again.
+ *  2. Before anything is consumed, the walk-forward is re-computed here and must reproduce the authorised hash.
+ *     A different machine, runtime or build that cannot reproduce it costs nothing: the holdout stays unread.
+ *  3. The consume intent is committed, then the evaluator reads the holdout.
+ *  4. If the evaluator fails, the result is recorded as lost and never recomputed. If only the database write
+ *     fails, the good result is retried; it is never thrown away for a transient error.
  */
 export async function evaluateHoldout(prisma: PrismaClient, unitId: string, deps: RunnerDeps): Promise<{ status: string; verdict?: string; reasons?: string[] }> {
   const evaluator = deps.evaluator ?? childProcessEvaluator;
   const unit = await prisma.researchCampaignUnit.findUnique({ where: { id: unitId }, include: { run: { include: { campaign: true } } } });
   if (!unit) throw new CampaignError("NOT_FOUND", `unit ${unitId}`);
   if (deps.codeVersion !== unit.run.codeVersion) throw new CampaignError("CODE_VERSION_MISMATCH", `the run is pinned to ${unit.run.codeVersion}; this process runs ${deps.codeVersion ?? "unpinned code"}`);
+  const open = await prisma.researchHoldoutLedger.findFirst({ where: { unitId, kind: "CONSUME_INTENT" }, select: { id: true } });
+  if (open) {
+    const state = await beginHoldout(prisma, { unitId, actor: deps.owner, now: deps.now?.() });
+    return { status: state.status };
+  }
+  const context = await holdoutContext(prisma, unitId);
   const { spec, units: plan } = specOf(unit.run.campaign);
   const planned = plan.find((p) => p.seq === unit.seq)!;
   const dataset = spec.datasets.find((d) => d.key === planned.datasetKey)!;
+  const limits = { maxRuntimeMs: spec.limits.maxRuntimeMsPerUnit, maxMemoryMb: spec.limits.maxMemoryMbPerUnit };
   // Loaded and checked before the intent, so an unreadable or changed dataset costs no holdout.
   const raw = await loadRawBars(prisma, dataset, deps.baseDir);
   const pre = preflightDataset(dataset, raw);
-  const begin = await beginHoldoutChecked(prisma, unitId, deps.owner, pre.ok ? pre.identity.contentHash : null, deps.now?.());
+  const contentHash = pre.ok ? pre.identity.contentHash : null;
+  if (contentHash !== context.datasetHash) throw new CampaignError("DATASET_CHANGED", `the dataset no longer matches the walk-forward result (${contentHash?.slice(0, 16) ?? "refused"} vs ${context.datasetHash.slice(0, 16)}); the holdout was not read`);
+  const rehearsal = await evaluator(jobFor(spec, planned, raw, unit.run.codeVersion, context.priorTrials, "WALK_FORWARD"), limits, new AbortController().signal);
+  if (rehearsal.evaluation.walkForwardHash !== context.walkForwardHash) {
+    await logEvent(prisma, { runId: unit.runId, unitId, kind: "HOLDOUT_REFUSED_NOT_REPRODUCIBLE", actor: deps.owner, detail: { expected: context.walkForwardHash, actual: rehearsal.evaluation.walkForwardHash, node: process.version } });
+    throw new CampaignError("WALK_FORWARD_NOT_REPRODUCED", `this process re-computed the walk-forward as ${String(rehearsal.evaluation.walkForwardHash).slice(0, 12)}, not the authorised ${context.walkForwardHash.slice(0, 12)}; the holdout was not read. Use the machine, runtime and build that produced the result`);
+  }
+  const begin = await beginHoldout(prisma, { unitId, actor: deps.owner, now: deps.now?.() });
   if (begin.status !== "INTENT_COMMITTED") return { status: begin.status };
+  let result: EvaluatorResult;
   try {
-    const result = await evaluator(jobFor(spec, planned, raw, unit.run.codeVersion, begin.context.priorTrials, "HOLDOUT", begin.context.walkForwardHash), { maxRuntimeMs: spec.limits.maxRuntimeMsPerUnit, maxMemoryMb: spec.limits.maxMemoryMbPerUnit }, new AbortController().signal);
-    const stored = await recordHoldoutResult(prisma, { unitId, actor: deps.owner, evaluation: result.evaluation, metrics: { runtimeMs: result.runtimeMs, peakRssMb: result.peakRssMb } });
-    return { status: stored, verdict: result.evaluation.verdict, reasons: result.evaluation.reasons };
+    result = await evaluator(jobFor(spec, planned, raw, unit.run.codeVersion, begin.context.priorTrials, "HOLDOUT", begin.context.walkForwardHash), limits, new AbortController().signal);
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
-    const closed = await recordHoldoutLost(prisma, { unitId, actor: deps.owner, why });
-    return { status: closed, reasons: [why] };
+    return { status: await recordHoldoutLost(prisma, { unitId, actor: deps.owner, why }), reasons: [why] };
   }
-}
-
-async function beginHoldoutChecked(prisma: PrismaClient, unitId: string, actor: string, contentHash: string | null, now?: Date) {
-  const context = await holdoutContext(prisma, unitId);
-  if (contentHash !== context.datasetHash) throw new CampaignError("DATASET_CHANGED", `the dataset no longer matches the walk-forward result (${contentHash?.slice(0, 16) ?? "refused"} vs ${context.datasetHash.slice(0, 16)}); the holdout was not read`);
-  return beginHoldout(prisma, { unitId, actor, now });
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const stored = await recordHoldoutResult(prisma, { unitId, actor: deps.owner, evaluation: result.evaluation, metrics: { runtimeMs: result.runtimeMs, peakRssMb: result.peakRssMb } });
+      // The verdict is reported only when this call stored it; otherwise the ledger is the only authority.
+      return stored === "RECORDED" ? { status: stored, verdict: result.evaluation.verdict, reasons: result.evaluation.reasons } : { status: stored };
+    } catch (error) {
+      if (error instanceof CampaignError) throw error;
+      lastError = error;
+      await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+    }
+  }
+  // The intent stays open. It is closed as lost only after the generous in-progress window, by a later call.
+  throw new CampaignError("HOLDOUT_RESULT_NOT_STORED", `the holdout was evaluated but its result could not be written (${lastError instanceof Error ? lastError.message.split("\n").at(-1) : String(lastError)}); the consume intent is still open`);
 }

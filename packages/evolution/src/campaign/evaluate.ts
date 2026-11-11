@@ -236,7 +236,7 @@ export function evaluateUnit(job: UnitJob): UnitEvaluation {
   if (holdoutMode && job.expectedWalkForwardHash !== walkForwardHash) throw new WalkForwardMismatch(job.expectedWalkForwardHash ?? "none", walkForwardHash);
   const span = full?.holdoutSpan;
   const holdoutPeriod = span && span.firstT !== null && span.lastT !== null
-    ? { start: new Date(span.firstT).toISOString(), end: new Date(Math.min(lastClose, span.lastT + (m.horizonBars + 1) * barMs)).toISOString() }
+    ? { start: new Date(span.firstT).toISOString(), end: new Date(lastClose).toISOString() }
     : bars[holdoutStartIndex] ? { start: new Date(bars[holdoutStartIndex]!.t).toISOString(), end: new Date(lastClose).toISOString() } : null;
   // In HOLDOUT mode the gate is consumed even when the final model cannot be fitted: the period is spent either way.
   const holdoutStatus: HoldoutStatus = holdoutMode && walkForwardPassed ? "EVALUATED" : m.holdout.status;

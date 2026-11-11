@@ -5,6 +5,7 @@ import { DEFAULT_ML2_CONFIG, horizonsFor, inferBarMs, ML2_PROTOCOL_VERSION, runM
 import { INTERVAL_MS, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
 import { costPerSide } from "./cost-basis.js";
+import { declareLegacyTrials } from "@odin/evolution/campaign";
 import { programmeTrialCount } from "./holdout-policy.js";
 import { ML_CLI_USAGE, parseBarsCsv, parseMlArgs } from "./ml-args.js";
 
@@ -149,6 +150,17 @@ async function main() {
     config: { scheme: args.scheme, calibration: args.calibration, folds: args.folds ?? DEFAULT_ML2_CONFIG.folds, seed: args.seed ?? DEFAULT_ML2_CONFIG.seed, prefixProbes: args.prefixProbes ?? DEFAULT_ML2_CONFIG.prefixProbes },
     priorTrialCount: priorTrials,
   });
+  // The trials this study ran join the programme count in warehouse mode (the study itself is not stored).
+  let trialsRecorded: number | string = "NOT_RECORDED: CSV mode has no database";
+  if (!args.csvPath && report.trialCount > 0) {
+    const prisma = new PrismaClient();
+    try {
+      await declareLegacyTrials(prisma, { trials: report.trialCount, actor: "ml-cli", note: `ml-cli ${args.datasetId} horizon ${horizon} at ${process.env.GIT_COMMIT ?? "unknown"}: ${report.verdict}` });
+      trialsRecorded = report.trialCount;
+    } finally {
+      await prisma.$disconnect();
+    }
+  }
   const runtimeMs = Number(process.hrtime.bigint() - started) / 1e6;
   console.log(
     JSON.stringify(
@@ -162,6 +174,7 @@ async function main() {
         calendar,
         costBasis,
         priorTrials,
+        trialsRecorded,
         report: compact(report),
         runtime: { ms: Math.round(runtimeMs), peakRssMb: +(process.resourceUsage().maxRSS / 1024).toFixed(1) },
         conclusion: "Research output only. No model is applied to the paper engine, and the holdout is withheld because this CLI records nothing.",

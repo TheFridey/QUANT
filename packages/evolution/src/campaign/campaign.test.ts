@@ -32,7 +32,7 @@ describe("campaign specification", () => {
     expect(plan.units[1]!.plannedTrials).toBe(4); // one trial per default learner: base rate, logistic, boosted stumps, random forest
     expect(plan.plannedTrials).toBe(strategy.plannedTrials + 4);
     expect(strategy.lineageKey).toBe("STRATEGY:BREAKOUT");
-    expect(plan.units[1]!.lineageKey).toBe("ML2:NET_POSITIVE:h8");
+    expect(plan.units[1]!.lineageKey).toBe("ML2:NET_POSITIVE");
   });
 
   it("the same declaration hashes the same whatever the key order; any change is a different campaign", () => {
@@ -48,6 +48,14 @@ describe("campaign specification", () => {
     expect(() => planCampaign(baseSpec({ hypotheses: [{ kind: "STRATEGY", id: "hz_atr_breakout", grid: { atrMult: [0.1] } }] }))).toThrow(/CAMPAIGN_SPEC/);
     expect(() => planCampaign(baseSpec({ validation: { seed: 1, holdoutFraction: 0 } }))).toThrow(/CAMPAIGN_SPEC/);
     expect(() => planCampaign(baseSpec({ holdoutPolicy: "EVALUATE" }))).toThrow(/CAMPAIGN_SPEC/);
+  });
+
+  it("cost assumptions may be raised, never lowered below the market default", () => {
+    const withCosts = (costOverrides: Record<string, number>) => baseSpec({ datasets: [{ ...baseSpec().datasets[0], costOverrides }] });
+    expect(() => planCampaign(withCosts({ feeBpsPerSide: 0 }))).not.toThrow(); // the FX default fee is 0
+    expect(() => planCampaign(withCosts({ spreadFull: 0 }))).toThrow(/below the FX default/);
+    expect(() => planCampaign(withCosts({ slippagePerSide: 0 }))).toThrow(/may raise cost assumptions, not lower them/);
+    expect(() => planCampaign(withCosts({ spreadFull: 50, slippagePerSide: 50 }))).not.toThrow();
   });
 
   it("refuses unknown hypotheses, duplicates and plans above the declared trial limit before anything runs", () => {
@@ -144,6 +152,7 @@ describe("evidence stages", () => {
       [{ walkForward: { phase: "WALK_FORWARD", verdict: "REJECTED_COSTS", walkForwardPassed: false, reasons: ["gross +1.5% turns into net -0.05%"] } }, "HISTORICAL_RESULT", "REJECTED_COSTS"],
       [{ walkForward: wfPass }, "PENDING_HOLDOUT", "WITHHELD"],
       [{ walkForward: wfPass, holdoutAuthorised: true }, "PENDING_HOLDOUT", "AUTHORISED_NOT_EVALUATED"],
+      [{ walkForward: wfPass, holdoutIntentOpen: true }, "PENDING_HOLDOUT", "CONSUMED_AWAITING_RESULT"],
       [{ walkForward: wfPass, holdout: { verdict: "REJECTED_OVERFIT", holdoutStatus: "EVALUATED", reasons: ["holdout Brier skill -0.01"] } }, "HOLDOUT_EVALUATED", "HOLDOUT_FAILED"],
       [{ walkForward: wfPass, holdout: { verdict: "HOLDOUT_CONSUMED_RESULT_LOST", holdoutStatus: "CONSUMED_RESULT_LOST", reasons: ["lost"] } }, "HOLDOUT_EVALUATED", "RESULT_LOST"],
       [{ walkForward: wfPass, holdout: holdoutPass }, "HOLDOUT_EVALUATED", "HOLDOUT_PASSED_RESEARCH_ONLY"],
@@ -179,12 +188,12 @@ describe("evidence stages", () => {
 });
 
 describe("prospective evidence", () => {
-  /** Hourly decisions with a 4-bar horizon: consecutive outcome windows overlap. */
+  /** Hourly decisions with a 4-bar horizon: consecutive outcome windows overlap. Even hours are signals. */
   const rows = (n: number, over: (i: number) => Partial<ProspectiveRow> = () => ({})): ProspectiveRow[] =>
-    Array.from({ length: n }, (_, i) => ({ decisionTime: i * H, horizonEndsAt: i * H + 4 * H, status: "PREDICTED" as const, probability: i % 2 === 0 ? 0.7 : 0.3, abstainReasons: [], hashOk: true, outcome: { available: true, net: i % 2 === 0 ? 0.004 : -0.002, positive: i % 2 === 0 }, costBpsApplied: 30, estimatedCostBps: 30, features: null, ...over(i) }));
-  const evaluate = (r: ProspectiveRow[]) => prospectiveEvidence({ rows: r, entryThreshold: 0.55, horizonBars: 4, barMs: H, referenceBrier: 0.2, featureNames: [], now: 10_000 * H });
+    Array.from({ length: n }, (_, i) => ({ decisionTime: i * H, horizonEndsAt: i * H + 4 * H, status: "PREDICTED" as const, probability: i % 2 === 0 ? 0.97 : 0.03, abstainReasons: [], hashOk: true, outcome: { available: true, net: i % 2 === 0 ? 0.004 : -0.002, positive: i % 2 === 0 }, costBpsApplied: 30, estimatedCostBps: 30, features: null, ...over(i) }));
+  const evaluate = (r: ProspectiveRow[], target = 30) => prospectiveEvidence({ rows: r, entryThreshold: 0.55, horizonBars: 4, barMs: H, referenceBrier: 0.2, featureNames: [], now: 10_000 * H, targetEffectiveSignals: target });
 
-  it("counts independent outcomes, not overlapping ones", () => {
+  it("counts independent outcomes, not overlapping ones, and waits for the declared observation length", () => {
     const e = evaluate(rows(100));
     expect(e.resolved).toBe(100);
     // One window starts every hour and lasts four: only every fourth outcome is independent.
@@ -193,31 +202,60 @@ describe("prospective evidence", () => {
     // Signals are the even hours; a signal window blocks the next 4 hours, so every other signal counts.
     expect(e.signals).toBe(50);
     expect(e.effectiveSignals).toBe(25);
+    expect(e.observation).toEqual({ targetEffectiveSignals: 30, reached: false, judgedOn: "NOT_YET_JUDGED" });
     expect(e.sufficient).toBe(false);
-    expect(e.missing.join(" ")).toMatch(/25 independent resolved outcomes \(need 30\)/);
+    expect(e.missing.join(" ")).toMatch(/25 of the 30 independent signals declared at registration/);
     expect(e.costs).toEqual({ meanCostBpsApplied: 30, estimatedCostBps: 30 });
   });
 
-  it("is sufficient only when every declared minimum holds", () => {
+  it("is judged once, on the sample that ends at the declared length; later rows cannot change it", () => {
     const e = evaluate(rows(400));
-    expect(e.effectiveOutcomes).toBe(100);
+    // The 30th independent signal is decided at hour 116 (signals count at hours 0, 4, 8, ...).
+    expect(e.observation).toEqual({ targetEffectiveSignals: 30, reached: true, judgedOn: "FIXED_SAMPLE" });
+    expect(e.effectiveSignals).toBe(30);
+    expect(e.effectiveOutcomes).toBe(30);
+    expect(e.resolved).toBe(117);
+    expect(e.signalsNet!.lower).toBeGreaterThan(0);
     expect(e.netAdvantage!.lower).toBeGreaterThan(0);
-    expect(e.calibration!.ece).toBeLessThan(0.35);
-    // Probabilities 0.7 / 0.3 against outcomes 1 / 0 are miscalibrated by 0.3: above the 0.1 limit, so not sufficient.
+    expect(e.missing).toEqual([]);
+    expect(e.sufficient).toBe(true);
+    // A model that turns bad afterwards is the monitor's business; it cannot rewrite the judged sample, and a
+    // model that only turns good afterwards cannot buy a pass by waiting.
+    const laterBad = evaluate(rows(1000, (i) => (i > 116 ? { outcome: { available: true, net: -0.05, positive: false } } : {})));
+    expect(laterBad.signalsNet).toEqual(e.signalsNet);
+    expect(laterBad.sufficient).toBe(true);
+    expect(laterBad.predictions).toBe(1000);
+    const earlyBad = evaluate(rows(1000, (i) => (i <= 116 && i % 2 === 0 ? { outcome: { available: true, net: -0.004, positive: false } } : {})));
+    expect(earlyBad.observation.reached).toBe(true);
+    expect(earlyBad.sufficient).toBe(false);
+  });
+
+  it("a model whose signals lose money is not sufficient, even when it beats always-enter with confidence", () => {
+    // Signals: nine small wins, then one large loss (mean -11 bps). Everything else loses 100 bps, so the
+    // signals beat "always enter" by a wide, confident margin while still losing money.
+    const losing = rows(800, (i) => (i % 2 === 0 ? { probability: 0.9, outcome: { available: true, net: i % 20 === 0 ? -0.02 : 0.001, positive: i % 20 !== 0 } } : { probability: 0.1, outcome: { available: true, net: -0.01, positive: false } }));
+    const e = evaluate(losing);
+    expect(e.observation.reached).toBe(true);
+    expect(e.netAdvantage!.lower).toBeGreaterThan(0);
+    expect(e.meanNetSignals!).toBeLessThan(0);
+    expect(e.sufficient).toBe(false);
+    expect(e.missing.join(" ")).toMatch(/signals' own net return after costs: interval lower bound -?[0-9.]+ bps is not above 0/);
+  });
+
+  it("miscalibrated probabilities are not sufficient", () => {
+    const e = evaluate(rows(400, (i) => ({ probability: i % 2 === 0 ? 0.7 : 0.3 })));
+    // Probabilities 0.7 / 0.3 against outcomes 1 / 0 are off by 0.3: above the 0.1 limit.
     expect(e.sufficient).toBe(false);
     expect(e.missing.some((m) => /calibration error/.test(m))).toBe(true);
-    const calibrated = evaluate(rows(400, (i) => ({ probability: i % 2 === 0 ? 0.97 : 0.03 })));
-    expect(calibrated.missing).toEqual([]);
-    expect(calibrated.sufficient).toBe(true);
   });
 
   it("reports what is unknown as null and flags integrity failures", () => {
     const none = evaluate([]);
-    expect(none).toMatchObject({ resolved: 0, effectiveOutcomes: 0, meanNetSignals: null, meanNetAll: null, netAdvantage: null, calibration: null, overlapShare: null, sufficient: false });
+    expect(none).toMatchObject({ resolved: 0, effectiveOutcomes: 0, meanNetSignals: null, meanNetAll: null, netAdvantage: null, signalsNet: null, calibration: null, overlapShare: null, sufficient: false });
     expect(none.costs.meanCostBpsApplied).toBeNull();
     const open = evaluate(rows(10, () => ({ outcome: null, horizonEndsAt: 20_000 * H })));
     expect(open).toMatchObject({ predictions: 10, resolved: 0, open: 10, meanNetAll: null });
-    const tampered = evaluate(rows(400, (i) => ({ probability: i % 2 === 0 ? 0.97 : 0.03, hashOk: i !== 7 })));
+    const tampered = evaluate(rows(400, (i) => ({ hashOk: i !== 7 })));
     expect(tampered.integrityFailures).toBe(1);
     expect(tampered.sufficient).toBe(false);
   });

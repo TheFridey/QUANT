@@ -1,4 +1,4 @@
-import { calibration } from "@odin/backtest/ml2";
+import { blockBootstrapInterval, calibration } from "@odin/backtest/ml2";
 import { computeLeaderboardRow, type LeaderboardInputRow } from "../genesis/shadow-leaderboard.js";
 import { assessShadowHealth, DEFAULT_MONITOR_CONFIG } from "../genesis/shadow.js";
 
@@ -18,8 +18,17 @@ import { assessShadowHealth, DEFAULT_MONITOR_CONFIG } from "../genesis/shadow.js
 export const EVIDENCE_STAGES = ["HISTORICAL_RESULT", "PENDING_HOLDOUT", "HOLDOUT_EVALUATED", "PROSPECTIVE_OBSERVATION", "SUFFICIENT_PROSPECTIVE_EVIDENCE", "PAPER_EXECUTION_READINESS"] as const;
 export type EvidenceStage = (typeof EVIDENCE_STAGES)[number];
 
-/** Declared minimums for "sufficient prospective evidence". Counts are of non-overlapping outcomes. */
-export const PROSPECTIVE_MINIMUMS = { effectiveOutcomes: 30, effectiveSignals: 10, maxEce: DEFAULT_MONITOR_CONFIG.maxEce, maxBrierDecay: DEFAULT_MONITOR_CONFIG.maxBrierDecay } as const;
+/**
+ * Declared minimums for "sufficient prospective evidence". Counts are of non-overlapping outcomes.
+ *
+ * The observation length is fixed BEFORE observation starts: `targetEffectiveSignals` is stored in the
+ * immutable model row at registration. Sufficiency is judged once, on the sample that ends when that many
+ * independent signals have resolved, and that sample never changes afterwards. Looking at the evidence every
+ * day and stopping the first time an interval clears zero would inflate the false-positive rate several-fold;
+ * a pre-declared length does not.
+ */
+export const PROSPECTIVE_MINIMUMS = { effectiveOutcomes: 30, maxEce: DEFAULT_MONITOR_CONFIG.maxEce, maxBrierDecay: DEFAULT_MONITOR_CONFIG.maxBrierDecay } as const;
+export const TARGET_EFFECTIVE_SIGNALS_BOUNDS = { min: 30, max: 5_000 } as const;
 
 export type ProspectiveRow = LeaderboardInputRow & { costBpsApplied: number | null; estimatedCostBps: number; features: Record<string, number | null> | null };
 
@@ -40,6 +49,10 @@ export type ProspectiveEvidence = {
   costs: { meanCostBpsApplied: number | null; estimatedCostBps: number | null };
   meanNetSignals: number | null;
   meanNetAll: number | null;
+  /** Mean net return of the signals themselves, after costs, with a block-bootstrap interval. Must be above zero. */
+  signalsNet: { estimate: number; lower: number; upper: number } | null;
+  /** Pre-declared observation length and how far it has got. */
+  observation: { targetEffectiveSignals: number; reached: boolean; judgedOn: "FIXED_SAMPLE" | "NOT_YET_JUDGED" };
   /** Mean net of signals minus mean net of every resolved prediction, with a block-bootstrap interval. */
   netAdvantage: { estimate: number; lower: number; upper: number; blockLength: number } | null;
   uncertaintyNote: string | null;
@@ -51,12 +64,31 @@ export type ProspectiveEvidence = {
 };
 
 /** Prospective (shadow) evidence of one frozen model cohort. Missing measurements stay null, never zero. */
-export function prospectiveEvidence(input: { rows: ProspectiveRow[]; entryThreshold: number; horizonBars: number; barMs: number; referenceBrier: number | null; featureNames: string[]; now: number }): ProspectiveEvidence {
-  const board = computeLeaderboardRow({ rows: input.rows, entryThreshold: input.entryThreshold, horizonBars: input.horizonBars, now: input.now, graceMs: input.horizonBars * input.barMs });
-  const ok = input.rows.filter((r) => r.hashOk);
-  const resolved = ok
-    .filter((r) => r.status === "PREDICTED" && r.outcome?.available && r.outcome.net !== null && r.outcome.positive !== null && r.probability !== null)
-    .sort((a, b) => a.decisionTime - b.decisionTime);
+export function prospectiveEvidence(input: { rows: ProspectiveRow[]; entryThreshold: number; horizonBars: number; barMs: number; referenceBrier: number | null; featureNames: string[]; now: number; targetEffectiveSignals: number }): ProspectiveEvidence {
+  const allOk = input.rows.filter((r) => r.hashOk);
+  const isResolved = (r: ProspectiveRow) => r.status === "PREDICTED" && Boolean(r.outcome?.available) && r.outcome!.net !== null && r.outcome!.positive !== null && r.probability !== null;
+  // The judged sample ends when the pre-declared number of independent signals has resolved; later rows are
+  // still stored and shown as counts, but they cannot change the judgement.
+  let cutoff = Number.POSITIVE_INFINITY;
+  {
+    let n = 0;
+    let lastSignalEnd = Number.NEGATIVE_INFINITY;
+    for (const r of allOk.filter(isResolved).sort((a, b) => a.decisionTime - b.decisionTime)) {
+      if (r.probability! >= input.entryThreshold && r.decisionTime >= lastSignalEnd) {
+        n += 1;
+        lastSignalEnd = r.horizonEndsAt;
+        if (n === input.targetEffectiveSignals) {
+          cutoff = r.decisionTime;
+          break;
+        }
+      }
+    }
+  }
+  const reached = Number.isFinite(cutoff);
+  const judged = reached ? input.rows.filter((r) => r.decisionTime <= cutoff) : input.rows;
+  const board = computeLeaderboardRow({ rows: judged, entryThreshold: input.entryThreshold, horizonBars: input.horizonBars, now: input.now, graceMs: input.horizonBars * input.barMs });
+  const ok = judged.filter((r) => r.hashOk);
+  const resolved = ok.filter(isResolved).sort((a, b) => a.decisionTime - b.decisionTime);
   let effectiveOutcomes = 0;
   let effectiveSignals = 0;
   let lastEnd = Number.NEGATIVE_INFINITY;
@@ -71,6 +103,13 @@ export function prospectiveEvidence(input: { rows: ProspectiveRow[]; entryThresh
       lastSignalEnd = r.horizonEndsAt;
     }
   }
+  // The signals must make money themselves, after costs. Beating "always enter" is not enough: a model can
+  // lose less than a losing baseline and still lose.
+  const signalNets = resolved.filter((r) => r.probability! >= input.entryThreshold).map((r) => r.outcome!.net!);
+  const blockLength = Math.max(1, input.horizonBars);
+  const signalsCi = signalNets.length >= Math.max(2, blockLength)
+    ? blockBootstrapInterval(signalNets.length, (positions) => (positions.length ? positions.reduce((s, i) => s + signalNets[i]!, 0) / positions.length : null), { blockLength, minBlockLength: input.horizonBars, resamples: 1000, seed: 1, scheme: "STATIONARY", confidence: 0.95 })
+    : null;
   const costs = resolved.map((r) => r.costBpsApplied).filter((c): c is number => c !== null);
   const cal = resolved.length ? calibration(resolved.map((r) => r.probability!), resolved.map((r) => (r.outcome!.positive ? 1 : 0))) : null;
   const predicted = ok.filter((r) => r.status === "PREDICTED" && r.features);
@@ -84,10 +123,12 @@ export function prospectiveEvidence(input: { rows: ProspectiveRow[]; entryThresh
     recentStatuses: ok.slice(-DEFAULT_MONITOR_CONFIG.window).map((r) => r.status),
   });
   const brierDecay = cal && input.referenceBrier !== null ? cal.brier - input.referenceBrier : null;
-  const integrityFailures = input.rows.length - ok.length;
+  const integrityFailures = input.rows.length - allOk.length;
   const missing: string[] = [];
   if (effectiveOutcomes < PROSPECTIVE_MINIMUMS.effectiveOutcomes) missing.push(`${effectiveOutcomes} independent resolved outcomes (need ${PROSPECTIVE_MINIMUMS.effectiveOutcomes})`);
-  if (effectiveSignals < PROSPECTIVE_MINIMUMS.effectiveSignals) missing.push(`${effectiveSignals} independent signals (need ${PROSPECTIVE_MINIMUMS.effectiveSignals})`);
+  if (!reached) missing.push(`${effectiveSignals} of the ${input.targetEffectiveSignals} independent signals declared at registration have resolved; the evidence is judged once, when that number is reached`);
+  if (!signalsCi) missing.push("no confidence interval for the signals' own net return yet");
+  else if (!(signalsCi.lower > 0)) missing.push(`signals' own net return after costs: interval lower bound ${(signalsCi.lower * 10_000).toFixed(1)} bps is not above 0`);
   if (!board.netAdvantage) missing.push(`no confidence interval for the net advantage yet${board.netAdvantageNote ? ` (${board.netAdvantageNote})` : ""}`);
   else if (!(board.netAdvantage.lower > 0)) missing.push(`net advantage interval lower bound ${(board.netAdvantage.lower * 10_000).toFixed(1)} bps is not above 0`);
   if (!cal) missing.push("no calibration measurement yet");
@@ -97,8 +138,8 @@ export function prospectiveEvidence(input: { rows: ProspectiveRow[]; entryThresh
   if (integrityFailures) missing.push(`${integrityFailures} stored prediction(s) failed their record hash`);
   return {
     evidence: "HYPOTHETICAL_SHADOW",
-    predictions: board.predictions,
-    abstained: board.abstained,
+    predictions: allOk.filter((r) => r.status === "PREDICTED").length,
+    abstained: allOk.filter((r) => r.status === "ABSTAINED").length,
     open: board.open,
     awaitingOutcome: board.awaitingOutcome,
     resolved: board.resolved,
@@ -110,6 +151,8 @@ export function prospectiveEvidence(input: { rows: ProspectiveRow[]; entryThresh
     costs: { meanCostBpsApplied: costs.length ? costs.reduce((s, c) => s + c, 0) / costs.length : null, estimatedCostBps: input.rows[0]?.estimatedCostBps ?? null },
     meanNetSignals: board.meanNetSignals,
     meanNetAll: board.meanNetAll,
+    signalsNet: signalsCi && { estimate: signalsCi.estimate, lower: signalsCi.lower, upper: signalsCi.upper },
+    observation: { targetEffectiveSignals: input.targetEffectiveSignals, reached, judgedOn: reached ? "FIXED_SAMPLE" : "NOT_YET_JUDGED" },
     netAdvantage: board.netAdvantage && { estimate: board.netAdvantage.estimate, lower: board.netAdvantage.lower, upper: board.netAdvantage.upper, blockLength: board.netAdvantage.blockLength },
     uncertaintyNote: board.netAdvantageNote,
     calibration: cal && { brier: cal.brier, ece: cal.ece, baseRate: resolved.filter((r) => r.outcome!.positive).length / resolved.length },
@@ -127,6 +170,8 @@ export type StageInput = {
   walkForward: { phase: string; verdict: string; walkForwardPassed: boolean; reasons: string[] } | null;
   holdout: { verdict: string; holdoutStatus: string; reasons: string[] } | null;
   holdoutAuthorised: boolean;
+  /** A consume intent is committed but no holdout result is stored yet. */
+  holdoutIntentOpen?: boolean;
   model: { id: string; state: string; stateReason: string | null } | null;
   prospective: ProspectiveEvidence | null;
   /** Why the frozen result cannot be observed prospectively (null when it can). */
@@ -158,6 +203,9 @@ export function evidenceStage(i: StageInput): StageView {
     return view("HISTORICAL_RESULT", wf.verdict, wf.reasons[0] ?? "Did not pass walk-forward.", ["a walk-forward pass after costs"], ["None on this data: the rejection stands. A different pre-declared hypothesis or genuinely new data is a new campaign"]);
   }
   const h = i.holdout;
+  if (!h && i.holdoutIntentOpen) {
+    return view("PENDING_HOLDOUT", "CONSUMED_AWAITING_RESULT", "The holdout read has started and the period is spent, but no result is stored yet. It is either still being evaluated or will be recorded as lost.", ["the stored holdout result"], ["Run the holdout evaluation command again: it reports the stored result, or records the read as lost once the wait has passed"]);
+  }
   if (!h) {
     return view("PENDING_HOLDOUT", i.holdoutAuthorised ? "AUTHORISED_NOT_EVALUATED" : "WITHHELD", "Passed every pre-holdout test. This is not evidence of an edge until the holdout is read once.", ["the once-only holdout evaluation"], i.holdoutAuthorised ? ["Run the holdout evaluation before the authorisation expires"] : ["An operator authorises one holdout read for this exact result", "Then evaluate the holdout"]);
   }

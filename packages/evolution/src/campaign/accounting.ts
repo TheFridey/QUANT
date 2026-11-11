@@ -15,6 +15,9 @@ import { campaignTx } from "./tx.js";
  *    transaction that stores the result.
  *  - failed, abandoned, cancelled after starting, or crashed: no SETTLED row is ever written, so the unit
  *    counts at its full reservation for ever. Its trials may have run and been seen.
+ *  - a unit is deflated by `priorTrials`, frozen in its RESERVED row: everything outside its run, plus every
+ *    OTHER unit of its run at that unit's full planned bound. The number does not depend on the order in which
+ *    the units of a run happen to execute, so listing a favourite hypothesis first earns no lighter deflation.
  *  - retry of the same unit: finds its own RESERVED row and reuses it, including the frozen `priorTrials`. It
  *    adds nothing (the retry repeats the same deterministic trials) and can never lower or reset the count.
  *  - intentional rerun: a new run has new units, so it reserves and counts again. Double counting an identical
@@ -67,7 +70,16 @@ export async function reserveTrials(prisma: PrismaClient, input: { unitId: strin
     if (runUsed + input.planned > input.maxTrials) {
       return { status: "REFUSED" as const, reason: `TRIAL_LIMIT: run has reserved ${runUsed} trials; ${input.planned} more would exceed limits.maxTrials ${input.maxTrials}` };
     }
-    const prior = (await programmeTrials(tx)).total;
+    // Order-independent prior: the programme outside this run, plus the whole of this run except this unit.
+    const own = await tx.$queryRaw<Array<{ counted: bigint | null; planned: bigint | null }>>`
+      SELECT
+        (SELECT COALESCE(SUM(COALESCE(s."trials", r."trials")), 0) FROM "ResearchTrialLedger" r
+           JOIN "ResearchCampaignUnit" u ON u."id" = r."unitId"
+           LEFT JOIN "ResearchTrialLedger" s ON s."unitId" = r."unitId" AND s."kind" = 'SETTLED'
+          WHERE r."kind" = 'RESERVED' AND u."runId" = ${input.runId}) AS counted,
+        (SELECT COALESCE(SUM("plannedTrials"), 0) FROM "ResearchCampaignUnit" WHERE "runId" = ${input.runId}) AS planned`;
+    const outsideRun = (await programmeTrials(tx)).total - Number(own[0]?.counted ?? 0);
+    const prior = outsideRun + Number(own[0]?.planned ?? 0) - input.planned;
     await tx.researchTrialLedger.create({ data: { kind: "RESERVED", unitId: input.unitId, trials: input.planned, priorTrials: prior, actor: input.actor } });
     return { status: "RESERVED" as const, priorTrials: prior, reserved: input.planned };
   });
