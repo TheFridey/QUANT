@@ -3,6 +3,7 @@ import { canonicalHash } from "../genesis/canonical.js";
 import type { UnitEvaluation } from "./evaluate.js";
 import { normaliseInstrument } from "./spec.js";
 import { CampaignError, insertHoldoutResult, logEvent, specOf } from "./store.js";
+import { campaignTx } from "./tx.js";
 
 /**
  * OPERATION EVIDENCE holdout accounting.
@@ -145,7 +146,7 @@ export type BeginHoldout =
 export async function beginHoldout(prisma: PrismaClient, input: { unitId: string; actor: string; now?: Date }): Promise<BeginHoldout> {
   const c = await holdoutContext(prisma, input.unitId);
   const now = input.now ?? new Date();
-  return prisma.$transaction(async (tx) => {
+  return campaignTx(prisma, async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`holdout:${c.instrumentKey}|${c.barMs}`}))`;
     const rows = await tx.researchHoldoutLedger.findMany({ where: { unitId: c.unitId }, orderBy: { createdAt: "asc" } });
     const intent = rows.find((r) => r.kind === "CONSUME_INTENT");
@@ -190,7 +191,7 @@ async function closeLost(tx: Tx, c: HoldoutContext, actor: string, why: string):
 export async function recordHoldoutLost(prisma: PrismaClient, input: { unitId: string; actor: string; why: string }): Promise<"RESULT_LOST" | "ALREADY_CLOSED"> {
   const c = await holdoutContext(prisma, input.unitId);
   try {
-    await prisma.$transaction((tx) => closeLost(tx, c, input.actor, input.why));
+    await campaignTx(prisma, (tx) => closeLost(tx, c, input.actor, input.why));
     return "RESULT_LOST";
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return "ALREADY_CLOSED";
@@ -205,7 +206,7 @@ export async function recordHoldoutResult(prisma: PrismaClient, input: { unitId:
   if (e.phase !== "HOLDOUT") throw new CampaignError("WRONG_PHASE", `expected a HOLDOUT evaluation, got ${e.phase}`);
   if (e.walkForwardHash !== c.walkForwardHash) throw new CampaignError("WALK_FORWARD_MISMATCH", "the holdout evaluation was computed for a different walk-forward result");
   try {
-    await prisma.$transaction(async (tx) => {
+    await campaignTx(prisma, async (tx) => {
       const intent = await tx.researchHoldoutLedger.findFirst({ where: { unitId: c.unitId, kind: "CONSUME_INTENT" } });
       if (!intent) throw new CampaignError("NO_INTENT", `unit ${c.unitId} has no committed consume intent; a holdout result cannot be recorded`);
       await tx.researchHoldoutLedger.create({ data: { kind: "RESULT_RECORDED", unitId: c.unitId, lineageKey: c.lineageKey, instrumentKey: c.instrumentKey, barMs: c.barMs, periodStart: c.periodStart, periodEnd: c.periodEnd, datasetHash: c.datasetHash, subjectHash: c.subjectHash, actor: input.actor, resultHash: e.resultHash } });

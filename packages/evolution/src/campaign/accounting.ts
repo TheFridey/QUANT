@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from "@odin/shared/db";
+import { campaignTx } from "./tx.js";
 
 /**
  * OPERATION EVIDENCE programme-wide trial accounting.
@@ -53,7 +54,7 @@ export type TrialReservation = { status: "RESERVED" | "ALREADY_RESERVED"; priorT
  * serialised and each sees every earlier reservation. Idempotent per unit.
  */
 export async function reserveTrials(prisma: PrismaClient, input: { unitId: string; runId: string; planned: number; maxTrials: number; actor: string }): Promise<TrialReservation> {
-  return prisma.$transaction(async (tx) => {
+  return campaignTx(prisma, async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${TRIAL_LEDGER_LOCK})`;
     const existing = await tx.researchTrialLedger.findUnique({ where: { unitId_kind: { unitId: input.unitId, kind: "RESERVED" } } });
     if (existing) return { status: "ALREADY_RESERVED" as const, priorTrials: existing.priorTrials ?? 0, reserved: existing.trials };
@@ -84,7 +85,7 @@ export async function settleTrials(tx: Prisma.TransactionClient, input: { unitId
 export async function declareLegacyTrials(prisma: PrismaClient, input: { trials: number; actor: string; note: string }) {
   if (!Number.isInteger(input.trials) || input.trials < 1) throw new Error("legacy trial count must be a positive integer");
   if (!input.note.trim()) throw new Error("a legacy declaration needs a note saying where the count comes from");
-  return prisma.$transaction(async (tx) => {
+  return campaignTx(prisma, async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${TRIAL_LEDGER_LOCK})`;
     return tx.researchTrialLedger.create({ data: { kind: "LEGACY_DECLARED", trials: input.trials, actor: input.actor, note: input.note.trim() } });
   });

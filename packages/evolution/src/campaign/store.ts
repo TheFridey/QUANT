@@ -3,6 +3,7 @@ import { canonicalJson } from "../genesis/canonical.js";
 import { settleTrials } from "./accounting.js";
 import type { UnitEvaluation } from "./evaluate.js";
 import { campaignVersions, planCampaign, type CampaignSpec, type PlannedUnit } from "./spec.js";
+import { campaignTx } from "./tx.js";
 
 /**
  * OPERATION EVIDENCE campaign persistence.
@@ -68,7 +69,7 @@ export async function startRun(prisma: PrismaClient, input: { campaignId: string
   const campaign = await prisma.researchCampaign.findUnique({ where: { id: input.campaignId } });
   if (!campaign) throw new CampaignError("NOT_FOUND", `campaign ${input.campaignId}`);
   const { units } = specOf(campaign);
-  return prisma.$transaction(async (tx) => {
+  return campaignTx(prisma, async (tx) => {
     // Serialises starts of one campaign, so two callers cannot both create run 1.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`campaign:${campaign.id}`}))`;
     const latest = await tx.researchCampaignRun.findFirst({ where: { campaignId: campaign.id }, orderBy: { runNumber: "desc" } });
@@ -124,7 +125,7 @@ export async function claimUnit(prisma: PrismaClient, input: { runId: string; ow
     if (!candidate) return { kind: "NONE", reason: "NOTHING_CLAIMABLE" };
     const reclaimed = candidate.state === "RUNNING";
     const exhausted = candidate.attempts >= spec.limits.maxAttemptsPerUnit;
-    const done = await prisma.$transaction(async (tx) => {
+    const done = await campaignTx(prisma, async (tx) => {
       const data = exhausted
         ? { state: "ABANDONED", leaseOwner: null, leaseExpiresAt: null, finishedAt: input.now, lastError: `ABANDONED: ${candidate.attempts} attempt(s) used; last: ${candidate.lastError ?? (reclaimed ? "executor lost its lease" : "unknown")}`.slice(0, 2000), version: { increment: 1 } }
         : { state: "RUNNING", leaseOwner: input.owner, leaseExpiresAt: new Date(input.now.getTime() + input.leaseMs), attempts: { increment: 1 }, startedAt: candidate.startedAt ?? input.now, version: { increment: 1 } };
@@ -181,7 +182,7 @@ export async function completeUnit(prisma: PrismaClient, input: { unit: UnitRow;
   const { unit, evaluation: e } = input;
   if (e.phase === "HOLDOUT") throw new CampaignError("WRONG_PHASE", "holdout results are recorded through the holdout ledger");
   const state: UnitState = e.phase === "DATA_REFUSAL" ? "REFUSED" : "SUCCEEDED";
-  return prisma.$transaction(async (tx) => {
+  return campaignTx(prisma, async (tx) => {
     const fenced = await tx.researchCampaignUnit.updateMany({
       where: { id: unit.id, leaseOwner: input.owner, version: unit.version, state: "RUNNING" },
       data: { state, leaseOwner: null, leaseExpiresAt: null, finishedAt: input.now, lastError: null, version: { increment: 1 } },
@@ -213,7 +214,7 @@ export async function insertHoldoutResult(tx: Tx, unitId: string, e: UnitEvaluat
  */
 export async function failUnit(prisma: PrismaClient, input: { unit: UnitRow; owner: string; error: string; retryable: boolean; maxAttempts: number; now: Date; resources?: Record<string, unknown> }): Promise<{ status: "RETRY" | "FAILED" | "LEASE_LOST" }> {
   const terminal = !input.retryable || input.unit.attempts >= input.maxAttempts;
-  return prisma.$transaction(async (tx) => {
+  return campaignTx(prisma, async (tx) => {
     const fenced = await tx.researchCampaignUnit.updateMany({
       where: { id: input.unit.id, leaseOwner: input.owner, version: input.unit.version, state: "RUNNING" },
       data: { state: terminal ? "FAILED" : "PENDING", leaseOwner: null, leaseExpiresAt: null, lastError: input.error.slice(0, 2000), finishedAt: terminal ? input.now : null, version: { increment: 1 } },
@@ -227,7 +228,7 @@ export async function failUnit(prisma: PrismaClient, input: { unit: UnitRow; own
 
 /** Closes a unit as CANCELLED (its executor saw the cancellation). A reservation, if any, stays counted. */
 export async function cancelHeldUnit(prisma: PrismaClient, input: { unit: UnitRow; owner: string; now: Date }): Promise<void> {
-  await prisma.$transaction(async (tx) => {
+  await campaignTx(prisma, async (tx) => {
     const fenced = await tx.researchCampaignUnit.updateMany({ where: { id: input.unit.id, leaseOwner: input.owner, version: input.unit.version, state: "RUNNING" }, data: { state: "CANCELLED", leaseOwner: null, leaseExpiresAt: null, finishedAt: input.now, lastError: "CANCELLED while running", version: { increment: 1 } } });
     if (fenced.count !== 1) return;
     await logEvent(tx, { runId: input.unit.runId, unitId: input.unit.id, kind: "UNIT_CANCELLED", actor: input.owner, detail: { whileRunning: true } });
@@ -236,7 +237,7 @@ export async function cancelHeldUnit(prisma: PrismaClient, input: { unit: UnitRo
 }
 
 async function sweepCancelled(prisma: PrismaClient, runId: string, now: Date, actor: string): Promise<number> {
-  return prisma.$transaction(async (tx) => {
+  return campaignTx(prisma, async (tx) => {
     // PENDING units never started; RUNNING units whose lease expired have no executor left to stop.
     const open = await tx.researchCampaignUnit.findMany({ where: { runId, OR: [{ state: "PENDING" }, { state: "RUNNING", leaseExpiresAt: { lte: now } }] }, select: { id: true, version: true, state: true } });
     let n = 0;
