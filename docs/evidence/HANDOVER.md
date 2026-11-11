@@ -57,6 +57,6 @@ Baseline before the work (main `8317aff`): 1,167 unit tests passed with the same
 ## Local leftovers (safe to remove)
 
 - Docker containers `odin-evidence-test-pg` (port 15432) and `odin-evidence-test-redis` (16379), both stopped.
-- A throwaway PostgreSQL 18 cluster under the session scratchpad, still running on port 15432 (databases `odin_test`, `odin_demo`, `odin_demo2`, `odin_e2e`).
+- A throwaway PostgreSQL 18 cluster under the session scratchpad, stopped (it used port 15432 ; databases `odin_test`, `odin_demo`, `odin_demo2`, `odin_e2e`).
 - `apps/api/dist` and `apps/worker/dist` built with `tsc`, and `apps/web/.next` built with `NEXT_PUBLIC_API_URL=http://127.0.0.1:14318`. Rebuild before running the app locally.
 - The integration tests assume a test database whose programme trial count is below about a million; the ledger is append-only, so recreate the test database rather than trying to clear it.
