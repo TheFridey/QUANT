@@ -12,6 +12,10 @@
     "./genesis": {
       "types": "./dist/genesis/index.d.ts",
       "default": "./dist/genesis/index.js"
+    },
+    "./campaign": {
+      "types": "./dist/campaign/index.d.ts",
+      "default": "./dist/campaign/index.js"
     }
   },
   "scripts": {

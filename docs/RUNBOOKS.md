@@ -154,3 +154,40 @@ URL → refused). A production-dump drill is still `NOT_VERIFIED` (needs VPS acc
 Ingest, sentinel, pulse, aegis, atlas and archivist fail after 60 s (`STAGE_TIMEOUT`, metric `odin_stage_timeout`) and the next cycle starts clean; a timed-out scheduled ingest leaves its cycle for the 120 s `STALE_CYCLE` sweep. **The executor is never timed out**, because abandoning order settlement could process it twice: an overrun only raises `odin_stage_overrun`. If the executor hangs, its queue blocks and each later cycle ends `STALE_CYCLE`.
 
 Recovery: check open positions and pending orders, then `systemctl restart quant-worker` (the stuck job is retried; backlogged jobs for dead cycles exit at once). Do not restart PostgreSQL or Redis for this.
+
+## Research campaigns (OPERATION EVIDENCE)
+
+Design and rationale: [`docs/evidence/ADR-0001-research-campaigns.md`](evidence/ADR-0001-research-campaigns.md). Research only: no command below creates an order or changes engine configuration, risk limits or strategy instances.
+
+Run from `apps/worker` after `pnpm build` (CLI: `node dist/src/research/campaign-cli.js <command>`). The checkout must be clean, or `GIT_COMMIT` set: a run is pinned to one commit.
+
+| Step | Command | Writes |
+| --- | --- | --- |
+| Dry run | `plan <spec.json>` (add `--preflight` to load and check the data) | nothing |
+| Declare | `create <spec.json> --by NAME` | one immutable campaign (same declaration = same campaign) |
+| Start | `start <campaignId> --by NAME` | run 1 and its units; repeating it returns the same run |
+| Execute | `work <runId> [--max-units N]` | results, trial ledger, events |
+| Inspect | `status <runId>`, or Research campaigns in the terminal (Radar) | nothing |
+| Cancel | `cancel <runId> --by NAME` | cancellation (cannot be withdrawn) |
+| Rerun on purpose | `start <campaignId> --by NAME --rerun --reason "…"` | a new run number; earlier runs untouched |
+| Authorise a holdout | `authorize-holdout <unitId> --operator NAME [--ttl-hours 24]`, or the button in the terminal (ADMIN) | one `AUTHORIZED` ledger row |
+| Read the holdout once | `evaluate-holdout <unitId>` | consume intent, then the result or `RESULT_LOST` |
+| Observe prospectively | `register-model <unitId> --by NAME --instrument-key KEY --max-staleness-days N --observe-signals N`, then `observe <modelVersionId> --operator NAME --reason "…"` | model registry rows; scored only when `GENESIS_SHADOW_ENABLED=true` |
+| Trial count | `trials`; `declare-legacy-trials --count N --by NAME --note "…"` | (second form) one ledger row |
+
+Recovery:
+
+- **Process died mid-run:** run `work <runId>` again. Units whose executor stopped are reclaimed 60 s after the last heartbeat; finished units are skipped; trial reservations and the frozen prior count are reused.
+- **Unit FAILED or ABANDONED:** terminal for that run. Read the error with `status`, fix the cause, then `start --rerun --reason`. Its trials stay counted at the full reservation. This is intended.
+- **`CODE_VERSION_MISMATCH`:** check out the run's commit (shown by `status`), or rerun on the new commit.
+- **`DATASET_CHANGED`:** the data no longer matches what the run pinned. Rerun; do not edit the pin.
+- **Holdout `RESULT_LOST`:** the period is spent for that hypothesis family. Do not try to re-evaluate: collect bars after the period, or use prospective observation.
+- **Never** delete or update rows in `ResearchTrialLedger`, `ResearchHoldoutLedger`, `ResearchCampaignResult` or `ResearchCampaignEvent` (the database refuses it).
+
+Worker job: off unless `RESEARCH_CAMPAIGN_WORKER_ENABLED=true` (then `RESEARCH_CAMPAIGN_TICK_MS`, default 60 s, and `RESEARCH_CAMPAIGN_MAX_UNITS`, 1 to 5). It starts the CLI as a separate, low-priority process and passes it only the database URL and commit (the CLI still reads the host `.env` itself, as every research CLI does); evaluation never runs in the trading worker. It only works runs pinned to the deployed commit, and does not evaluate holdouts.
+
+**Deploy order: run `pnpm db:deploy` before restarting the API or worker.** The research CLIs read the trial ledger and fail without it. The Market Scanner keeps working and shows research evidence as unavailable until the tables exist.
+
+Migration `20261110120000_evidence_research_campaigns` adds eight tables and changes none. Rollback: the tables are unused by trading, so a forward fix is preferred; if they must go, restore from the pre-deploy dump as for any migration.
+
+Synthetic demonstration: [`docs/evidence/demo/README.md`](evidence/demo/README.md).

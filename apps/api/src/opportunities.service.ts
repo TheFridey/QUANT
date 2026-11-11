@@ -7,16 +7,19 @@ import {
   matchInstrumentKey,
   rankOpportunities,
   realisedVolatility,
+  splitReadiness,
   summariseShadowEvidence,
   type InstrumentEvidence,
   type MarketPnl,
   type ScannerObservation,
   type ReadinessResult,
+  type ReadinessSplit,
   type ShadowEvidenceRow,
   type StrategyAssignment,
   type VolatilityView,
   UNATTRIBUTED_MARKET,
 } from "@odin/analytics";
+import { instrumentResearch, type InstrumentResearch } from "@odin/evolution/campaign";
 import { modelStates, parseShadowSpec, verifyStoredPrediction } from "@odin/evolution/genesis";
 import { MarketDataGateway } from "@odin/market-data";
 import {
@@ -52,6 +55,12 @@ export type MarketView = {
   notes: string | null;
   provider: { id: string | null; readiness: string; ingestActive: boolean; ingestReason: string | null };
   readiness: ReadinessResult;
+  /** The same checks as `readiness`, split into "is there usable live data" and "is there an execution path". */
+  readinessSplit: ReadinessSplit;
+  /** Research warehouse history and campaign outcomes for this instrument. Empty results mean unknown, not zero. */
+  research: InstrumentResearch | null;
+  /** True when the research tables could not be read; `research` is then null (unknown), not empty. */
+  researchUnavailable: boolean;
   observedAt: string | null;
   volatility: VolatilityView;
   cost: ReturnType<typeof estimateRoundTripCost>;
@@ -109,7 +118,7 @@ export class OpportunitiesService {
     const ctx = resolveExecutionContext({ config: { tradingEnvironment: env }, dataMode: dataMode() });
     const ids = instruments.map((i) => i.id);
 
-    const [selections, instances, evidence, pnl] = await Promise.all([
+    const [selections, instances, evidence, pnl, research] = await Promise.all([
       this.prisma.marketSelection.findMany({ where: { instrumentId: { in: ids } }, select: { instrumentId: true, enabled: true } }),
       this.prisma.strategyInstance.findMany({
         where: { instrumentIds: { hasSome: ids } },
@@ -119,6 +128,9 @@ export class OpportunitiesService {
       }),
       this.evidence(),
       this.pnl(ctx.accountId),
+      // The research tables arrive with their own migration. If they are missing or unreadable the scanner
+      // still answers, and says the research evidence is unavailable: never an empty result that reads as "none".
+      instrumentResearch(this.prisma, instruments.map((i) => ({ id: i.id, aliases: [i.id, i.symbol, i.providerSymbol] })), now).catch(() => null),
     ]);
     const enabled = new Map(selections.map((s) => [s.instrumentId, s.enabled]));
     const fee = Number(config.feeBps);
@@ -159,6 +171,9 @@ export class OpportunitiesService {
         notes: instrument.notes ?? null,
         provider: { id: pipeline.providerId, readiness: pipeline.providerReadiness, ingestActive: pipeline.ingest.active, ingestReason: pipeline.ingest.reason },
         readiness,
+        readinessSplit: splitReadiness(readiness),
+        research: research?.get(instrument.id) ?? null,
+        researchUnavailable: research === null,
         observedAt,
         volatility,
         cost: estimateRoundTripCost({ feeBps: fee, observedSpreadBps: readiness.quote.spreadBps, spreadBpsEstimate: spreadEstimate, slippageBps: spreadEstimate }),

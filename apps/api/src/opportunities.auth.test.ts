@@ -13,6 +13,7 @@ import { OPPORTUNITY_BOUNDS, OpportunitiesService } from "./opportunities.servic
 
 type Call = { name: string; args: Record<string, unknown> | undefined };
 const calls: Call[] = [];
+let researchTablesMissing = false;
 const stub = (name: string, value: unknown) => (args?: Record<string, unknown>) => {
   calls.push({ name, args });
   return Promise.resolve(value);
@@ -27,6 +28,14 @@ const prismaStub = {
   ledgerEntry: { findMany: stub("ledgerEntry.findMany", []) },
   position: { findMany: stub("position.findMany", []) },
   order: { findMany: stub("order.findMany", []) },
+  historicalDataset: {
+    findMany: (args?: Record<string, unknown>) => {
+      calls.push({ name: "historicalDataset.findMany", args });
+      // Simulates the API running before the research-campaign migration: the table does not exist.
+      return researchTablesMissing ? Promise.reject(new Error('relation "ResearchCampaignResult" does not exist')) : Promise.resolve([]);
+    },
+  },
+  researchCampaignResult: { findMany: stub("researchCampaignResult.findMany", []) },
   marketObservation: { findFirst: stub("marketObservation.findFirst", null), findMany: stub("marketObservation.findMany", []) },
 };
 const auth = {
@@ -100,6 +109,8 @@ describe("HORIZON opportunity scanner endpoints", () => {
       "ledgerEntry.findMany": OPPORTUNITY_BOUNDS.realisedEntries,
       "position.findMany": OPPORTUNITY_BOUNDS.positions,
       "marketObservation.findMany": OPPORTUNITY_BOUNDS.volatilityPoints,
+      "historicalDataset.findMany": 2_000,
+      "researchCampaignResult.findMany": 300,
     };
     const listed = calls.filter((c) => c.name in limits);
     expect(listed.length).toBeGreaterThanOrEqual(4);
@@ -119,6 +130,23 @@ describe("HORIZON opportunity scanner endpoints", () => {
     expect(body.market.readiness.state).not.toBe("PAPER_EXECUTABLE");
     expect((await fetch(base + "/api/research/markets/fx:NOPE", { headers })).status).toBe(404);
     expect((await fetch(base + "/api/research/markets/" + encodeURIComponent("bad id!"), { headers })).status).toBe(400);
+  });
+
+  it("still serves the scanner when the research tables cannot be read, and calls that evidence unknown", async () => {
+    researchTablesMissing = true;
+    try {
+      const response = await fetch(base + "/api/research/opportunities", { headers });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { markets: Array<{ id: string; research: unknown; researchUnavailable: boolean; readiness: { state: string } }> };
+      expect(body.markets.length).toBeGreaterThan(0);
+      // Unknown, not an empty list that would read as "nothing was found".
+      expect(body.markets.every((m) => m.research === null && m.researchUnavailable === true)).toBe(true);
+      expect(body.markets.find((m) => m.id === "commodity:XAUUSD")!.readiness.state).toBe("NO_PROVIDER");
+    } finally {
+      researchTablesMissing = false;
+    }
+    const healthy = (await (await fetch(base + "/api/research/opportunities", { headers })).json()) as { markets: Array<{ research: { results: unknown[] } | null; researchUnavailable: boolean }> };
+    expect(healthy.markets.every((m) => m.researchUnavailable === false && m.research !== null && m.research.results.length === 0)).toBe(true);
   });
 
   it("does not accept writes", async () => {

@@ -113,6 +113,19 @@ Before/after screenshots at 1440×900 and 390×844 are in [`ux/before`](ux/befor
 
 The rest of the D01–D30 programme record is in [`archive/launch/FINDINGS_MATRIX.md`](archive/launch/FINDINGS_MATRIX.md).
 
+## Research campaigns (OPERATION EVIDENCE, 11 Nov 2026; branch `evidence/research-campaigns`, not merged or deployed)
+
+Research only. Detail, review outcome and open decisions: [`evidence/ADR-0001-research-campaigns.md`](evidence/ADR-0001-research-campaigns.md); state for the next session: [`evidence/HANDOVER.md`](evidence/HANDOVER.md).
+
+| Item | Evidence | Note |
+| --- | --- | --- |
+| Durable, resumable campaigns with immutable results | `VERIFIED_INTEGRATION` | Run locally against PostgreSQL; CI not yet run on the branch |
+| Programme-wide trial ledger; authorised once-only holdout | `VERIFIED_INTEGRATION` | Open decision: deflated-Sharpe variance floor |
+| HORIZON verdict: consumed holdout no longer reported as pending | `VERIFIED_UNIT` | Defect demonstrated before the fix |
+| Bounded CLI and opt-in worker job | `VERIFIED_INTEGRATION` | Real evaluator process exercised by the demonstration run only |
+| Bridge to GENESIS shadow | `PARTIAL` | ML 2.0 on 24/7 markets only; no route for rule-based strategies or gold/FX models |
+| Campaign evidence in API and terminal | `PARTIAL` | API `VERIFIED_UNIT`; browser journey written, not run locally (no Redis) |
+
 ## Next
 
 Per the remediation document: record 30 days of DexScreener data, then run one backtest with the corrected impact model and latency. No new features before that.

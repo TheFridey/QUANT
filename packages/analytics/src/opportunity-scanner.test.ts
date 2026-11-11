@@ -15,6 +15,7 @@ import {
   type PipelineFacts,
   type ReadinessResult,
   type ShadowEvidenceRow,
+  splitReadiness,
 } from "./opportunity-scanner.js";
 
 // Wednesday 4 Nov 2026 10:00 ET (FX and US cash session open); Saturday 7 Nov 2026 10:00 ET (FX weekend).
@@ -295,5 +296,31 @@ describe("evidence, costs, volatility, P&L", () => {
     expect(matchInstrumentKey("yahoo:SPY", SEED_INSTRUMENTS)).toBe("etf:SPY");
     expect(matchInstrumentKey("EUR/USD", SEED_INSTRUMENTS)).toBe("fx:EURUSD");
     expect(matchInstrumentKey("TEST:GENESIS", SEED_INSTRUMENTS)).toBeNull();
+  });
+});
+
+describe("market-data readiness and execution readiness are separate facts", () => {
+  const reason = (stage: string, code: string) => ({ stage, code, detail: code }) as never;
+  it("a live two-sided quote with no execution path is data-ready and execution-blocked", () => {
+    const split = splitReadiness({ paperExecutable: false, reasons: [reason("OBSERVABLE", "FRESHNESS_GATE"), reason("OBSERVABLE", "NO_STRATEGY_INSTANCE")] });
+    expect(split.liveQuote).toMatchObject({ ready: true, state: "LIVE_QUOTE" });
+    expect(split.execution).toMatchObject({ ready: false, state: "BLOCKED" });
+    expect(split.execution.blockers.map((b) => b.code)).toEqual(["FRESHNESS_GATE", "NO_STRATEGY_INSTANCE"]);
+  });
+  it("no provider is a data problem; the execution blockers are still listed on their own", () => {
+    const split = splitReadiness({ paperExecutable: false, reasons: [reason("NO_PROVIDER", "NO_PROVIDER"), reason("NO_RECENT_QUOTE", "NO_QUOTE"), reason("OBSERVABLE", "FILL_PRECISION")] });
+    expect(split.liveQuote).toMatchObject({ ready: false, state: "NO_PROVIDER" });
+    expect(split.liveQuote.reasons).toHaveLength(2);
+    expect(split.execution.blockers.map((b) => b.code)).toEqual(["FILL_PRECISION"]);
+  });
+  it("an execution path without a live quote is not ready: both are needed to fill", () => {
+    const split = splitReadiness({ paperExecutable: false, reasons: [reason("STALE", "QUOTE_STALE")] });
+    expect(split.liveQuote.state).toBe("STALE");
+    expect(split.execution).toMatchObject({ ready: false, state: "BLOCKED" });
+    expect(split.execution.blockers.map((b) => b.code)).toEqual(["QUOTE_STALE"]);
+  });
+  it("research-only instruments and a clear path are named as such", () => {
+    expect(splitReadiness({ paperExecutable: false, reasons: [reason("RESEARCH_ONLY", "RESEARCH_ONLY")] }).execution.state).toBe("RESEARCH_ONLY_BY_DESIGN");
+    expect(splitReadiness({ paperExecutable: true, reasons: [] })).toMatchObject({ liveQuote: { ready: true }, execution: { ready: true, state: "PAPER_EXECUTABLE", blockers: [] } });
   });
 });

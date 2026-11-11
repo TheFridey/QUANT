@@ -296,6 +296,8 @@ export type Ml2Report = {
   calendar: SessionCalendar;
   config: Ml2Config;
   data: { bars: number; labelled: number; warmupDropped: number; droppedMissing: number; usable: number; preHoldout: number; purgedBeforeHoldout: number; holdoutRows: number; embargoBars: number; lookbackBars: number; blockLength: number | null };
+  /** Open times of the first and last decision bars in the reserved holdout (null when there are no holdout rows). Identifies the period for holdout accounting; no holdout label or return is read to compute it. */
+  holdoutSpan: { firstT: number | null; lastT: number | null };
   coverage: Array<{ feature: string; missingShare: number; ok: boolean }>;
   causality: { availabilityViolations: number; prefixProbes: number[]; prefixViolations: number };
   folds: Ml2FoldSummary[];
@@ -551,6 +553,7 @@ export function runMlPipeline(input: Ml2Input): Ml2Report {
     calendar: ds.calendar,
     config: cfg,
     data: { bars: bars.length, labelled: ds.labelledCount, warmupDropped: ds.warmupDropped, droppedMissing: ds.droppedMissing, usable: rows.length, preHoldout: pre.length, purgedBeforeHoldout: preAll.length - pre.length, holdoutRows: holdoutRows.length, embargoBars, lookbackBars: ds.lookbackBars, blockLength },
+    holdoutSpan: { firstT: holdoutRows.length ? bars[holdoutRows[0]!.index]!.t : null, lastT: holdoutRows.length ? bars[holdoutRows.at(-1)!.index]!.t : null },
     coverage: ds.coverage,
     causality: { availabilityViolations: ds.availabilityViolations, prefixProbes: ds.probes, prefixViolations: 0 },
   };

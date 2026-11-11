@@ -1,7 +1,8 @@
 import { expect, type Page } from "@playwright/test";
 
 export const E2E_PASSWORD = "odin-paper-dev";
-export const API_BASE = "http://127.0.0.1:4318";
+/** Override with E2E_API_URL when another local service holds the default port. */
+export const API_BASE = process.env.E2E_API_URL ?? "http://127.0.0.1:4318";
 
 export async function login(page: Page, password = E2E_PASSWORD): Promise<void> {
   await page.goto("/login");

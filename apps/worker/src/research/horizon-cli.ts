@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { excludeWeekendStubBars, inferBarMs, MARKET_CONFIGS, runHorizonStudy, type MarketResearchConfig, type ResearchBar } from "@odin/backtest";
 import { INTERVAL_MS, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
+import { declareLegacyTrials } from "@odin/evolution/campaign";
 import { programmeTrialCount } from "./holdout-policy.js";
 import { HORIZON_CLI_USAGE, parseHorizonArgs } from "./horizon-args.js";
 import { parseBarsCsv } from "./ml-args.js";
@@ -17,8 +18,10 @@ import { parseBarsCsv } from "./ml-args.js";
  * Runs the market's HORIZON strategy grid through the ASCEND-03 walk-forward validator and a GENESIS ML 2.0 run
  * with the market's labels and costs, against buy-and-hold, cash and random-selection controls, deflated by the
  * programme-wide trial count. Warehouse mode reads closed bars (availableAt <= now) of one HistoricalDataset and
- * the registry's trial count; CSV mode reads a local file (an `available_at` column is honoured). Neither mode
- * writes anything: no registry row, holdout access, engine config, strategy instance, order or promotion state.
+ * the programme trial count; CSV mode reads a local file (an `available_at` column is honoured). Neither mode
+ * stores the study, a holdout access, engine config, a strategy instance, an order or promotion state. Warehouse
+ * mode appends one row to the programme trial ledger (the number of trials it ran), so later studies are
+ * deflated by them; CSV mode cannot and says so.
  * Because a holdout read must be recorded and this CLI records nothing, every holdout is withheld; the best
  * verdict it can print is CANDIDATE_PENDING_HOLDOUT.
  */
@@ -88,6 +91,7 @@ async function main() {
       await prisma.$disconnect();
     }
   }
+  const warehouse = !args.csvPath;
   // FX/metals providers occasionally print a one-to-few-tick bar after the Friday close; exclude and report it.
   const stubs = excludeWeekendStubBars(bars, { barMs, calendar: market.calendar, tickVolumes, availableAt: barAvailableAt });
   bars = stubs.bars;
@@ -107,13 +111,26 @@ async function main() {
     validation: { ...(args.folds !== null ? { folds: args.folds } : {}), ...(args.seed !== null ? { seed: args.seed } : {}) },
     strategies: args.strategies ?? undefined,
   });
+  // Every trial this study ran is a look at the data, so it joins the programme count (warehouse mode: the
+  // database is there). The study itself is still not stored: use a campaign for evidence that must be kept.
+  let trialsRecorded: number | string = "NOT_RECORDED: CSV mode has no database; pass the true --prior-trials next time, or use a campaign";
+  if (warehouse && report.programme.runTrials > 0) {
+    const prisma = new PrismaClient();
+    try {
+      await declareLegacyTrials(prisma, { trials: report.programme.runTrials, actor: "horizon-cli", note: `horizon-cli ${args.datasetId} ${args.market} at ${process.env.GIT_COMMIT ?? "unknown"}: ${report.verdict}` });
+      trialsRecorded = report.programme.runTrials;
+    } finally {
+      await prisma.$disconnect();
+    }
+  }
   const runtimeMs = Number(process.hrtime.bigint() - started) / 1e6;
   console.log(
     JSON.stringify(
       {
-        mode: "READ_ONLY",
+        mode: warehouse ? "STUDY_NOT_STORED_TRIALS_COUNTED" : "READ_ONLY",
         evidence: "RESEARCH_ONLY",
         source,
+        trialsRecorded,
         report,
         runtime: { ms: Math.round(runtimeMs), peakRssMb: +(process.resourceUsage().maxRSS / 1024).toFixed(1) },
         conclusion: "Research output only. Nothing is applied to the paper engine, DEFAULT_STRATEGY or any strategy instance, and every holdout is withheld because this CLI records nothing.",
