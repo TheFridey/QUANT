@@ -1,0 +1,36 @@
+{
+  "specVersion": "campaign-spec-1",
+  "name": "SYNTHETIC demonstration: planted FX breakout and planted volume spike",
+  "description": "Constructed series with patterns planted on purpose. Demonstrates the campaign workflow; not market data and not evidence of any edge.",
+  "synthetic": true,
+  "datasets": [
+    {
+      "key": "synthetic-fx-breakout-1h",
+      "source": { "kind": "FILE", "path": "synthetic-fx-breakout.csv", "sha256": "7bef1423afc6ce01db2364dc597c8e66c2943425b1a4a251d37f086f3d816116" },
+      "market": "FX",
+      "instrument": "SYN-FX/USD",
+      "interval": "1h",
+      "asOf": "2026-01-01T00:00:00Z"
+    },
+    {
+      "key": "synthetic-volume-spike-4h",
+      "source": { "kind": "FILE", "path": "synthetic-volume-spike-4h.csv", "sha256": "765e68f492a872f7a27bc8e6de3e741ad3002068133b12423e93ded9a09955e1" },
+      "market": "CRYPTO",
+      "instrument": "SYN-SPIKE/USD",
+      "interval": "4h",
+      "asOf": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "hypotheses": [
+    { "kind": "STRATEGY", "id": "hz_atr_breakout" },
+    { "kind": "STRATEGY", "id": "hz_vol_expansion" },
+    { "kind": "STRATEGY", "id": "hz_mtf_trend" },
+    { "kind": "STRATEGY", "id": "hz_vol_mean_reversion" },
+    { "kind": "STRATEGY", "id": "hz_regime_breakout" },
+    { "kind": "ML2" }
+  ],
+  "validation": { "folds": 4, "holdoutFraction": 0.2, "seed": 1 },
+  "ml": { "seed": 1, "bootstrapResamples": 200, "randomControls": 100, "prefixProbes": 8 },
+  "limits": { "maxTrials": 2000, "maxRuntimeMsPerUnit": 300000, "maxMemoryMbPerUnit": 1024, "maxConcurrency": 1, "maxAttemptsPerUnit": 2 },
+  "holdoutPolicy": "WITHHELD_UNLESS_AUTHORIZED"
+}
