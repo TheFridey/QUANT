@@ -113,7 +113,7 @@ Before/after screenshots at 1440×900 and 390×844 are in [`ux/before`](ux/befor
 
 The rest of the D01–D30 programme record is in [`archive/launch/FINDINGS_MATRIX.md`](archive/launch/FINDINGS_MATRIX.md).
 
-## Research campaigns (OPERATION EVIDENCE, 11 Nov 2026; branch `evidence/research-campaigns`, not merged or deployed)
+## Research campaigns (OPERATION EVIDENCE, 11 Nov 2026; deployed as `eba979f`; worker job and shadow service off)
 
 Research only. Detail, review outcome and open decisions: [`evidence/ADR-0001-research-campaigns.md`](evidence/ADR-0001-research-campaigns.md); state for the next session: [`evidence/HANDOVER.md`](evidence/HANDOVER.md).
 

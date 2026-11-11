@@ -2,6 +2,16 @@
 
 Operation HORIZON (multi-asset expansion). Evidence labels as in [`docs/genesis/EXECUTION_LEDGER.md`](../genesis/EXECUTION_LEDGER.md). Diagnosis: [`DIAGNOSIS.md`](DIAGNOSIS.md). Nothing here enables new trading.
 
+## Checkpoint 7: 11 Nov 2026 (`eba979f` deployed; research campaigns, OPERATION EVIDENCE)
+
+Operator: "merge and push live". [#71](https://github.com/TheFridey/QUANT/pull/71) merged as `eba979f`; PR CI and main CI green (test, browser-e2e including the new campaign journey, build). Design, review outcome and open decisions: [`docs/evidence/ADR-0001-research-campaigns.md`](../evidence/ADR-0001-research-campaigns.md); handover: [`docs/evidence/HANDOVER.md`](../evidence/HANDOVER.md).
+
+Deploy: fast-forward `926bb42` → `eba979f`. One additive migration (`20261110120000_evidence_research_campaigns`: eight new tables, no existing table changed), applied before the restart; lockfile unchanged; no protected paths. Backup `quant-20261111T211457Z.dump` (1.28 GB, 67 tables listed); **no restore drill was run** (it needs database credentials the session does not hold). Snapshot `/srv/quant/releases/926bb42-20261111T211902Z`. `quant-api`, `quant-worker` and `quant-web` restarted 21:20:37 UTC with no open positions.
+
+Smoke (observed): health `ok` about 12 s after restart; `/api/ready` 200; five cycles `COMPLETE` at about 1.1 s each, 16 in the next five minutes; 168 observations in 2 min; 0 error lines in the API, worker and web journals; web 307; `/api/research/campaigns` and `/api/research/opportunities` 401 without a token; other tenants 200; `EngineControl` config hash unchanged (`5ff22766…`), limits unchanged (10% daily, 30% total), `EXECUTION_MODE=PAPER`, `LIVE_MONEY_ENABLED=false`. Migration probes: 8 tables, 16 triggers. Worker log: `research campaign job disabled` and `genesis shadow disabled`. `campaign-cli trials` on production: 2,170 (all from the earlier registry; nothing declared, no campaign run).
+
+Not done, not verified: no campaign has run on production data; the roughly 3,000 unrecorded HORIZON CLI trials are not declared in the ledger; the campaign pages were not opened in a logged-in browser on production; the authenticated responses of the new endpoints were not checked on production (no token used).
+
 ## Checkpoint 6: 10 Nov 2026 (`926bb42` deployed; stage timeouts live)
 
 Operator: "Yes, build it", then "Merge and deploy". [#69](https://github.com/TheFridey/QUANT/pull/69) merged as `926bb42`; main CI green, including the Postgres high-water-mark and day-roll guards.
