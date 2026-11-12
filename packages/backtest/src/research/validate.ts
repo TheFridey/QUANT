@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mean } from "../stats.js";
-import { deflatedSharpe, MIN_TRADES, perBarSharpe, performanceStats, probabilisticSharpe, probabilityOfBacktestOverfitting, type PerformanceStats } from "./metrics.js";
+import { deflatedSharpe, DSR_PROTOCOL_VERSION, dsrPasses, MIN_TRADES, perBarSharpe, performanceStats, probabilisticSharpe, probabilityOfBacktestOverfitting, type DeflatedSharpe, type PerformanceStats } from "./metrics.js";
 import { simulate, type ResearchBar, type SimResult } from "./simulate.js";
 import { expandGrid, type ParamGrid, type ParamValue, type StrategySpec } from "./strategies.js";
 
@@ -76,9 +76,9 @@ export type ValidationReport = {
   oosGross: { totalReturn: number; expectancy: number | null } | null;
   oosControls: { buyAndHoldSharpe: number | null; randomSharpe: number | null; cashSharpe: number | null };
   psr: number | null;
-  dsr: { dsr: number | null; benchmark: number; trials: number } | null;
+  dsr: DeflatedSharpe | null;
   /** DSR deflated by every trial in the research programme (null when no programme count was given). The verdict uses this when present. */
-  dsrProgramme: { dsr: number | null; benchmark: number; trials: number } | null;
+  dsrProgramme: DeflatedSharpe | null;
   /** OOS net return of the selected configurations with every cost multiplied (liquidity-deterioration scenarios). */
   costSensitivity: Array<{ multiplier: number; netReturn: number }>;
   pbo: { pbo: number | null; splits: number } | null;
@@ -312,9 +312,10 @@ export function validateStrategy(input: {
   } else if (oos.totalReturn <= 0 || (sr ?? 0) <= 0) {
     verdict = "INSUFFICIENT_EVIDENCE";
     reasons.push("OOS net return not positive");
-  } else if (effectiveDsr?.dsr === null || effectiveDsr === null || effectiveDsr.dsr < 0.95) {
-    verdict = isControl ? "INSUFFICIENT_EVIDENCE" : "REJECTED_OVERFIT";
-    reasons.push(`DSR ${effectiveDsr?.dsr?.toFixed(3) ?? "n/a"} < 0.95 after ${effectiveDsr?.trials ?? 0} trials${dsrProgramme ? " (programme-wide)" : ""}`);
+  } else if (!dsrPasses(effectiveDsr?.dsr, 0.95)) {
+    // F04: a DSR that is not computable is insufficient evidence, never a pass; a low one is overfit.
+    verdict = isControl || effectiveDsr?.dsr === null || effectiveDsr === null ? "INSUFFICIENT_EVIDENCE" : "REJECTED_OVERFIT";
+    reasons.push(`DSR ${effectiveDsr?.dsr?.toFixed(3) ?? "n/a"} < 0.95 after ${effectiveDsr?.trials ?? 0} trials${dsrProgramme ? " (programme-wide)" : ""}${effectiveDsr?.reason ? ` [${effectiveDsr.reason}]` : ""} (${DSR_PROTOCOL_VERSION})`);
   } else if (!isControl && ((oosControls.buyAndHoldSharpe ?? Number.NEGATIVE_INFINITY) >= sr! || (oosControls.randomSharpe ?? Number.NEGATIVE_INFINITY) >= sr!)) {
     verdict = "INSUFFICIENT_EVIDENCE";
     reasons.push("Does not beat buy-and-hold and the random control out of sample");

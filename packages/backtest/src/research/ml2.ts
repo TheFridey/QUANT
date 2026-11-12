@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { kurtosis, mean, seededRng, skewness } from "../stats.js";
-import { deflatedSharpe } from "./metrics.js";
+import { deflatedSharpe, DSR_PROTOCOL_VERSION, dsrPasses, type DeflatedSharpe } from "./metrics.js";
 import { auditPrefixInvariance, buildDefaultFeatureRows, causalViolations, defaultFeatureSetSpec, EXTRA_FEATURE_DEFINITIONS, featureSetSpecHash, validateResearchBars, type CausalFeatureRow, type FeatureSetSpec } from "./feature-set.js";
 import { FEATURE_DEFINITIONS, horizonsFor } from "./features.js";
 import { buildTradeLabels, costPerSideFraction, labelSpecHash, labelValue, LABELS_VERSION, netOfCost, type LabelSpec } from "./labels.js";
@@ -306,7 +306,7 @@ export type Ml2Report = {
   programmeTrialCount: number;
   championTrialId: string | null;
   walkForward: Record<string, Ml2Evaluation>;
-  dsr: { dsr: number | null; benchmark: number; trials: number; effectiveN: number } | null;
+  dsr: (DeflatedSharpe & { effectiveN: number }) | null;
   holdout: Ml2HoldoutResult;
   drift: { psi: Array<{ feature: string; psi: number | null }>; rollingBrier: number[]; brierDecay: number | null };
   deployment: { abstain: boolean; reasons: string[] } | null;
@@ -677,7 +677,7 @@ export function runMlPipeline(input: Ml2Input): Ml2Report {
     const s = scored[champion.trialId]!;
     const chosen = s.p.map((p, i) => (p >= cfg.entryThreshold && !s.ood[i] ? netOfCost(s.gross[i]!, costPerSide) : null)).filter((v): v is number => v !== null);
     const effectiveN = Math.floor(chosen.length / Math.max(1, horizon));
-    const d = deflatedSharpe({ sharpe: champEval.sharpe, n: effectiveN, skew: skewness(chosen) ?? 0, kurtosis: kurtosis(chosen) ?? 3, trialSharpes: trials.filter((t) => !t.baseline && t.sharpe !== null).map((t) => t.sharpe!), trialCount: programmeTrialCount });
+    const d = deflatedSharpe({ sharpe: champEval.sharpe, n: effectiveN, skew: skewness(chosen) ?? Number.NaN, kurtosis: kurtosis(chosen) ?? Number.NaN, trialSharpes: trials.filter((t) => !t.baseline && t.sharpe !== null).map((t) => t.sharpe!), trialCount: programmeTrialCount });
     dsr = { ...d, effectiveN };
   }
 
@@ -712,8 +712,8 @@ export function runMlPipeline(input: Ml2Input): Ml2Report {
       reasons.push(`not calibrated: walk-forward ECE ${champEval.ece.toFixed(4)} > ${cfg.maxEce}`);
     } else if (!dsr || dsr.dsr === null) {
       verdict = "INSUFFICIENT_EVIDENCE";
-      reasons.push(`DSR not computable (effective selected trades ${dsr?.effectiveN ?? 0}; needs ≥ 100)`);
-    } else if (dsr.dsr < cfg.minDsr) {
+      reasons.push(`DSR not computable [${dsr?.reason ?? "DSR_NOT_RUN"}] (effective selected trades ${dsr?.effectiveN ?? 0}; needs ≥ 100; ${DSR_PROTOCOL_VERSION})`);
+    } else if (!dsrPasses(dsr.dsr, cfg.minDsr)) {
       verdict = "REJECTED_OVERFIT";
       reasons.push(`DSR ${dsr.dsr.toFixed(3)} < ${cfg.minDsr} after ${dsr.trials} programme trials`);
     }

@@ -1,4 +1,5 @@
 import { defaultFeatureSetSpec, featureSetSpecHash, type LabelSpec } from "@odin/backtest/ml2";
+import { DSR_PROTOCOL_VERSION } from "@odin/backtest/research";
 import type { PrismaClient } from "@odin/shared/db";
 import { isOperatorActor } from "../genesis/model-lifecycle.js";
 import { currentModelState, registerModel, transitionModel, type ModelVersionRow } from "../genesis/model-registry.js";
@@ -57,6 +58,10 @@ export async function registerCampaignModel(prisma: PrismaClient, input: { unitI
   const model = obj(obj(JSON.parse(holdout.detailCanonical)).model);
   const dataset = obj(holdout.dataset);
   const barMs = typeof dataset.barMs === "number" ? dataset.barMs : null;
+  // F04: a result judged under an earlier DSR protocol (dsr-1: zero dispersion gave a zero benchmark) is not
+  // re-scored or reclassified; it must be revalidated by a new campaign run before it can be observed.
+  const dsrProtocol = obj(obj(holdout.provenance).versions).dsrProtocol;
+  if (dsrProtocol !== DSR_PROTOCOL_VERSION) throw new CampaignError("REVALIDATION_REQUIRED", `unit ${unit.id} was validated under DSR protocol ${typeof dsrProtocol === "string" ? dsrProtocol : "dsr-1 (unversioned)"}; rerun the campaign under ${DSR_PROTOCOL_VERSION} before registering it for observation`);
   const blocker = shadowBlocker({ hypothesisKind: unit.hypothesisKind, calendar: typeof model.calendar === "string" ? model.calendar : null, featureSetHash: typeof model.featureSetHash === "string" ? model.featureSetHash : null, barMs });
   if (blocker) throw new CampaignError("SHADOW_UNSUPPORTED", blocker);
   if (!model.artefact || !model.labelSpec || barMs === null || typeof dataset.contentHash !== "string") throw new CampaignError("NOT_ELIGIBLE", `unit ${unit.id}: the holdout result carries no frozen artefact`);
