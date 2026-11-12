@@ -10,6 +10,10 @@ import { createServer, type Server, type Socket as NetSocket } from "node:net";
 import { ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// auth.service imports @odin/shared/password, which has no vitest alias and resolves to the package's
+// built dist. CI runs tests before packages are built, so mock it as auth-hardening.test.ts does.
+vi.mock("@odin/shared/password", () => ({ hashPassword: vi.fn(async () => "hash"), verifyPassword: vi.fn(async () => false) }));
+
 type RevocationModule = typeof import("./token-revocation.js");
 type AuthModule = typeof import("./auth.service.js");
 
@@ -245,5 +249,5 @@ describe("logout reports durability and works during an outage (F02)", () => {
     const { IS_PUBLIC } = await import("./http.js");
     const handler = AuthController.prototype.logout;
     expect(new Reflector().get<boolean>(IS_PUBLIC, handler)).toBe(true);
-  });
+  }, 20_000); // importing the Nest controller graph is slow on a cold transform
 });
