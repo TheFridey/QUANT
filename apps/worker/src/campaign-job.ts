@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { constants, setPriority } from "node:os";
 import { resolve } from "node:path";
 import { InjectQueue, Processor, WorkerHost } from "@nestjs/bullmq";
-import { Injectable, OnModuleInit } from "@nestjs/common";
+import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { Queue } from "bullmq";
 import { workerLog } from "./logger.js";
 import { SUPERVISOR_PIPE_ENV } from "./research/process-guards.js";
@@ -115,9 +115,16 @@ export class ResearchCampaignScheduler implements OnModuleInit {
 }
 
 @Processor(RESEARCH_CAMPAIGN_QUEUE, { concurrency: 1 })
-export class ResearchCampaignProcessor extends WorkerHost {
+export class ResearchCampaignProcessor extends WorkerHost implements OnModuleDestroy {
+  private readonly shutdown = new AbortController();
+
+  /** Graceful worker shutdown stops the running tick (and through its pipe the CLI's evaluator). */
+  onModuleDestroy(): void {
+    this.shutdown.abort();
+  }
+
   async process(): Promise<void> {
-    const result = await runCampaignTick();
+    const result = await runCampaignTick(process.env, { signal: this.shutdown.signal });
     if (result.status !== "RAN") return;
     const log = result.exitCode === 0 ? workerLog.info.bind(workerLog) : workerLog.warn.bind(workerLog);
     log({ exitCode: result.exitCode, timedOut: result.timedOut, output: result.output.slice(-1500) }, "research campaign tick");

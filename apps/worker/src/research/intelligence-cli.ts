@@ -4,7 +4,7 @@ import { GeckoTerminalPoolSource, INTERVAL_MS, normaliseBars, type HistoryInterv
 import { Prisma, PrismaClient } from "@odin/shared/db";
 import { costPerSide, PERIODS } from "./cost-basis.js";
 import { closeStudy, openStudy } from "@odin/evolution/campaign";
-import { EXPLORATORY_EVIDENCE_CLASS, studyKey } from "./holdout-policy.js";
+import { EXPLORATORY_EVIDENCE_CLASS, studyCodeVersion, studyKey } from "./holdout-policy.js";
 import { recordValidation } from "./registry-writer.js";
 
 /**
@@ -131,7 +131,7 @@ async function main() {
     const cost = await costPerSide(prisma, dataset);
     // F03: open the study durably before computing (freezes the programme count it is deflated by); close it with
     // every trial not already in the registry before anything is printed. Dry runs used to count nothing at all.
-    const key = studyKey({ cli: "intelligence-cli", datasetId, versionHash: dataset.versionHash, codeVersion, record });
+    const key = studyKey({ cli: "intelligence-cli", datasetId, versionHash: dataset.versionHash, codeVersion: studyCodeVersion(), label: codeVersion, record });
     const opened = await openStudy(prisma, { studyKey: key, actor: "intelligence-cli", note: `intelligence-cli ${datasetId} at ${codeVersion}${record ? " --record" : ""}` });
     if (record && opened.status === "ALREADY_CLOSED") throw new Error(`REFUSED: study ${key} was already recorded; a rerun would duplicate registry rows`);
     const study = runIntelligenceStudy({

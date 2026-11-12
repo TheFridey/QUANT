@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeStudy, openStudies, openStudy, programmeTrials } from "@odin/evolution/campaign";
+import { closeStudy, declareLegacyTrials, openStudies, openStudy, programmeTrials } from "@odin/evolution/campaign";
 import { PrismaClient } from "@odin/shared/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolvePriorTrials } from "./holdout-policy.js";
@@ -71,7 +71,9 @@ describe.skipIf(!enabled)("exploratory study trial accounting (F03, Postgres)", 
     await closeStudy(b, { studyKey: key("other-in-between"), trials: 11, actor: "test", note: "other" });
     const second = await openStudy(b, { studyKey: k, actor: "test", note: "retry" });
     expect(second.status).toBe("ALREADY_OPEN");
-    expect(second.priorTrials).toBe(first.priorTrials);
+    // Review M2: the retry is deflated by everything committed since the first attempt, never less than frozen.
+    expect(second.priorTrials).toBeGreaterThanOrEqual(first.priorTrials + 11);
+    expect(second.priorTrials).toBe((await programmeTrials(b)).total);
     const before = await total();
     const c1 = await closeStudy(b, { studyKey: k, trials: 20, actor: "test", note: "retry closed" });
     const c2 = await closeStudy(a, { studyKey: k, trials: 20, actor: "test", note: "duplicate close" });
@@ -82,6 +84,10 @@ describe.skipIf(!enabled)("exploratory study trial accounting (F03, Postgres)", 
     expect(c1.concurrentTrials).toBeGreaterThanOrEqual(11);
     const reopened = await openStudy(a, { studyKey: k, actor: "test", note: "after close" });
     expect(reopened).toMatchObject({ status: "ALREADY_CLOSED", priorTrials: first.priorTrials, closedTrials: 20 });
+    // Review M1: the same key with a different trial count is a different study and is refused, adding nothing.
+    const t = await total();
+    await expect(closeStudy(a, { studyKey: k, trials: 21, actor: "test", note: "changed code, same key" })).rejects.toThrow(/not the same study/);
+    expect(await total()).toBe(t);
     expect((await rowsFor(k)).length).toBe(2);
   });
 
@@ -139,6 +145,10 @@ describe.skipIf(!enabled)("exploratory study trial accounting (F03, Postgres)", 
     await openStudy(a, { studyKey: k, actor: "test", note: "x" });
     await expect(closeStudy(a, { studyKey: k, trials: -1, actor: "test", note: "x" })).rejects.toThrow(/non-negative/);
     await expect(closeStudy(a, { studyKey: k, trials: 1.5, actor: "test", note: "x" })).rejects.toThrow(/non-negative/);
+  });
+
+  it("a manual legacy declaration cannot impersonate a study open or close row (review L2)", async () => {
+    for (const note of [`study-close:${key("spoof")} x`, `study-open:${key("spoof")} x`, "STUDY-CLOSE:abc"]) await expect(declareLegacyTrials(a, { trials: 1, actor: "test", note })).rejects.toThrow(/may not start with/);
   });
 
   it("a supplied prior below the frozen ledger count is ignored (F06)", async () => {

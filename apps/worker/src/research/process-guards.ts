@@ -44,6 +44,9 @@ export function installSupervisorLiveness(onGone: () => void = () => undefined, 
   process.stdin.on("close", gone);
   process.stdin.on("error", gone);
   process.stdin.resume();
+  // Watching the pipe must not keep this process alive: when its own work is done it exits normally (review H1:
+  // a resumed stdin otherwise held a successful CLI open until the tick's ceiling killed it).
+  (process.stdin as unknown as { unref?: () => void }).unref?.();
   return true;
 }
 

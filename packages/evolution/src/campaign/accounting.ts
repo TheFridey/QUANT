@@ -97,6 +97,8 @@ export async function settleTrials(tx: Prisma.TransactionClient, input: { unitId
 export async function declareLegacyTrials(prisma: PrismaClient, input: { trials: number; actor: string; note: string }) {
   if (!Number.isInteger(input.trials) || input.trials < 1) throw new Error("legacy trial count must be a positive integer");
   if (!input.note.trim()) throw new Error("a legacy declaration needs a note saying where the count comes from");
+  // Review L2: a manual declaration must not be able to impersonate a study's open or close row.
+  if (/^study-(open|close):/i.test(input.note.trim())) throw new Error("legacy declaration notes may not start with study-open: or study-close:");
   return campaignTx(prisma, async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${TRIAL_LEDGER_LOCK})`;
     return tx.researchTrialLedger.create({ data: { kind: "LEGACY_DECLARED", trials: input.trials, actor: input.actor, note: input.note.trim() } });
@@ -137,7 +139,12 @@ export async function openStudy(prisma: PrismaClient, input: { studyKey: string;
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${TRIAL_LEDGER_LOCK})`;
     const open = await tx.researchTrialLedger.findFirst({ where: { kind: "LEGACY_DECLARED", note: { startsWith: `${STUDY_OPEN_PREFIX}${input.studyKey} ` } }, orderBy: { createdAt: "asc" } });
     const close = await tx.researchTrialLedger.findFirst({ where: { kind: "LEGACY_DECLARED", note: { startsWith: `${STUDY_CLOSE_PREFIX}${input.studyKey} ` } }, orderBy: { createdAt: "asc" } });
-    if (open) return { status: close ? ("ALREADY_CLOSED" as const) : ("ALREADY_OPEN" as const), studyKey: input.studyKey, priorTrials: open.priorTrials ?? 0, openedAt: open.createdAt, closedTrials: close?.trials ?? null };
+    if (open) {
+      // Review M2: a retry (possibly hours later) is deflated by at least everything committed since, never less
+      // than the frozen count. For a crashed run whose own rows are already counted this overstates: safe direction.
+      const prior = close ? (open.priorTrials ?? 0) : Math.max(open.priorTrials ?? 0, (await programmeTrials(tx)).total);
+      return { status: close ? ("ALREADY_CLOSED" as const) : ("ALREADY_OPEN" as const), studyKey: input.studyKey, priorTrials: prior, openedAt: open.createdAt, closedTrials: close?.trials ?? null };
+    }
     const prior = (await programmeTrials(tx)).total;
     const row = await tx.researchTrialLedger.create({ data: { kind: "LEGACY_DECLARED", trials: 0, priorTrials: prior, actor: input.actor, note: `${STUDY_OPEN_PREFIX}${input.studyKey} ${input.note.trim()}` } });
     return { status: "OPENED" as const, studyKey: input.studyKey, priorTrials: prior, openedAt: row.createdAt, closedTrials: null };
@@ -154,6 +161,9 @@ export async function closeStudy(prisma: PrismaClient, input: { studyKey: string
     const open = await tx.researchTrialLedger.findFirst({ where: { kind: "LEGACY_DECLARED", note: { startsWith: `${STUDY_OPEN_PREFIX}${input.studyKey} ` } }, orderBy: { createdAt: "asc" } });
     if (!open) throw new Error(`TRIAL_ACCOUNTING: study ${input.studyKey} was never opened; open it before computing`);
     const existing = await tx.researchTrialLedger.findFirst({ where: { kind: "LEGACY_DECLARED", note: { startsWith: `${STUDY_CLOSE_PREFIX}${input.studyKey} ` } }, orderBy: { createdAt: "asc" } });
+    // Review M1: a key is one deterministic study. A rerun that computed a different number of trials is a
+    // different study under a reused key (for example changed code without a version) and is refused.
+    if (existing && existing.trials !== input.trials) throw new Error(`TRIAL_ACCOUNTING: study ${input.studyKey} was closed with ${existing.trials} trials; this run computed ${input.trials}, so it is not the same study; refusing to disclose it under this key`);
     const own = (existing ? existing.trials : input.trials) + (input.registryTrials ?? 0);
     if (!existing) await tx.researchTrialLedger.create({ data: { kind: "LEGACY_DECLARED", trials: input.trials, actor: input.actor, note: `${STUDY_CLOSE_PREFIX}${input.studyKey} ${input.note.trim() || "closed"}` } });
     // Trials anyone else committed (ledger or registry) since this study froze its prior: its deflation is stale by

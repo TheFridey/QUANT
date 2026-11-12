@@ -92,6 +92,19 @@ await import(${JSON.stringify(pathToFileURL(middle).href)});
     expect(await until(() => !alive(m) && !alive(l), 10_000)).toBe(true);
   }, 180_000);
 
+  it("review H1: a CLI that installs liveness exits by itself when its work is done (no ceiling kill)", async () => {
+    const done = script("done-cli.mjs", `import { installSupervisorLiveness } from ${JSON.stringify(GUARDS)};
+installSupervisorLiveness();
+await new Promise((r) => setTimeout(r, 200));
+console.log(JSON.stringify({ status: "IDLE" }));
+`);
+    const started = Date.now();
+    const result = await runCampaignTick({ ...process.env, RESEARCH_CAMPAIGN_WORKER_ENABLED: "true" }, { cliPath: done, ceilingMs: 120_000, execArgv: STRIP });
+    expect(result).toMatchObject({ status: "RAN", exitCode: 0, timedOut: false });
+    expect((result as { output: string }).output).toContain("IDLE");
+    expect(Date.now() - started).toBeLessThan(100_000);
+  }, 150_000);
+
   it("without the supervisor flag (an operator at a terminal) an ignored stdin does not stop the process", async () => {
     const pidFile = join(dir, "leaf4.pid");
     const p = start(leaf, [pidFile], false);
@@ -194,5 +207,7 @@ await import(${JSON.stringify(pathToFileURL(middle).href)});
     expect(src("campaign-runner.ts")).toContain('stdio: ["pipe", "ignore", "pipe"], env: { NODE_ENV: process.env.NODE_ENV ?? "production", PATH: process.env.PATH ?? "", [SUPERVISOR_PIPE_ENV]: "1" }');
     expect(src("../campaign-job.ts")).toContain('stdio: ["pipe", "pipe", "pipe"]');
     expect(src("../campaign-job.ts")).toContain('[SUPERVISOR_PIPE_ENV]: "1"');
+    expect(src("../campaign-job.ts")).toContain("runCampaignTick(process.env, { signal: this.shutdown.signal })");
+    expect(src("process-guards.ts")).toContain("unref?.()");
   });
 });

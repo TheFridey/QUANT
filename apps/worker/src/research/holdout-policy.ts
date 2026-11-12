@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { programmeTrials } from "@odin/evolution/campaign";
 import type { PrismaClient } from "@odin/shared/db";
 
@@ -46,6 +47,23 @@ export function studyKey(identity: Record<string, unknown>): string {
   const canon = (v: unknown): unknown =>
     Array.isArray(v) ? v.map(canon) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v as object).sort().map((k) => [k, canon((v as Record<string, unknown>)[k])])) : v === undefined ? null : v;
   return createHash("sha256").update(JSON.stringify(canon(identity))).digest("hex");
+}
+
+/**
+ * Review M1: the code version a study key is bound to. A clean commit (GIT_COMMIT, else `git rev-parse` on a clean
+ * tree) identifies the code; otherwise the code is unknown, and the key gets a unique suffix so the study always
+ * counts as new trials instead of reusing an earlier study's close.
+ */
+export function studyCodeVersion(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.GIT_COMMIT && /^[a-f0-9]{7,40}$/.test(env.GIT_COMMIT)) return env.GIT_COMMIT;
+  try {
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (/^[a-f0-9]{40}$/.test(head) && dirty === "") return head;
+  } catch {
+    // no git: unversioned
+  }
+  return `UNVERSIONED-${randomUUID()}`;
 }
 
 /** Labels every legacy CLI report: exploration only, never qualified evidence (campaigns are the sole evidence path). */

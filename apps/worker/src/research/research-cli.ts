@@ -2,8 +2,8 @@ import "../load-env.js";
 import { DEFAULT_VALIDATION, STRATEGY_LIBRARY, validateStrategy, type ResearchBar } from "@odin/backtest";
 import { PrismaClient } from "@odin/shared/db";
 import { costPerSide, PERIODS } from "./cost-basis.js";
-import { closeStudy, openStudy } from "@odin/evolution/campaign";
-import { EXPLORATORY_EVIDENCE_CLASS, studyKey } from "./holdout-policy.js";
+import { closeStudy, openStudy, programmeTrials } from "@odin/evolution/campaign";
+import { EXPLORATORY_EVIDENCE_CLASS, studyCodeVersion, studyKey } from "./holdout-policy.js";
 import { recordValidation } from "./registry-writer.js";
 
 /**
@@ -56,13 +56,13 @@ async function main() {
     const find = (id: string) => STRATEGY_LIBRARY.find((s) => s.id === id)!;
     const controls = { buyAndHold: find("control_buy_and_hold"), random: find("control_random"), cash: find("control_cash") };
     const out: Array<Record<string, unknown>> = [];
-    const key = studyKey({ cli: "research-cli", datasetId, versionHash: dataset.versionHash, codeVersion, config, strategies: STRATEGY_LIBRARY.map((s) => `${s.id}@${s.version}`) });
+    const key = studyKey({ cli: "research-cli", datasetId, versionHash: dataset.versionHash, codeVersion: studyCodeVersion(), label: codeVersion, config, strategies: STRATEGY_LIBRARY.map((s) => `${s.id}@${s.version}`) });
     const opened = await openStudy(prisma, { studyKey: key, actor: "research-cli", note: `research-cli ${datasetId} at ${codeVersion}` });
     if (opened.status === "ALREADY_CLOSED") throw new Error(`REFUSED: study ${key} (same dataset content, code and config) was already recorded; a rerun would add no information and would duplicate registry rows`);
     let runTrials = 0;
     for (const spec of STRATEGY_LIBRARY) {
-      // Frozen at OPEN, plus this run's earlier strategies (already in the registry).
-      const priorTrials = opened.priorTrials + runTrials;
+      // Frozen at OPEN plus this run's earlier strategies, but never below the live programme count (review M2).
+      const priorTrials = Math.max(opened.priorTrials + runTrials, (await programmeTrials(prisma)).total);
       // No cost basis here is point-in-time (present-day liquidity, or a static ETF spread), so every
       // candidate must survive double cost.
       const report = validateStrategy({ spec, bars, config, codeVersion, controls, holdoutWithheld: true, programmeTrialCount: priorTrials, costIsProxy: true });

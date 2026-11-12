@@ -6,7 +6,7 @@ import { INTERVAL_MS, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
 import { costPerSide } from "./cost-basis.js";
 import { closeStudy, openStudy } from "@odin/evolution/campaign";
-import { EXPLORATORY_EVIDENCE_CLASS, resolvePriorTrials, studyKey } from "./holdout-policy.js";
+import { EXPLORATORY_EVIDENCE_CLASS, resolvePriorTrials, studyCodeVersion, studyKey } from "./holdout-policy.js";
 import { ML_CLI_USAGE, parseBarsCsv, parseMlArgs } from "./ml-args.js";
 
 /**
@@ -137,7 +137,7 @@ async function main() {
       }
       // F03: open the study durably before computing; its programme count is frozen there (retries reuse it).
       // F06: a supplied --prior-trials can raise, never lower, the durable programme count.
-      const key = studyKey({ cli: "ml-cli", datasetId: dataset.id, versionHash: dataset.versionHash, codeVersion: process.env.GIT_COMMIT ?? "unknown", args, feeBps, slippageBps });
+      const key = studyKey({ cli: "ml-cli", datasetId: dataset.id, versionHash: dataset.versionHash, codeVersion: studyCodeVersion(), args, feeBps, slippageBps });
       const opened = await openStudy(prisma, { studyKey: key, actor: "ml-cli", note: `ml-cli ${dataset.id} at ${process.env.GIT_COMMIT ?? "unknown"}` });
       study = { key, status: opened.status, priorTrials: opened.priorTrials };
       priorTrials = resolvePriorTrials(args.priorTrials, opened.priorTrials).priorTrials;

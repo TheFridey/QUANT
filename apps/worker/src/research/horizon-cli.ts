@@ -5,7 +5,7 @@ import { excludeWeekendStubBars, inferBarMs, MARKET_CONFIGS, runHorizonStudy, ty
 import { INTERVAL_MS, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
 import { closeStudy, openStudy } from "@odin/evolution/campaign";
-import { EXPLORATORY_EVIDENCE_CLASS, resolvePriorTrials, studyKey } from "./holdout-policy.js";
+import { EXPLORATORY_EVIDENCE_CLASS, resolvePriorTrials, studyCodeVersion, studyKey } from "./holdout-policy.js";
 import { HORIZON_CLI_USAGE, parseHorizonArgs } from "./horizon-args.js";
 import { parseBarsCsv } from "./ml-args.js";
 
@@ -88,7 +88,7 @@ async function main() {
       datasetKey = `${dataset.instrumentKey}|${dataset.interval}`;
       // F03: open the study durably, under the trial-ledger lock, before computing anything. Its programme count is
       // frozen there, so a retry of the same study cannot drift. F06: --prior-trials can raise, never lower, it.
-      const key = studyKey({ cli: "horizon-cli", datasetId: dataset.id, versionHash: dataset.versionHash, codeVersion: process.env.GIT_COMMIT ?? "unknown", args });
+      const key = studyKey({ cli: "horizon-cli", datasetId: dataset.id, versionHash: dataset.versionHash, codeVersion: studyCodeVersion(), args });
       const opened = await openStudy(prisma, { studyKey: key, actor: "horizon-cli", note: `horizon-cli ${dataset.id} ${args.market} at ${process.env.GIT_COMMIT ?? "unknown"}` });
       study = { key, status: opened.status, priorTrials: opened.priorTrials };
       priorTrials = resolvePriorTrials(args.priorTrials, opened.priorTrials).priorTrials;
