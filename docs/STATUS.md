@@ -22,9 +22,9 @@ Finding ledger, evidence and release state: [`integrity/STATUS.md`](integrity/ST
 
 | Layer | State |
 | --- | --- |
-| Production (VPS) | `2cc6627` (Phase I: F01, F02, F03/F06 partial, F05, F07, F08, F12 parts), deployed 12 Nov 2026 |
-| `main` | `33c6a4a` (docs only over `2cc6627`) |
-| Phase II branch | `integrity/phase-ii`: F03/F06 trial accounting, F04 DSR `dsr-2.0.0`, F09 complete cohorts, F10 process guarantees, F11 economic-trade analytics, F12 restore-drill fix. **Not merged, not deployed.** |
+| Production (VPS) | `bed2f36` (Phase I and Phase II), deployed 12 Nov 2026 17:11 UTC; previously `2cc6627` |
+| `main` | `bed2f36` plus deploy records |
+| Phase II | [#79](https://github.com/TheFridey/QUANT/pull/79): F03/F06 trial accounting, F04 DSR `dsr-2.0.0`, F09 complete cohorts, F10 process guarantees, F11 economic-trade analytics, F12 restore-drill fix. Merged and deployed. Production restore drill not yet run. |
 | Not done | F11 execution-model realism (protected paths, needs approval); legacy pre-ledger trial declaration (operator input); OS-level research isolation on the VPS (operator) |
 
 ## Audit remediation (30 Oct 2026 audit, baseline `df09deb`)

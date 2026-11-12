@@ -3,7 +3,7 @@
 **Audit baseline:** `main` at `6eaac8e`, a docs-only merge over production code `eba979f`.
 
 - **Phase I** was merged as PRs #73–#77 and **deployed 12 Nov 2026 as `2cc6627`** ([`docs/horizon/LEDGER.md`](../horizon/LEDGER.md), checkpoint 8). `main` is now `33c6a4a`, docs only on top of that.
-- **Phase II** is on branch **`integrity/phase-ii`** (off `33c6a4a`, pushed, **not merged, not deployed**). The Phase II brief assumed open PRs #73–#77; all five were already merged, so there is no stack to integrate. `integrity/phase-ii` is itself the release candidate.
+- **Phase II** was merged as [#79](https://github.com/TheFridey/QUANT/pull/79) (`bed2f36`) and **deployed 12 Nov 2026 at 17:11 UTC** ([`docs/horizon/LEDGER.md`](../horizon/LEDGER.md), checkpoint 9). PR CI was green on Linux (PostgreSQL 16, Redis 7): test 1,569 passed, browser-e2e 14 passed, build green. The production restore drill has **not** been run (`NOT_VERIFIED`; it needs operator credentials). The Phase II brief assumed open PRs #73–#77; all five were already merged, so there is no stack to integrate. `integrity/phase-ii` is itself the release candidate.
 
 PAPER only. Nothing here enables live money, changes `EXECUTION_MODE`, loosens risk limits, consumes production holdouts or deploys. No protected path was edited in Phase II.
 
@@ -29,7 +29,7 @@ PAPER only. Nothing here enables live money, changes `EXECUTION_MODE`, loosens r
 | F11-X | — | — | **BLOCKED** (protected-path approval). Chained-exit liquidity realism, the SANDBOX fill lock and `requestedQty`. Approval package prepared; no protected file touched. | F11 doc | — |
 | F12 | LOW | PARTIAL | **FIXED**. Phase I's drill probe made every production drill fail on `CyclePlan` (an UPDATE-only trigger was probed with a DELETE); fixed and re-drilled green. The "3,000 unrecorded trials" claims were corrected in ADR-0001, HANDOVER and LEDGER. `docs/STATUS.md` now separates production, `main` and branch. | [`F12-OPERATIONAL-RECONCILIATION.md`](F12-OPERATIONAL-RECONCILIATION.md) | `c767d50`, docs commit |
 
-Independent reviews: statistical (F04), `quant-safety-reviewer` (REJECT; H1, M1 and M2 fixed in `a6fa778`, then APPROVE WITH NOTES) and `regression-reviewer` (no blocking findings). Details in `RELEASE-READINESS.md`. None of the Phase II findings is `VERIFIED` yet. Linux CI on the PR, and the browser e2e within it, have not run; see [`ACCEPTANCE-MATRIX.md`](ACCEPTANCE-MATRIX.md).
+Independent reviews: statistical (F04), `quant-safety-reviewer` (REJECT; H1, M1 and M2 fixed in `a6fa778`, then APPROVE WITH NOTES) and `regression-reviewer` (no blocking findings). Details in `RELEASE-READINESS.md`. Phase II findings F03, F04, F06, F09, F10, F11 (analytics) and F12 are **VERIFIED**: FIXED, with Linux CI green and independent reviews done. They are **deployed** as `bed2f36`. The blocked items (F03-H, F10-OS, F11-X) remain blocked.
 
 ## Phase I record (unchanged, abbreviated)
 
