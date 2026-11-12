@@ -33,3 +33,45 @@ describe("holdout policy (SINGULARITY-00)", () => {
     expect(await holdoutAvailable(prisma, { strategyId: "tsmom", instrumentKey: "OTHER", interval: "1h" })).toBe(true);
   });
 });
+
+describe("OPERATION INTEGRITY F03/F06: legacy CLI holdout and trial-count policy", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { resolvePriorTrials } = await import("./holdout-policy.js");
+  const { runIntelligenceStudy } = await import("@odin/backtest");
+
+  it("a supplied --prior-trials can raise but never lower the durable programme count", () => {
+    expect(resolvePriorTrials(null, 120)).toEqual({ priorTrials: 120, source: "LEDGER", ignoredSupplied: null });
+    expect(resolvePriorTrials(0, 120)).toEqual({ priorTrials: 120, source: "LEDGER", ignoredSupplied: 0 });
+    expect(resolvePriorTrials(5, 120).priorTrials).toBe(120);
+    expect(resolvePriorTrials(120, 120)).toEqual({ priorTrials: 120, source: "LEDGER", ignoredSupplied: null });
+    expect(resolvePriorTrials(5_000, 120)).toEqual({ priorTrials: 5_000, source: "SUPPLIED_ABOVE_LEDGER", ignoredSupplied: null });
+  });
+
+  it("warehouse-mode HORIZON and ML CLIs resolve the count through the floor, not `??`", () => {
+    for (const file of ["horizon-cli.ts", "ml-cli.ts"]) {
+      const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
+      expect(source).toContain("resolvePriorTrials(args.priorTrials, await programmeTrialCount(prisma))");
+      expect(source).not.toContain("args.priorTrials ?? (await programmeTrialCount(prisma))");
+    }
+  });
+
+  it("the ASCEND and intelligence CLIs withhold every holdout instead of check-evaluate-record", () => {
+    for (const file of ["research-cli.ts", "intelligence-cli.ts"]) {
+      const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
+      expect(source).toContain("holdoutWithheld: true");
+      expect(source).not.toMatch(/holdoutAvailable\(prisma/);
+    }
+  });
+
+  it("a withheld intelligence study never evaluates a holdout window", () => {
+    const bars = Array.from({ length: 1_500 }, (_, i) => {
+      const close = 100 * Math.exp(0.0004 * i + 0.01 * Math.sin(i / 9));
+      return { t: Date.UTC(2025, 0, 1) + i * 3_600_000, open: close, high: close * 1.002, low: close * 0.998, close, volume: 1_000 };
+    });
+    const study = runIntelligenceStudy({ bars, barMs: 3_600_000, costBpsPerSide: 5, periodsPerYear: 8_760, codeVersion: "test", holdoutWithheld: true, holdoutAvailable: () => true });
+    for (const h of study.hypotheses) {
+      expect(h.gated.trials.some((t) => t.window === "HOLDOUT")).toBe(false);
+      expect(h.gated.holdout).toBeNull();
+    }
+  });
+});

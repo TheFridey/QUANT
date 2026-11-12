@@ -3,7 +3,7 @@ import { inferBarMs, ML_PROTOCOL_VERSION, runIntelligenceStudy, type Intelligenc
 import { GeckoTerminalPoolSource, INTERVAL_MS, normaliseBars, type HistoryInterval, type RawBar } from "@odin/market-data";
 import { Prisma, PrismaClient } from "@odin/shared/db";
 import { costPerSide, PERIODS } from "./cost-basis.js";
-import { holdoutAvailable, programmeTrialCount } from "./holdout-policy.js";
+import { programmeTrialCount } from "./holdout-policy.js";
 import { recordValidation } from "./registry-writer.js";
 
 /**
@@ -17,8 +17,6 @@ import { recordValidation } from "./registry-writer.js";
  * (rate-limited, keyless tier) for an offline study and never writes anything. No mode changes engine config,
  * strategy instances, orders or promotion state.
  */
-
-const GATED_IDS = ["tsmom__trend_only", "ma_trend__trend_only", "zscore_reversion__range_only", "bollinger_reversion__range_only", "tsmom__not_unstable"];
 
 function compact(study: IntelligenceStudy) {
   const pct = (x: number | null | undefined) => (x === null || x === undefined ? null : +(x * 100).toFixed(2));
@@ -129,8 +127,6 @@ async function main() {
     const periods = PERIODS[dataset.interval];
     if (!periods) throw new Error(`no annualisation for interval ${dataset.interval}`);
     const cost = await costPerSide(prisma, dataset);
-    const available = new Map<string, boolean>();
-    for (const id of GATED_IDS) available.set(id, await holdoutAvailable(prisma, { strategyId: id, instrumentKey: dataset.instrumentKey, interval: dataset.interval }));
     const study = runIntelligenceStudy({
       bars,
       barMs: INTERVAL_MS[dataset.interval as HistoryInterval] ?? inferBarMs(bars),
@@ -140,8 +136,9 @@ async function main() {
       codeVersion,
       programmeTrialCount: await programmeTrialCount(prisma),
       costIsProxy: true,
-      // A holdout is read only when the access is recorded (--record); ids not resolved above never get one.
-      holdoutAvailable: (id) => record && (available.get(id) ?? false),
+      // F03: every holdout is withheld. This CLI recorded the access only after evaluating, so a crash or a
+      // concurrent run could read final bars without durable consumption. Use a research campaign instead.
+      holdoutWithheld: true,
     });
     if (record) {
       for (const h of study.hypotheses) await recordValidation(prisma, { datasetId, codeVersion, config: h.gated.config, report: h.gated, costBasis: cost.basis });

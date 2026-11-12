@@ -2,7 +2,7 @@ import "../load-env.js";
 import { DEFAULT_VALIDATION, STRATEGY_LIBRARY, validateStrategy, type ResearchBar } from "@odin/backtest";
 import { PrismaClient } from "@odin/shared/db";
 import { costPerSide, PERIODS } from "./cost-basis.js";
-import { holdoutAvailable, programmeTrialCount } from "./holdout-policy.js";
+import { programmeTrialCount } from "./holdout-policy.js";
 import { recordValidation } from "./registry-writer.js";
 
 /**
@@ -11,11 +11,18 @@ import { recordValidation } from "./registry-writer.js";
  *   node dist/src/research/research-cli.js <datasetId> [codeVersion]
  *
  * Reads closed bars from the warehouse, prices costs with the ASCEND-06 model (conservative case), validates
- * every library strategy, and writes each run and every trial to the append-only registry. A strategy
- * evaluates a holdout at most once per instrument and interval, across versions (`holdout-policy.ts`; the
- * unique key backs the exact case), and DSR is deflated by every trial in the programme. Research verdicts never change engine
- * config, strategy instances or promotion state.
+ * every library strategy, and writes each run and every trial to the append-only registry. DSR is deflated by
+ * every trial in the programme. Research verdicts never change engine config, strategy instances or promotion
+ * state.
+ *
+ * OPERATION INTEGRITY F03: this CLI WITHHOLDS every holdout. It used to check availability, evaluate the
+ * holdout, and only then record the access, so a crash or a concurrent run could read final bars with no
+ * durable consumption. Holdout evaluation is supported only through research campaigns, which commit the
+ * holdout ledger before outcomes are read (`packages/evolution/src/campaign/holdout.ts`); the best verdict
+ * here is INSUFFICIENT_EVIDENCE with `walkForwardPassed: true`. Trials are still recorded after evaluation, so a crash mid-run loses
+ * that run's trial history from the programme count (see docs/integrity/STATUS.md F03).
  */
+export const RESEARCH_CLI_HOLDOUT = "WITHHELD" as const;
 
 async function main() {
   const [datasetId, codeVersion = process.env.GIT_COMMIT ?? "unknown"] = process.argv.slice(2);
@@ -43,11 +50,10 @@ async function main() {
     const controls = { buyAndHold: find("control_buy_and_hold"), random: find("control_random"), cash: find("control_cash") };
     const out: Array<Record<string, unknown>> = [];
     for (const spec of STRATEGY_LIBRARY) {
-      const available = await holdoutAvailable(prisma, { strategyId: spec.id, instrumentKey: dataset.instrumentKey, interval: dataset.interval });
       const priorTrials = await programmeTrialCount(prisma);
       // No cost basis here is point-in-time (present-day liquidity, or a static ETF spread), so every
       // candidate must survive double cost.
-      const report = validateStrategy({ spec, bars, config, codeVersion, controls, holdoutAvailable: available, programmeTrialCount: priorTrials, costIsProxy: true });
+      const report = validateStrategy({ spec, bars, config, codeVersion, controls, holdoutWithheld: true, programmeTrialCount: priorTrials, costIsProxy: true });
       await recordValidation(prisma, { datasetId, codeVersion, config, report, costBasis: cost.basis });
       out.push({
         strategy: spec.id,
@@ -66,7 +72,7 @@ async function main() {
         reasons: report.reasons.join("; "),
       });
     }
-    console.log(JSON.stringify({ datasetId, instrument: dataset.instrumentKey, interval: dataset.interval, bars: bars.length, costBpsPerSide: +cost.bps.toFixed(2), costBasis: cost.basis, results: out }, null, 1));
+    console.log(JSON.stringify({ holdout: `${RESEARCH_CLI_HOLDOUT}: evaluate holdouts through a research campaign`, datasetId, instrument: dataset.instrumentKey, interval: dataset.interval, bars: bars.length, costBpsPerSide: +cost.bps.toFixed(2), costBasis: cost.basis, results: out }, null, 1));
   } finally {
     await prisma.$disconnect();
   }
