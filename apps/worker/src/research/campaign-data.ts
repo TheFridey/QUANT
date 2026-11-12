@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { CAMPAIGN_LIMIT_BOUNDS, type CampaignDataset, type RawBars } from "@odin/evolution/campaign";
+import { CAMPAIGN_LIMIT_BOUNDS, normaliseInstrument, type CampaignDataset, type RawBars } from "@odin/evolution/campaign";
 import type { PrismaClient } from "@odin/shared/db";
 import { parseBarsCsv } from "./ml-args.js";
 
@@ -15,6 +15,39 @@ export class DatasetLoadError extends Error {
     super(`DATASET_LOAD: ${message}`);
     this.name = "DatasetLoadError";
   }
+}
+
+/**
+ * OPERATION INTEGRITY F08: warehouse instrument kinds each campaign market may study. A kind not listed here is
+ * refused rather than guessed. Values are the `HistoricalDataset.instrumentKind` strings the backfill writes.
+ */
+export const WAREHOUSE_KINDS_BY_MARKET: Record<CampaignDataset["market"], readonly string[]> = {
+  CRYPTO: ["SOLANA_POOL", "DEX_POOL"],
+  ETF: ["EQUITY_ETF"],
+  FX: ["FX_PAIR"],
+  GOLD: ["COMMODITY", "COMMODITY_FUTURE"],
+};
+
+/**
+ * The warehouse row must be the instrument, product type and interval the campaign declares. Instruments are
+ * compared after the same normalisation the holdout ledger uses, so formatting aliases (EUR_USD, EUR/USD,
+ * fx:EURUSD) match and different instruments (EUR/USD declared as XAU/USD) do not. A deliberate proxy study
+ * is not supported here: it must be declared as its own instrument rather than pass as another.
+ * Returns null when consistent, else the reason.
+ */
+export function warehouseIdentityMismatch(dataset: Pick<CampaignDataset, "market" | "instrument" | "interval">, row: { id: string; instrumentKey: string; instrumentKind: string; interval: string }): string | null {
+  if (row.interval !== dataset.interval) return `warehouse dataset ${row.id} is ${row.interval}, but the campaign declares ${dataset.interval}`;
+  let declared: string, stored: string;
+  try {
+    declared = normaliseInstrument(dataset.instrument);
+    stored = normaliseInstrument(row.instrumentKey);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  if (declared !== stored) return `warehouse dataset ${row.id} is instrument ${row.instrumentKey} (${stored}), but the campaign declares ${dataset.instrument} (${declared})`;
+  const kinds = WAREHOUSE_KINDS_BY_MARKET[dataset.market] ?? [];
+  if (!kinds.includes(row.instrumentKind)) return `warehouse dataset ${row.id} is a ${row.instrumentKind}, which the ${dataset.market} market does not study (expected ${kinds.join(" or ") || "none"})`;
+  return null;
 }
 
 export async function loadRawBars(prisma: PrismaClient, dataset: CampaignDataset, baseDir: string): Promise<RawBars> {
@@ -39,7 +72,9 @@ export async function loadRawBars(prisma: PrismaClient, dataset: CampaignDataset
   }
   const row = await prisma.historicalDataset.findUnique({ where: { id: dataset.source.datasetId } });
   if (!row) throw new DatasetLoadError(`warehouse dataset ${dataset.source.datasetId} does not exist`);
-  if (row.interval !== dataset.interval) throw new DatasetLoadError(`warehouse dataset ${row.id} is ${row.interval}, but the campaign declares ${dataset.interval}`);
+  // Checked before any bar is read, so a mismatched dataset costs nothing and produces no result (F08).
+  const mismatch = warehouseIdentityMismatch(dataset, row);
+  if (mismatch) throw new DatasetLoadError(mismatch);
   const max = CAMPAIGN_LIMIT_BOUNDS.maxBarsPerDataset;
   // One more than the limit, so an oversized dataset is refused rather than silently truncated.
   const rows = await prisma.historicalBar.findMany({ where: { datasetId: row.id, availableAt: { lte: new Date(dataset.asOf) } }, orderBy: { openTime: "asc" }, take: max + 1 });

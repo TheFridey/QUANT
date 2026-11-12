@@ -38,6 +38,29 @@ export async function logEvent(db: PrismaClient | Tx, input: { runId: string; un
   await db.researchCampaignEvent.create({ data: { runId: input.runId, unitId: input.unitId ?? null, kind: input.kind, actor: input.actor, detail: toJson(input.detail ?? {}) } });
 }
 
+export type DatasetPinIdentity = { contentHash: string; bars: number; firstT: string | null; lastT: string | null };
+export type DatasetPinOutcome = { status: "PINNED" | "MATCHES"; contentHash: string } | { status: "MISMATCH"; contentHash: string; pinnedHash: string };
+
+/**
+ * OPERATION INTEGRITY F07: the first unit of a dataset pins its content for the run; every later unit, retry
+ * or concurrent worker must see the same bars. Insert-or-compare under a transaction-scoped advisory lock on
+ * (run, dataset), so two workers that loaded different snapshots cannot both see "no pin" and both proceed.
+ * The earliest DATASET_PINNED event for the dataset is authoritative; events are append-only.
+ */
+export async function pinDataset(prisma: PrismaClient, input: { runId: string; unitId: string; datasetKey: string; actor: string; identity: DatasetPinIdentity }): Promise<DatasetPinOutcome> {
+  return campaignTx(prisma, async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`dataset-pin:${input.runId}:${input.datasetKey}`}))`;
+    const pins = await tx.researchCampaignEvent.findMany({ where: { runId: input.runId, kind: "DATASET_PINNED" }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { detail: true } });
+    const pinned = pins.map((p) => p.detail as { datasetKey?: string; contentHash?: string }).find((d) => d.datasetKey === input.datasetKey);
+    if (!pinned) {
+      await logEvent(tx, { runId: input.runId, unitId: input.unitId, kind: "DATASET_PINNED", actor: input.actor, detail: { datasetKey: input.datasetKey, ...input.identity } });
+      return { status: "PINNED" as const, contentHash: input.identity.contentHash };
+    }
+    if (pinned.contentHash === input.identity.contentHash) return { status: "MATCHES" as const, contentHash: input.identity.contentHash };
+    return { status: "MISMATCH" as const, contentHash: input.identity.contentHash, pinnedHash: String(pinned.contentHash) };
+  });
+}
+
 /** Registers a declaration. The same canonical specification always returns the same campaign. */
 export async function createCampaign(prisma: PrismaClient, raw: unknown, createdBy: string) {
   const plan = planCampaign(raw);

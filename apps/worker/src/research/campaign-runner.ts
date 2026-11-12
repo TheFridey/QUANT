@@ -12,6 +12,7 @@ import {
   failUnit,
   holdoutContext,
   logEvent,
+  pinDataset,
   preflightDataset,
   recordHoldoutLost,
   recordHoldoutResult,
@@ -181,11 +182,10 @@ export async function workRun(prisma: PrismaClient, runId: string, deps: RunnerD
       continue;
     }
     // 3. The first unit of a dataset pins its content for the run; a later unit or retry must see the same bars.
-    const pins = await prisma.researchCampaignEvent.findMany({ where: { runId, kind: "DATASET_PINNED" }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { detail: true } });
-    const pinned = pins.map((p) => p.detail as { datasetKey?: string; contentHash?: string }).find((d) => d.datasetKey === dataset.key);
-    if (!pinned) await logEvent(prisma, { runId, unitId: unit.id, kind: "DATASET_PINNED", actor: deps.owner, detail: { datasetKey: dataset.key, contentHash: pre.identity.contentHash, bars: pre.identity.bars, firstT: pre.identity.firstT, lastT: pre.identity.lastT } });
-    else if (pinned.contentHash !== pre.identity.contentHash) {
-      await fail(`DATASET_CHANGED: ${dataset.key} now hashes to ${pre.identity.contentHash.slice(0, 16)}, but this run pinned ${String(pinned.contentHash).slice(0, 16)}; the run cannot mix datasets. Start an intentional rerun`, false);
+    //    Atomic insert-or-compare (F07): concurrent workers with different snapshots cannot both pin.
+    const pin = await pinDataset(prisma, { runId, unitId: unit.id, datasetKey: dataset.key, actor: deps.owner, identity: { contentHash: pre.identity.contentHash, bars: pre.identity.bars, firstT: pre.identity.firstT, lastT: pre.identity.lastT } });
+    if (pin.status === "MISMATCH") {
+      await fail(`DATASET_CHANGED: ${dataset.key} now hashes to ${pin.contentHash.slice(0, 16)}, but this run pinned ${pin.pinnedHash.slice(0, 16)}; the run cannot mix datasets. Start an intentional rerun`, false);
       continue;
     }
     // 4. Trials are reserved, and committed, before the first one runs. A retry finds its own reservation.
