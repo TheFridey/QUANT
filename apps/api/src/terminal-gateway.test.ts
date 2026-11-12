@@ -1,3 +1,4 @@
+import { ServiceUnavailableException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import type { Server, Socket } from "socket.io";
 import type { AuthService } from "./auth.service.js";
@@ -69,6 +70,40 @@ describe("terminal socket handshake auth", () => {
     expect(to).toHaveBeenCalledWith(OPERATOR_ROOM);
     expect(emit).toHaveBeenCalledWith("terminal", { type: "stage" });
     expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("refuses the handshake as AUTH_UNAVAILABLE when revocation status cannot be established (F02)", async () => {
+    const unavailable = {
+      verify: vi.fn(async () => {
+        throw new ServiceUnavailableException("Session check unavailable");
+      }),
+    } as unknown as AuthService;
+    const socket = fakeSocket({ token: "good-token", origin: "http://127.0.0.1:4317" });
+    const error = await new Promise<Error | undefined>((resolve) => socketAuthMiddleware(unavailable)(socket, (e) => resolve(e)));
+    expect(error?.message).toBe("AUTH_UNAVAILABLE");
+    expect(socket.data.token).toBeUndefined();
+  });
+
+  it("disconnects an open socket when revalidation cannot establish revocation status (F02)", async () => {
+    vi.useFakeTimers();
+    try {
+      let unavailable = false;
+      const flaky = {
+        verify: vi.fn(async () => {
+          if (unavailable) throw new ServiceUnavailableException("Session check unavailable");
+          return { sub: "operator" };
+        }),
+      } as unknown as AuthService;
+      const socket = fakeSocket({ token: "good-token" });
+      socket.data.token = "good-token";
+      await new TerminalGateway(flaky).handleConnection(socket);
+      expect(socket.join).toHaveBeenCalledWith(OPERATOR_ROOM);
+      unavailable = true;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(socket.disconnect).toHaveBeenCalledWith(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("installs the middleware on the server at init", () => {

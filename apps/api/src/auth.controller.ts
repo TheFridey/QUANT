@@ -14,6 +14,9 @@ export class AuthController {
     return this.auth.login(input.email, input.password, request.ip ?? "unknown");
   }
 
+  // F02: logout checks the signature itself and must not depend on the revocation store being readable,
+  // or an outage would stop it recording the local revocation. It reports 503 when Redis did not confirm.
+  @Public()
   @Post("logout")
   logout(@Headers("authorization") authorization: string | undefined) {
     if (!authorization?.startsWith("Bearer ")) throw new UnauthorizedException("Authentication required");

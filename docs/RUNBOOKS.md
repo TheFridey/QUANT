@@ -69,6 +69,12 @@ pnpm exec vitest run packages/risk-engine/src/reservations.test.ts
 pnpm exec vitest run apps/api/src/token-revocation.test.ts
 ```
 
+**Session revocation and Redis (F02).** With `REDIS_URL` set, Redis is the shared revocation store and the API fails closed: while Redis is unreachable every authenticated request returns 503 ("Session check unavailable") and terminal sockets are refused (`AUTH_UNAVAILABLE`) or disconnected at the next 60 s revalidation. Logout still works: it revokes in this process, queues the Redis write, and returns 503 so the web shows its "not confirmed" notice; queued writes are flushed before the next Redis read is answered. Restore Redis to restore access. Leave `REDIS_URL` unset only for a deliberate single-process run, where in-memory revocation is the store and does not survive a restart.
+
+```bash
+pnpm exec vitest run apps/api/src/token-revocation.failclosed.test.ts apps/api/src/auth-hardening.test.ts apps/api/src/terminal-gateway.test.ts
+```
+
 ## Safety / recovery (owner)
 
 ```bash

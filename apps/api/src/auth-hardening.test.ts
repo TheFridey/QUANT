@@ -13,7 +13,7 @@ vi.mock("@odin/shared/password", () => ({
 process.env.REDIS_URL = "redis://127.0.0.1:1";
 
 const { AuthService, loginAttemptsForTests, pruneLoginAttempts } = await import("./auth.service.js");
-const { isTokenRevoked, resetTokenRevocationForTests, revokeToken, tokenRevocationBackoffForTests } = await import(
+const { isTokenRevoked, resetTokenRevocationForTests, revokeToken, RevocationStatusUnavailableError, tokenRevocationBackoffForTests } = await import(
   "./token-revocation.js"
 );
 
@@ -61,13 +61,14 @@ describe("login hardening (audit L1)", () => {
 describe("token revocation with Redis down (audit L2)", () => {
   beforeEach(() => resetTokenRevocationForTests());
 
-  it("backs off after a failed connect instead of reconnecting on every request", async () => {
-    expect(await isTokenRevoked("jti-a")).toBe(false);
+  // F02: these previously asserted `false` (not revoked) while Redis was down, i.e. fail open.
+  it("backs off after a failed connect instead of reconnecting on every request, failing closed", async () => {
+    await expect(isTokenRevoked("jti-a")).rejects.toBeInstanceOf(RevocationStatusUnavailableError);
     const first = tokenRevocationBackoffForTests();
     expect(first.failures).toBe(1);
     expect(first.downUntil).toBeGreaterThan(Date.now());
     const started = Date.now();
-    for (let index = 0; index < 20; index += 1) expect(await isTokenRevoked(`jti-${index}`)).toBe(false);
+    for (let index = 0; index < 20; index += 1) await expect(isTokenRevoked(`jti-${index}`)).rejects.toBeInstanceOf(RevocationStatusUnavailableError);
     expect(Date.now() - started).toBeLessThan(200);
     expect(tokenRevocationBackoffForTests().failures).toBe(1);
   });
@@ -78,7 +79,7 @@ describe("token revocation with Redis down (audit L2)", () => {
   });
 
   it("always tries the Redis write on revoke, reports it was not durable, and keeps it queued", async () => {
-    expect(await isTokenRevoked("jti-trigger-backoff")).toBe(false);
+    await expect(isTokenRevoked("jti-trigger-backoff")).rejects.toBeInstanceOf(RevocationStatusUnavailableError);
     expect(tokenRevocationBackoffForTests().downUntil).toBeGreaterThan(Date.now());
     // Even inside the read backoff window the write is attempted and reported as not durable.
     expect(await revokeToken("jti-queued-1", Date.now() + 60_000)).toBe(false);
