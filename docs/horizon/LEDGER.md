@@ -2,6 +2,18 @@
 
 Operation HORIZON (multi-asset expansion). Evidence labels as in [`docs/genesis/EXECUTION_LEDGER.md`](../genesis/EXECUTION_LEDGER.md). Diagnosis: [`DIAGNOSIS.md`](DIAGNOSIS.md). Nothing here enables new trading.
 
+## Checkpoint 8: 12 Nov 2026 (`2cc6627` deployed; OPERATION INTEGRITY audit remediation)
+
+Operator: "merge all to main and push live", then "Main green, deploy". Merged [#77](https://github.com/TheFridey/QUANT/pull/77) (F01 PCR-1 lifecycle fence, `e002bf7`), then the stack [#73](https://github.com/TheFridey/QUANT/pull/73) (F02 auth fails closed), [#74](https://github.com/TheFridey/QUANT/pull/74) (F05 restore helper retired, F12 drill probes), [#75](https://github.com/TheFridey/QUANT/pull/75) (F03/F06 legacy holdouts withheld, prior-trials floor) and [#76](https://github.com/TheFridey/QUANT/pull/76) (F07/F08 atomic dataset pin, warehouse identity). PR CI green on all five; `main` CI on `2cc6627` green (test, browser-e2e, build-packages). Ledger: [`docs/integrity/STATUS.md`](../integrity/STATUS.md). F01 touches protected paths and was approved by the operator in chat; `quant-safety-reviewer` APPROVE WITH NOTES.
+
+Pre-checks (production, read-only): 0 pending orders, 0 open positions (the F01 drain precondition); `20261102120000_order_position_lifecycle` not yet applied; `HistoricalDataset.instrumentKind` values COMMODITY 3, EQUITY_ETF 1, FX_PAIR 9, SOLANA_POOL 6, all mapped by F08.
+
+Deploy: fast-forward `eba979f` → `2cc6627`; lockfile unchanged. Backup `quant-20261112T135853Z.dump` (1.37 GB, 75 tables of data listed; **no restore drill was run on it**). Snapshot `/srv/quant/releases/eba979f-20261112T140210Z`. Migration `20261102120000_order_position_lifecycle` (five additive columns: `Order.positionLifecycleId`, `Order.positionBoughtQtyAtBooking`, `Order.allocationBoughtQtyAtBooking`, `Position.cumBoughtQty`, `StrategyAllocation.cumBoughtQty`) applied while the old build was running, before the restart. Prisma client regenerated, `pnpm build` with `.env` sourced (0 errors). The built output contains the new code (`cumBoughtQty` in the trading-engine store, `exitFence` in worker settle, `RevocationStatusUnavailableError` in the API, `pinDataset` in evolution). `quant-api`, `quant-worker` and `quant-web` restarted at 14:07:15 UTC.
+
+Smoke (observed): all four services active; health 200 `ok`; `/api/ready` 200; `/api/research/campaigns` 401 without a token; web 307; 10 cycles `COMPLETE` and none failed in the first minutes; 144 observations in 2 min; 0 error lines in the API, worker and web journals; `EngineControl` RUNNING, config hash unchanged (`5ff22766…`), limits unchanged (10% daily, 30% total); `EXECUTION_MODE=PAPER`, `LIVE_MONEY_ENABLED=false`. The worker logs `research campaign job disabled` and `genesis shadow disabled`.
+
+Behaviour changes to know: with Redis unreachable, authenticated API calls now return 503 and terminal sockets disconnect (F02, fail closed). `research-cli` and `intelligence-cli --record` no longer evaluate holdouts. Rollback: redeploy the snapshot and keep the new columns. Before redeploying this build after a rollback, cancel any pending PAPER SELLs (`docs/apex/pcr-1/ANALYSIS.md` v4).
+
 ## Checkpoint 7: 11 Nov 2026 (`eba979f` deployed; research campaigns, OPERATION EVIDENCE)
 
 Operator: "merge and push live". [#71](https://github.com/TheFridey/QUANT/pull/71) merged as `eba979f`; PR CI and main CI green (test, browser-e2e including the new campaign journey, build). Design, review outcome and open decisions: [`docs/evidence/ADR-0001-research-campaigns.md`](../evidence/ADR-0001-research-campaigns.md); handover: [`docs/evidence/HANDOVER.md`](../evidence/HANDOVER.md).

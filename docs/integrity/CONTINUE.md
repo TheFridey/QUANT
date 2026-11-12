@@ -13,11 +13,11 @@ Base: `origin/main` = `6eaac8e`. Branches are **stacked**, each on the previous,
 | `integrity/f03-research-holdouts` | F03, F06 (partial) | `1c9a9e5` |
 | `integrity/f07-f08-dataset-identity` | F07, F08 | see `git log` |
 
-Nothing is pushed, merged or deployed unless the PR links in STATUS.md say otherwise.
+All five PRs (#73–#77) are merged; `main` `2cc6627` was deployed on 12 Nov 2026 (`docs/horizon/LEDGER.md` checkpoint 8).
 
 ## Exact next action
 
-1. If not yet done: `git push -u origin` each branch above and open draft PRs, bottom-up (`f02` → `main`, `f05` → `f02`, …). Do not merge.
+1. Done: PRs merged and deployed.
 2. F03 remainder: reserve legacy-CLI trials durably before computation (reuse `reserveTrials`/`declareLegacyTrials` from `@odin/evolution/campaign`), or retire `research-cli`/`intelligence-cli --record` in favour of campaigns. Then the legacy "3,000" trial reconciliation procedure (needs operator input on what the number represents; do not add it to any total).
 3. F11 analytics: group `REALIZED_PNL` by economic exit (root of the remainder chain) before `performance.ts` counts trades; preserve cash/ledger/P&L totals.
 4. F09: keyset pagination over `(decisionTime, id)` in `packages/evolution/src/campaign/bridge.ts`, bounded per page, fixed cohort.

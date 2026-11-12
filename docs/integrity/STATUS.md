@@ -2,6 +2,8 @@
 
 Audit baseline: `main` at `6eaac8e` (docs-only merge over production code `eba979f`). Remediation started 12 Nov 2026 from `origin/main` = `6eaac8e` (unchanged since the audit).
 
+**Deployed 12 Nov 2026 as `2cc6627`** (F01, F02, F03/F06, F05, F07/F08, F12 parts); record in [`docs/horizon/LEDGER.md`](../horizon/LEDGER.md) checkpoint 8.
+
 PAPER only. Nothing here enables live money, changes `EXECUTION_MODE`, loosens risk limits, consumes production holdouts or deploys.
 
 Classifications: `FIXED` · `ALREADY_FIXED` · `PARTIAL` · `BLOCKED` · `NOT_A_DEFECT` · `OPEN` (not yet worked).
