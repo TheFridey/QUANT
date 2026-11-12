@@ -205,7 +205,7 @@ describe("prospective evidence", () => {
     // Signals are the even hours; a signal window blocks the next 4 hours, so every other signal counts.
     expect(e.signals).toBe(50);
     expect(e.effectiveSignals).toBe(25);
-    expect(e.observation).toEqual({ targetEffectiveSignals: 30, reached: false, judgedOn: "NOT_YET_JUDGED" });
+    expect(e.observation).toEqual({ targetEffectiveSignals: 30, reached: false, judgedOn: "NOT_YET_JUDGED", pendingOutcomesInSample: 0 });
     expect(e.sufficient).toBe(false);
     expect(e.missing.join(" ")).toMatch(/25 of the 30 independent signals declared at registration/);
     expect(e.costs).toEqual({ meanCostBpsApplied: 30, estimatedCostBps: 30 });
@@ -214,7 +214,7 @@ describe("prospective evidence", () => {
   it("is judged once, on the sample that ends at the declared length; later rows cannot change it", () => {
     const e = evaluate(rows(400));
     // The 30th independent signal is decided at hour 116 (signals count at hours 0, 4, 8, ...).
-    expect(e.observation).toEqual({ targetEffectiveSignals: 30, reached: true, judgedOn: "FIXED_SAMPLE" });
+    expect(e.observation).toEqual({ targetEffectiveSignals: 30, reached: true, judgedOn: "FIXED_SAMPLE", pendingOutcomesInSample: 0 });
     expect(e.effectiveSignals).toBe(30);
     expect(e.effectiveOutcomes).toBe(30);
     expect(e.resolved).toBe(117);

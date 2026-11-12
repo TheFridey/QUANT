@@ -22,7 +22,7 @@ Deploy: fast-forward `926bb42` → `eba979f`. One additive migration (`202611101
 
 Smoke (observed): health `ok` about 12 s after restart; `/api/ready` 200; five cycles `COMPLETE` at about 1.1 s each, 16 in the next five minutes; 168 observations in 2 min; 0 error lines in the API, worker and web journals; web 307; `/api/research/campaigns` and `/api/research/opportunities` 401 without a token; other tenants 200; `EngineControl` config hash unchanged (`5ff22766…`), limits unchanged (10% daily, 30% total), `EXECUTION_MODE=PAPER`, `LIVE_MONEY_ENABLED=false`. Migration probes: 8 tables, 16 triggers. Worker log: `research campaign job disabled` and `genesis shadow disabled`. `campaign-cli trials` on production: 2,170 (all from the earlier registry; nothing declared, no campaign run).
 
-Not done, not verified: no campaign has run on production data; the roughly 3,000 unrecorded HORIZON CLI trials are not declared in the ledger; the campaign pages were not opened in a logged-in browser on production; the authenticated responses of the new endpoints were not checked on production (no token used).
+Not done, not verified: no campaign has run on production data; the unrecorded pre-ledger HORIZON/ML CSV trials are not declared in the ledger (roughly 550, not 3,000: the 3,000 was a cumulative count including ~2,454 registry rows; corrected in Phase II, see `docs/integrity/F03-F06-RESEARCH-INTEGRITY.md`); the campaign pages were not opened in a logged-in browser on production; the authenticated responses of the new endpoints were not checked on production (no token used).
 
 ## Checkpoint 6: 10 Nov 2026 (`926bb42` deployed; stage timeouts live)
 

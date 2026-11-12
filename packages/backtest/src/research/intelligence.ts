@@ -5,6 +5,7 @@ import { performanceByRegime, REGIME_GATES, REGIME_HYPOTHESES, regimeGatedSpec, 
 import { simulate, type ResearchBar } from "./simulate.js";
 import { STRATEGY_LIBRARY } from "./strategies.js";
 import { DEFAULT_VALIDATION, validateStrategy, type ValidationReport } from "./validate.js";
+import { dsrPasses } from "./metrics.js";
 
 /**
  * SINGULARITY end-to-end study on one genuine dataset: regimes → regime-conditioned hypotheses through the
@@ -53,7 +54,7 @@ export function challenge(subject: string, r: ValidationReport, base?: Validatio
   if (r.pbo?.pbo === null || r.pbo === null) add("PBO not computable");
   else if (r.pbo.pbo > 0.5) add(`PBO ${r.pbo.pbo.toFixed(2)} > 0.5`);
   const dsr = r.dsrProgramme ?? r.dsr;
-  if (!dsr || dsr.dsr === null || dsr.dsr < 0.95) add(`DSR ${dsr?.dsr?.toFixed(3) ?? "n/a"} < 0.95 after ${dsr?.trials ?? 0} trials`);
+  if (!dsr || !dsrPasses(dsr.dsr, 0.95)) add(`DSR ${dsr?.dsr?.toFixed(3) ?? "n/a"} < 0.95 after ${dsr?.trials ?? 0} trials`);
   add("single instrument: generalisation across instruments not shown");
   if (base?.oos && r.oos.totalReturn <= base.oos.totalReturn && r.oos.maxDrawdown >= base.oos.maxDrawdown) add("regime gate improves neither net return nor drawdown versus the ungated strategy");
   return o;

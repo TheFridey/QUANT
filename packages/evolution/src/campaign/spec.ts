@@ -14,6 +14,7 @@ import {
   MARKET_CONFIGS,
   marketConfigHash,
   ML2_PROTOCOL_VERSION,
+  DSR_PROTOCOL_VERSION,
   type MarketId,
   type MarketResearchConfig,
 } from "@odin/backtest/research";
@@ -173,6 +174,8 @@ export function campaignVersions() {
     strategies: HORIZON_STRATEGIES_VERSION,
     marketConfig: MARKET_CONFIG_VERSION,
     ml2Protocol: ML2_PROTOCOL_VERSION,
+    // OPERATION INTEGRITY F04: the DSR methodology is part of every unit's identity; results keep the version they ran under.
+    dsrProtocol: DSR_PROTOCOL_VERSION,
     features: FEATURE_SET_VERSION,
     extraFeatures: EXTRA_FEATURES_VERSION,
     labels: LABELS_VERSION,

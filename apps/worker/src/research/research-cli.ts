@@ -2,7 +2,8 @@ import "../load-env.js";
 import { DEFAULT_VALIDATION, STRATEGY_LIBRARY, validateStrategy, type ResearchBar } from "@odin/backtest";
 import { PrismaClient } from "@odin/shared/db";
 import { costPerSide, PERIODS } from "./cost-basis.js";
-import { programmeTrialCount } from "./holdout-policy.js";
+import { closeStudy, openStudy, programmeTrials } from "@odin/evolution/campaign";
+import { EXPLORATORY_EVIDENCE_CLASS, studyCodeVersion, studyKey } from "./holdout-policy.js";
 import { recordValidation } from "./registry-writer.js";
 
 /**
@@ -19,8 +20,14 @@ import { recordValidation } from "./registry-writer.js";
  * holdout, and only then record the access, so a crash or a concurrent run could read final bars with no
  * durable consumption. Holdout evaluation is supported only through research campaigns, which commit the
  * holdout ledger before outcomes are read (`packages/evolution/src/campaign/holdout.ts`); the best verdict
- * here is INSUFFICIENT_EVIDENCE with `walkForwardPassed: true`. Trials are still recorded after evaluation, so a crash mid-run loses
- * that run's trial history from the programme count (see docs/integrity/STATUS.md F03).
+ * here is INSUFFICIENT_EVIDENCE with `walkForwardPassed: true`.
+ *
+ * Trial accounting (F03 remainder): the study is OPENED in the trial ledger before any strategy is evaluated, which
+ * freezes the programme count it is deflated by; each strategy's trials then count through its registry rows,
+ * committed before the next strategy runs; the study is CLOSED (0 extra trials, the registry holds them) before
+ * anything is printed. A crash leaves an unclosed study for reconciliation, and nothing was disclosed. A study key
+ * that was already closed is refused rather than recorded twice. This CLI is exploratory only (EXPLORATORY evidence
+ * class); research campaigns are the sole qualified-evidence path.
  */
 export const RESEARCH_CLI_HOLDOUT = "WITHHELD" as const;
 
@@ -49,12 +56,18 @@ async function main() {
     const find = (id: string) => STRATEGY_LIBRARY.find((s) => s.id === id)!;
     const controls = { buyAndHold: find("control_buy_and_hold"), random: find("control_random"), cash: find("control_cash") };
     const out: Array<Record<string, unknown>> = [];
+    const key = studyKey({ cli: "research-cli", datasetId, versionHash: dataset.versionHash, codeVersion: studyCodeVersion(), label: codeVersion, config, strategies: STRATEGY_LIBRARY.map((s) => `${s.id}@${s.version}`) });
+    const opened = await openStudy(prisma, { studyKey: key, actor: "research-cli", note: `research-cli ${datasetId} at ${codeVersion}` });
+    if (opened.status === "ALREADY_CLOSED") throw new Error(`REFUSED: study ${key} (same dataset content, code and config) was already recorded; a rerun would add no information and would duplicate registry rows`);
+    let runTrials = 0;
     for (const spec of STRATEGY_LIBRARY) {
-      const priorTrials = await programmeTrialCount(prisma);
+      // Frozen at OPEN plus this run's earlier strategies, but never below the live programme count (review M2).
+      const priorTrials = Math.max(opened.priorTrials + runTrials, (await programmeTrials(prisma)).total);
       // No cost basis here is point-in-time (present-day liquidity, or a static ETF spread), so every
       // candidate must survive double cost.
       const report = validateStrategy({ spec, bars, config, codeVersion, controls, holdoutWithheld: true, programmeTrialCount: priorTrials, costIsProxy: true });
       await recordValidation(prisma, { datasetId, codeVersion, config, report, costBasis: cost.basis });
+      runTrials += report.trialCount;
       out.push({
         strategy: spec.id,
         verdict: report.verdict,
@@ -72,7 +85,8 @@ async function main() {
         reasons: report.reasons.join("; "),
       });
     }
-    console.log(JSON.stringify({ holdout: `${RESEARCH_CLI_HOLDOUT}: evaluate holdouts through a research campaign`, datasetId, instrument: dataset.instrumentKey, interval: dataset.interval, bars: bars.length, costBpsPerSide: +cost.bps.toFixed(2), costBasis: cost.basis, results: out }, null, 1));
+    const closed = await closeStudy(prisma, { studyKey: key, trials: 0, actor: "research-cli", note: `research-cli ${datasetId}: ${runTrials} trials counted via ResearchTrial registry rows`, registryTrials: runTrials });
+    console.log(JSON.stringify({ evidenceClass: EXPLORATORY_EVIDENCE_CLASS, trialAccounting: { studyKey: key, opened: opened.status, priorTrialsFrozen: opened.priorTrials, runTrials, concurrentTrials: closed.concurrentTrials, priorStale: closed.concurrentTrials > 0 }, holdout: `${RESEARCH_CLI_HOLDOUT}: evaluate holdouts through a research campaign`, datasetId, instrument: dataset.instrumentKey, interval: dataset.interval, bars: bars.length, costBpsPerSide: +cost.bps.toFixed(2), costBasis: cost.basis, results: out }, null, 1));
   } finally {
     await prisma.$disconnect();
   }

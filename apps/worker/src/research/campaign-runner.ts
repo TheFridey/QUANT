@@ -28,6 +28,7 @@ import {
 } from "@odin/evolution/campaign";
 import type { PrismaClient } from "@odin/shared/db";
 import { DatasetLoadError, loadRawBars } from "./campaign-data.js";
+import { EXIT_RSS_LIMIT, EXIT_SUPERVISOR_GONE, rssLimitForHeap, SUPERVISOR_PIPE_ENV } from "./process-guards.js";
 
 /**
  * Campaign supervisor. It claims units under a database lease, loads and preflights the declared data, reserves
@@ -46,14 +47,25 @@ export class EvaluatorFailure extends Error {
 /** Runs one job. `signal` aborts it (cancellation or a lost lease). */
 export type Evaluator = (job: UnitJob, limits: EvaluatorLimits, signal: AbortSignal) => Promise<EvaluatorResult>;
 
-/** The supported evaluator: a child process with no database, no network, a heap limit and a kill timer. */
-export const childProcessEvaluator: Evaluator = (job, limits, signal) =>
-  new Promise<EvaluatorResult>((resolvePromise, reject) => {
+/**
+ * The supported evaluator: a child process with no database, no network, a V8 heap limit, a sampled RSS watchdog,
+ * a kill timer, and a stdin pipe whose closing (this supervisor exiting or being killed) stops it (F10).
+ * `evaluatorPath` is injectable so the process contract can be tested with real children.
+ */
+export function makeChildProcessEvaluator(evaluatorPath: string, execArgv: string[] = []): Evaluator {
+  return (job, limits, signal) => runEvaluatorChild(evaluatorPath, execArgv, job, limits, signal);
+}
+
+function runEvaluatorChild(evaluatorPath: string, execArgv: string[], job: UnitJob, limits: EvaluatorLimits, signal: AbortSignal): Promise<EvaluatorResult> {
+  return new Promise<EvaluatorResult>((resolvePromise, reject) => {
     const dir = mkdtempSync(join(tmpdir(), "odin-campaign-"));
     const jobPath = join(dir, "job.json");
     const outPath = join(dir, "out.json");
     writeFileSync(jobPath, JSON.stringify(job));
-    const child = spawn(process.execPath, [`--max-old-space-size=${limits.maxMemoryMb}`, resolve(__dirname, "campaign-evaluator.js"), jobPath, outPath, String(limits.maxRuntimeMs), String(limits.maxMemoryMb)], { stdio: ["ignore", "ignore", "pipe"], env: { NODE_ENV: process.env.NODE_ENV ?? "production", PATH: process.env.PATH ?? "" } });
+    const rssMb = rssLimitForHeap(limits.maxMemoryMb);
+    const child = spawn(process.execPath, [...execArgv, `--max-old-space-size=${limits.maxMemoryMb}`, evaluatorPath, jobPath, outPath, String(limits.maxRuntimeMs), String(limits.maxMemoryMb), String(rssMb)], { stdio: ["pipe", "ignore", "pipe"], env: { NODE_ENV: process.env.NODE_ENV ?? "production", PATH: process.env.PATH ?? "", [SUPERVISOR_PIPE_ENV]: "1" } });
+    // Held open for the child's lifetime: it closes only when this process exits, which stops the child.
+    child.stdin?.on("error", () => undefined);
     try {
       // Research yields the CPU to everything else on the host.
       if (child.pid !== undefined) setPriority(child.pid, constants.priority.PRIORITY_LOW);
@@ -87,7 +99,9 @@ export const childProcessEvaluator: Evaluator = (job, limits, signal) =>
     child.on("exit", (code, sig) =>
       done(() => {
         if (why) return reject(why);
-        if (code !== 0) return reject(new EvaluatorFailure("CRASHED", `evaluator exited with ${sig ?? `code ${code}`} (memory limit ${limits.maxMemoryMb} MB); ${stderr.trim().split("\n").slice(-3).join(" | ")}`));
+        if (code === EXIT_RSS_LIMIT) return reject(new EvaluatorFailure("CRASHED", `evaluator stopped by the total-memory watchdog (RSS above ${rssMb} MB; heap limit ${limits.maxMemoryMb} MB)`));
+        if (code === EXIT_SUPERVISOR_GONE) return reject(new EvaluatorFailure("KILLED", "evaluator lost its supervisor pipe"));
+        if (code !== 0) return reject(new EvaluatorFailure("CRASHED", `evaluator exited with ${sig ?? `code ${code}`} (V8 heap limit ${limits.maxMemoryMb} MB, RSS watchdog ${rssMb} MB); ${stderr.trim().split("\n").slice(-3).join(" | ")}`));
         let out: { ok: boolean; evaluation?: UnitEvaluation; error?: string; runtimeMs: number; peakRssMb: number };
         try {
           out = JSON.parse(readFileSync(outPath, "utf8")) as typeof out;
@@ -99,6 +113,9 @@ export const childProcessEvaluator: Evaluator = (job, limits, signal) =>
       }),
     );
   });
+}
+
+export const childProcessEvaluator: Evaluator = makeChildProcessEvaluator(resolve(__dirname, "campaign-evaluator.js"));
 
 /** The git commit of the running code: GIT_COMMIT, else HEAD of a clean checkout. Null when it cannot be pinned. */
 export function currentCodeVersion(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): string | null {

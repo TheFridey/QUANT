@@ -1,36 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { holdoutAvailable } from "./holdout-policy.js";
 
-type Access = { strategyId: string; datasetId: string };
-
-function fake(datasets: Array<{ id: string; instrumentKey: string; interval: string }>, accesses: Access[]) {
-  return {
-    historicalDataset: {
-      findMany: async ({ where }: { where: { instrumentKey: string; interval: string } }) => datasets.filter((d) => d.instrumentKey === where.instrumentKey && d.interval === where.interval).map((d) => ({ id: d.id })),
-    },
-    researchHoldoutAccess: {
-      findFirst: async ({ where }: { where: { strategyId: string; datasetId: { in: string[] } } }) => accesses.find((a) => a.strategyId === where.strategyId && where.datasetId.in.includes(a.datasetId)) ?? null,
-    },
-  } as unknown as Parameters<typeof holdoutAvailable>[0];
-}
-
-describe("holdout policy (SINGULARITY-00)", () => {
-  const datasets = [
-    { id: "sol-v1", instrumentKey: "SOLPOOL", interval: "1h" },
-    { id: "sol-v2", instrumentKey: "SOLPOOL", interval: "1h" },
-    { id: "sol-5m", instrumentKey: "SOLPOOL", interval: "5m" },
-  ];
-
-  it("blocks a version bump or a re-imported dataset from re-reading the same instrument's holdout", async () => {
-    const prisma = fake(datasets, [{ strategyId: "tsmom", datasetId: "sol-v1" }]);
-    expect(await holdoutAvailable(prisma, { strategyId: "tsmom", instrumentKey: "SOLPOOL", interval: "1h" })).toBe(false);
+describe("legacy holdout check is retired (F06)", () => {
+  it("never grants a holdout, for any strategy, alias, interval or fresh instrument", async () => {
+    const touched: string[] = [];
+    const prisma = new Proxy({}, { get: (_t, p) => (touched.push(String(p)), () => { throw new Error("must not query"); }) });
+    for (const [strategyId, instrumentKey, interval] of [["tsmom", "SOLPOOL", "1h"], ["never_seen", "EUR_USD", "1h"], ["never_seen", "EUR/USD", "4h"], ["x", "BRAND_NEW", "1d"]] as const) {
+      expect(await holdoutAvailable(prisma, { strategyId, instrumentKey, interval })).toBe(false);
+    }
+    expect(touched).toEqual([]);
   });
+});
 
-  it("leaves other strategies, intervals and instruments untouched", async () => {
-    const prisma = fake(datasets, [{ strategyId: "tsmom", datasetId: "sol-v1" }]);
-    expect(await holdoutAvailable(prisma, { strategyId: "ma_trend", instrumentKey: "SOLPOOL", interval: "1h" })).toBe(true);
-    expect(await holdoutAvailable(prisma, { strategyId: "tsmom", instrumentKey: "SOLPOOL", interval: "5m" })).toBe(true);
-    expect(await holdoutAvailable(prisma, { strategyId: "tsmom", instrumentKey: "OTHER", interval: "1h" })).toBe(true);
+describe("study key (F03)", async () => {
+  const { studyKey } = await import("./holdout-policy.js");
+  it("is stable under key order and distinguishes any identity change", () => {
+    const a = studyKey({ cli: "ml-cli", datasetId: "d1", versionHash: "h", args: { horizon: 8, seed: 1 } });
+    expect(studyKey({ args: { seed: 1, horizon: 8 }, versionHash: "h", datasetId: "d1", cli: "ml-cli" })).toBe(a);
+    expect(a).toMatch(/^[a-f0-9]{64}$/);
+    expect(studyKey({ cli: "ml-cli", datasetId: "d1", versionHash: "h2", args: { horizon: 8, seed: 1 } })).not.toBe(a);
+    expect(studyKey({ cli: "ml-cli", datasetId: "d1", versionHash: "h", args: { horizon: 8, seed: 2 } })).not.toBe(a);
   });
 });
 
@@ -47,11 +36,35 @@ describe("OPERATION INTEGRITY F03/F06: legacy CLI holdout and trial-count policy
     expect(resolvePriorTrials(5_000, 120)).toEqual({ priorTrials: 5_000, source: "SUPPLIED_ABOVE_LEDGER", ignoredSupplied: null });
   });
 
-  it("warehouse-mode HORIZON and ML CLIs resolve the count through the floor, not `??`", () => {
+  it("warehouse-mode HORIZON and ML CLIs floor --prior-trials at the count frozen when the study opened", () => {
     for (const file of ["horizon-cli.ts", "ml-cli.ts"]) {
       const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
-      expect(source).toContain("resolvePriorTrials(args.priorTrials, await programmeTrialCount(prisma))");
-      expect(source).not.toContain("args.priorTrials ?? (await programmeTrialCount(prisma))");
+      expect(source).toContain("resolvePriorTrials(args.priorTrials, opened.priorTrials)");
+      expect(source).not.toMatch(/args\.priorTrials \?\? \(?await programmeTrialCount/);
+    }
+  });
+
+  it("every warehouse CLI opens its study before computing and closes it before printing (F03)", () => {
+    const order: Record<string, [string, string, string]> = {
+      "horizon-cli.ts": ["openStudy(prisma", "runHorizonStudy({", "closeStudy(prisma"],
+      "ml-cli.ts": ["openStudy(prisma", "runMlPipeline({", "closeStudy(prisma"],
+      "research-cli.ts": ["openStudy(prisma", "validateStrategy({", "closeStudy(prisma"],
+      "intelligence-cli.ts": ["openStudy(prisma", "const study = runIntelligenceStudy({", "closeStudy(prisma"],
+    };
+    for (const [file, [open, compute, close]] of Object.entries(order)) {
+      const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
+      // The database path: the last print, and the computation preceding it.
+      const lastPrint = source.lastIndexOf("console.log(");
+      const closeAt = source.lastIndexOf(close, lastPrint);
+      const computeAt = source.lastIndexOf(compute, closeAt);
+      const openAt = source.lastIndexOf(open, computeAt);
+      expect(openAt, file).toBeGreaterThan(-1);
+      expect(computeAt, file).toBeGreaterThan(openAt);
+      expect(closeAt, file).toBeGreaterThan(computeAt);
+      // Nothing is printed between opening and closing.
+      expect(source.slice(openAt, closeAt), file).not.toContain("console.log(");
+      expect(source, file).toContain("evidenceClass: EXPLORATORY_EVIDENCE_CLASS");
+      expect(source, file).not.toContain("declareLegacyTrials(");
     }
   });
 

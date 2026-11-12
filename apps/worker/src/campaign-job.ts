@@ -2,9 +2,10 @@ import { spawn } from "node:child_process";
 import { constants, setPriority } from "node:os";
 import { resolve } from "node:path";
 import { InjectQueue, Processor, WorkerHost } from "@nestjs/bullmq";
-import { Injectable, OnModuleInit } from "@nestjs/common";
+import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { Queue } from "bullmq";
 import { workerLog } from "./logger.js";
+import { SUPERVISOR_PIPE_ENV } from "./research/process-guards.js";
 
 /**
  * OPERATION EVIDENCE campaign job. Disabled by default: nothing is scheduled, and the processor returns at
@@ -57,13 +58,17 @@ export function campaignMaxUnits(env: NodeJS.ProcessEnv = process.env): number {
 export type TickResult = { status: "DISABLED" } | { status: "RAN"; exitCode: number | null; timedOut: boolean; output: string };
 
 /** Starts the campaign CLI as a separate, low-priority process and resolves when it exits. */
-export function runCampaignTick(env: NodeJS.ProcessEnv = process.env, options: { cliPath?: string; ceilingMs?: number } = {}): Promise<TickResult> {
+/** `signal` cancels the tick (for example on worker shutdown): the CLI is killed and, through its pipe, its evaluator. */
+export function runCampaignTick(env: NodeJS.ProcessEnv = process.env, options: { cliPath?: string; ceilingMs?: number; execArgv?: string[]; signal?: AbortSignal } = {}): Promise<TickResult> {
   if (!campaignWorkerEnabled(env)) return Promise.resolve({ status: "DISABLED" });
   const cli = options.cliPath ?? resolve(__dirname, "research/campaign-cli.js");
   return new Promise((done) => {
     const units = campaignMaxUnits(env);
-    const childEnv = Object.fromEntries(CLI_ENV_KEYS.filter((k) => env[k] !== undefined).map((k) => [k, env[k]]));
-    const child = spawn(process.execPath, [cli, "work-next", "--max-units", String(units)], { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
+    const childEnv = { ...Object.fromEntries(CLI_ENV_KEYS.filter((k) => env[k] !== undefined).map((k) => [k, env[k]])), RESEARCH_CAMPAIGN_REQUIRE_OS_ISOLATION: env.RESEARCH_CAMPAIGN_REQUIRE_OS_ISOLATION, [SUPERVISOR_PIPE_ENV]: "1" };
+    // F10: stdin is a pipe held open for the child's lifetime. If this worker dies, the OS closes it and the CLI
+    // (and through the same mechanism its evaluator) stops, instead of running on unsupervised.
+    const child = spawn(process.execPath, [...(options.execArgv ?? []), cli, "work-next", "--max-units", String(units)], { stdio: ["pipe", "pipe", "pipe"], env: childEnv });
+    child.stdin.on("error", () => undefined);
     lowerPriority(child.pid);
     let output = "";
     let timedOut = false;
@@ -76,12 +81,17 @@ export function runCampaignTick(env: NodeJS.ProcessEnv = process.env, options: {
       timedOut = true;
       child.kill("SIGKILL");
     }, options.ceilingMs ?? units * UNIT_CEILING_MS + TICK_MARGIN_MS);
+    const onAbort = () => child.kill("SIGKILL");
+    if (options.signal?.aborted) onAbort();
+    else options.signal?.addEventListener("abort", onAbort, { once: true });
     child.on("error", (error) => {
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       done({ status: "RAN", exitCode: null, timedOut, output: error.message });
     });
     child.on("exit", (code) => {
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       done({ status: "RAN", exitCode: code, timedOut, output });
     });
   });
@@ -105,9 +115,16 @@ export class ResearchCampaignScheduler implements OnModuleInit {
 }
 
 @Processor(RESEARCH_CAMPAIGN_QUEUE, { concurrency: 1 })
-export class ResearchCampaignProcessor extends WorkerHost {
+export class ResearchCampaignProcessor extends WorkerHost implements OnModuleDestroy {
+  private readonly shutdown = new AbortController();
+
+  /** Graceful worker shutdown stops the running tick (and through its pipe the CLI's evaluator). */
+  onModuleDestroy(): void {
+    this.shutdown.abort();
+  }
+
   async process(): Promise<void> {
-    const result = await runCampaignTick();
+    const result = await runCampaignTick(process.env, { signal: this.shutdown.signal });
     if (result.status !== "RAN") return;
     const log = result.exitCode === 0 ? workerLog.info.bind(workerLog) : workerLog.warn.bind(workerLog);
     log({ exitCode: result.exitCode, timedOut: result.timedOut, output: result.output.slice(-1500) }, "research campaign tick");

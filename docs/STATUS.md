@@ -16,6 +16,17 @@ Live money is disabled (`packages/shared/src/execution-gate.ts`), and `EXECUTION
 | `PARTIAL` | Part done, with the rest named |
 | `DEFERRED` | Not done; the reason is given |
 
+## OPERATION INTEGRITY (12 Nov 2026)
+
+Finding ledger, evidence and release state: [`integrity/STATUS.md`](integrity/STATUS.md). In short:
+
+| Layer | State |
+| --- | --- |
+| Production (VPS) | `2cc6627` (Phase I: F01, F02, F03/F06 partial, F05, F07, F08, F12 parts), deployed 12 Nov 2026 |
+| `main` | `33c6a4a` (docs only over `2cc6627`) |
+| Phase II branch | `integrity/phase-ii`: F03/F06 trial accounting, F04 DSR `dsr-2.0.0`, F09 complete cohorts, F10 process guarantees, F11 economic-trade analytics, F12 restore-drill fix. **Not merged, not deployed.** |
+| Not done | F11 execution-model realism (protected paths, needs approval); legacy pre-ledger trial declaration (operator input); OS-level research isolation on the VPS (operator) |
+
 ## Audit remediation (30 Oct 2026 audit, baseline `df09deb`)
 
 Merged as PRs #10 (A), #11 (B), #12 (C), #13 (D) and #14 (E). Workstream F is on `refactor/cycle-plan`. The CI fix for the e2e race is PR #15.

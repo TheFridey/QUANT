@@ -117,14 +117,19 @@ export function performanceStats(sim: Pick<SimResult, "barReturns" | "trades" | 
 
 /**
  * Probabilistic Sharpe Ratio: P(true per-bar Sharpe > benchmark) given n returns with skew γ3 and
- * (non-excess) kurtosis γ4. Null when the variance term is not positive or the sample is too small.
+ * (non-excess) kurtosis γ4. Null when any input or the result is not finite, the sample is too small, the
+ * moments are impossible (γ4 < 1 + γ3²), or the variance term is not positive. Never NaN: a NaN compared with
+ * a gate threshold (`NaN < 0.95` is false) would pass the gate.
  */
 export function probabilisticSharpe(input: { sharpe: number; benchmark: number; n: number; skew: number; kurtosis: number }): number | null {
   const { sharpe: sr, benchmark, n, skew, kurtosis: k } = input;
+  if (![sr, benchmark, n, skew, k].every(Number.isFinite)) return null;
   if (n < MIN_BARS) return null;
+  if (k < 1 + skew * skew - 1e-9) return null;
   const denom = 1 - skew * sr + ((k - 1) / 4) * sr * sr;
   if (!(denom > 0)) return null;
-  return normalCdf(((sr - benchmark) * Math.sqrt(n - 1)) / Math.sqrt(denom));
+  const p = normalCdf(((sr - benchmark) * Math.sqrt(n - 1)) / Math.sqrt(denom));
+  return Number.isFinite(p) ? p : null;
 }
 
 /** Expected maximum per-bar Sharpe across N independent trials whose Sharpe estimates have variance `v`. */
@@ -134,17 +139,83 @@ export function expectedMaxSharpe(trials: number, variance: number): number {
 }
 
 /**
- * Deflated Sharpe Ratio: PSR against the Sharpe expected from the best of `trialSharpes.length` trials.
- * `trialSharpes` are per-bar Sharpes of every configuration tried, failures included. `trialCount`, when
- * larger, replaces the number of trials (programme-wide selection: every trial ever run, not only this run's),
- * keeping this run's dispersion. It can only raise the benchmark.
+ * OPERATION INTEGRITY F04: DSR protocol identity. Results stored without `protocol` were produced by the
+ * original implementation ("dsr-1"), in which zero cross-trial dispersion gave a zero benchmark whatever the
+ * trial count. They keep that identity and are not recomputed (docs/integrity/F04-STATISTICAL-REVIEW.md).
  */
-export function deflatedSharpe(input: { sharpe: number; n: number; skew: number; kurtosis: number; trialSharpes: number[]; trialCount?: number }): { dsr: number | null; benchmark: number; trials: number } {
+export const DSR_PROTOCOL_VERSION = "dsr-2.0.0" as const;
+/** Trial counts above this make 1 − 1/N indistinguishable from 1 in floating point; refused, not clamped. */
+export const DSR_MAX_TRIALS = 1e15;
+
+export type DsrReason =
+  | "DSR_NONFINITE_INPUT"
+  | "DSR_SAMPLE_TOO_SMALL"
+  | "DSR_INVALID_MOMENTS"
+  | "DSR_VARIANCE_NONPOSITIVE"
+  | "DSR_INVALID_TRIAL_COUNT"
+  | "DSR_DISPERSION_UNESTIMABLE"
+  | "DSR_NONFINITE_OUTPUT";
+
+export type DeflatedSharpe = {
+  dsr: number | null;
+  /** Expected maximum Sharpe under the null; null when the DSR is not computable. */
+  benchmark: number | null;
+  trials: number;
+  /** Variance of the trial Sharpes actually used, and where it came from. */
+  variance: number | null;
+  varianceSource: "CROSS_TRIAL" | "SAMPLING_FLOOR" | "NONE" | null;
+  reason: DsrReason | null;
+  protocol: typeof DSR_PROTOCOL_VERSION;
+};
+
+/**
+ * Deflated Sharpe Ratio (protocol dsr-2.0.0): PSR against the Sharpe expected from the best of N trials.
+ *
+ *  - N = max(finite trial Sharpes, `trialCount`): programme-wide selection counts every trial ever run. It is
+ *    used in full; no effective-trials reduction is applied (no reliable estimate of correlation exists for a
+ *    handful of learners, and the full N with the floor below is an upper bound on the expected maximum of
+ *    correlated trials with equal marginal variance, by Slepian's inequality).
+ *  - N ≤ 1: no selection happened; DSR = PSR against 0.
+ *  - N ≥ 2: the dispersion of the trial Sharpes must be estimable from at least two finite trial Sharpes, else
+ *    the result is insufficient (failures silently dropped would make N and V unverifiable).
+ *  - Variance V = max(cross-trial variance, sampling floor), the floor being the variance of the tested Sharpe
+ *    estimator under the null, max(1, 1 − γ3·SR + (γ4 − 1)/4·SR²) / (n − 1) (Mertens 2002; Bailey & López de
+ *    Prado 2012), with the tested Sharpe's own n. The cross-trial variance of ESTIMATED Sharpes already contains
+ *    this noise, so the maximum (not the sum) is used: no double counting. Identical or highly correlated trials
+ *    therefore no longer collapse the benchmark to zero.
+ *  - Any invalid input returns dsr null with an explicit reason. Every consumer treats null as failing its gate.
+ */
+export function deflatedSharpe(input: { sharpe: number; n: number; skew: number; kurtosis: number; trialSharpes: number[]; trialCount?: number }): DeflatedSharpe {
+  const refuse = (reason: DsrReason, trials = 0): DeflatedSharpe => ({ dsr: null, benchmark: null, trials, variance: null, varianceSource: null, reason, protocol: DSR_PROTOCOL_VERSION });
+  const { sharpe: sr, n, skew, kurtosis: k } = input;
+  if (![sr, n, skew, k].every(Number.isFinite)) return refuse("DSR_NONFINITE_INPUT");
+  if (input.trialCount !== undefined && !(Number.isFinite(input.trialCount) && input.trialCount >= 0)) return refuse("DSR_INVALID_TRIAL_COUNT");
   const finite = input.trialSharpes.filter((x) => Number.isFinite(x));
-  const v = finite.length >= 2 ? (stdev(finite) as number) ** 2 : 0;
-  const trials = Math.max(finite.length, Math.floor(input.trialCount ?? 0));
-  const benchmark = expectedMaxSharpe(trials, v);
-  return { dsr: probabilisticSharpe({ sharpe: input.sharpe, benchmark, n: input.n, skew: input.skew, kurtosis: input.kurtosis }), benchmark, trials };
+  const trials = Math.max(1, finite.length, Math.floor(input.trialCount ?? 0));
+  if (trials > DSR_MAX_TRIALS) return refuse("DSR_INVALID_TRIAL_COUNT", trials);
+  if (n < MIN_BARS) return refuse("DSR_SAMPLE_TOO_SMALL", trials);
+  if (k < 1 + skew * skew - 1e-9) return refuse("DSR_INVALID_MOMENTS", trials);
+  const denom = 1 - skew * sr + ((k - 1) / 4) * sr * sr;
+  if (!(denom > 0)) return refuse("DSR_VARIANCE_NONPOSITIVE", trials);
+  let variance = 0;
+  let varianceSource: DeflatedSharpe["varianceSource"] = "NONE";
+  if (trials >= 2) {
+    if (finite.length < 2) return refuse("DSR_DISPERSION_UNESTIMABLE", trials);
+    const cross = (stdev(finite) as number) ** 2;
+    const floor = Math.max(1, denom) / (n - 1);
+    variance = Number.isFinite(cross) && cross > floor ? cross : floor;
+    varianceSource = variance === floor ? "SAMPLING_FLOOR" : "CROSS_TRIAL";
+  }
+  const benchmark = expectedMaxSharpe(trials, variance);
+  if (!Number.isFinite(benchmark)) return refuse("DSR_NONFINITE_OUTPUT", trials);
+  const dsr = probabilisticSharpe({ sharpe: sr, benchmark, n, skew, kurtosis: k });
+  if (dsr === null) return refuse("DSR_NONFINITE_OUTPUT", trials);
+  return { dsr, benchmark, trials, variance, varianceSource, reason: null, protocol: DSR_PROTOCOL_VERSION };
+}
+
+/** Gate helper: true only for a finite DSR at or above the threshold. Null, NaN and undefined all fail. */
+export function dsrPasses(dsr: number | null | undefined, threshold: number): boolean {
+  return typeof dsr === "number" && Number.isFinite(dsr) && dsr >= threshold;
 }
 
 function combinations(n: number, k: number): number[][] {

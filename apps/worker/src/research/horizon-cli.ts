@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { excludeWeekendStubBars, inferBarMs, MARKET_CONFIGS, runHorizonStudy, type MarketResearchConfig, type ResearchBar } from "@odin/backtest";
 import { INTERVAL_MS, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
-import { declareLegacyTrials } from "@odin/evolution/campaign";
-import { programmeTrialCount, resolvePriorTrials } from "./holdout-policy.js";
+import { closeStudy, openStudy } from "@odin/evolution/campaign";
+import { EXPLORATORY_EVIDENCE_CLASS, resolvePriorTrials, studyCodeVersion, studyKey } from "./holdout-policy.js";
 import { HORIZON_CLI_USAGE, parseHorizonArgs } from "./horizon-args.js";
 import { parseBarsCsv } from "./ml-args.js";
 
@@ -54,6 +54,7 @@ async function main() {
   let priorTrials: number;
   let source: Record<string, unknown>;
   let tickVolumes: Array<number | null> | undefined;
+  let study: { key: string; status: string; priorTrials: number } | null = null;
   if (args.csvPath) {
     const text = readFileSync(args.csvPath, "utf8");
     const parsed = parseBarsCsv(text);
@@ -85,8 +86,12 @@ async function main() {
       barMs = INTERVAL_MS[dataset.interval as HistoryInterval] ?? inferBarMs(bars);
       instrument = args.instrument ?? dataset.instrumentKey;
       datasetKey = `${dataset.instrumentKey}|${dataset.interval}`;
-      // F06: a supplied --prior-trials can raise, never lower, the durable programme count.
-      priorTrials = resolvePriorTrials(args.priorTrials, await programmeTrialCount(prisma)).priorTrials;
+      // F03: open the study durably, under the trial-ledger lock, before computing anything. Its programme count is
+      // frozen there, so a retry of the same study cannot drift. F06: --prior-trials can raise, never lower, it.
+      const key = studyKey({ cli: "horizon-cli", datasetId: dataset.id, versionHash: dataset.versionHash, codeVersion: studyCodeVersion(), args });
+      const opened = await openStudy(prisma, { studyKey: key, actor: "horizon-cli", note: `horizon-cli ${dataset.id} ${args.market} at ${process.env.GIT_COMMIT ?? "unknown"}` });
+      study = { key, status: opened.status, priorTrials: opened.priorTrials };
+      priorTrials = resolvePriorTrials(args.priorTrials, opened.priorTrials).priorTrials;
       source = { kind: "WAREHOUSE", datasetId: dataset.id, instrument: dataset.instrumentKey, instrumentKind: dataset.instrumentKind, interval: dataset.interval, versionHash: dataset.versionHash, bars: bars.length };
     } finally {
       await prisma.$disconnect();
@@ -112,14 +117,14 @@ async function main() {
     validation: { ...(args.folds !== null ? { folds: args.folds } : {}), ...(args.seed !== null ? { seed: args.seed } : {}) },
     strategies: args.strategies ?? undefined,
   });
-  // Every trial this study ran is a look at the data, so it joins the programme count (warehouse mode: the
-  // database is there). The study itself is still not stored: use a campaign for evidence that must be kept.
-  let trialsRecorded: number | string = "NOT_RECORDED: CSV mode has no database; pass the true --prior-trials next time, or use a campaign";
-  if (warehouse && report.programme.runTrials > 0) {
+  // Every trial this study ran is a look at the data, so it joins the programme count BEFORE anything is printed
+  // (F03: close before disclose). If the close cannot be committed this throws and no result is shown.
+  let trialsRecorded: Record<string, unknown> | string = "NOT_RECORDED: CSV mode has no database; pass the true --prior-trials next time, or use a campaign";
+  if (warehouse && study) {
     const prisma = new PrismaClient();
     try {
-      await declareLegacyTrials(prisma, { trials: report.programme.runTrials, actor: "horizon-cli", note: `horizon-cli ${args.datasetId} ${args.market} at ${process.env.GIT_COMMIT ?? "unknown"}: ${report.verdict}` });
-      trialsRecorded = report.programme.runTrials;
+      const closed = await closeStudy(prisma, { studyKey: study.key, trials: report.programme.runTrials, actor: "horizon-cli", note: `horizon-cli ${args.datasetId} ${args.market}: ${report.verdict}` });
+      trialsRecorded = { studyKey: study.key, opened: study.status, closed: closed.status, trials: closed.trials, priorTrialsFrozen: study.priorTrials, concurrentTrials: closed.concurrentTrials, priorStale: closed.concurrentTrials > 0 };
     } finally {
       await prisma.$disconnect();
     }
@@ -130,6 +135,7 @@ async function main() {
       {
         mode: warehouse ? "STUDY_NOT_STORED_TRIALS_COUNTED" : "READ_ONLY",
         evidence: "RESEARCH_ONLY",
+        evidenceClass: EXPLORATORY_EVIDENCE_CLASS,
         source,
         trialsRecorded,
         report,

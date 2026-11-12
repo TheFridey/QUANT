@@ -3,7 +3,8 @@ import { inferBarMs, ML_PROTOCOL_VERSION, runIntelligenceStudy, type Intelligenc
 import { GeckoTerminalPoolSource, INTERVAL_MS, normaliseBars, type HistoryInterval, type RawBar } from "@odin/market-data";
 import { Prisma, PrismaClient } from "@odin/shared/db";
 import { costPerSide, PERIODS } from "./cost-basis.js";
-import { programmeTrialCount } from "./holdout-policy.js";
+import { closeStudy, openStudy } from "@odin/evolution/campaign";
+import { EXPLORATORY_EVIDENCE_CLASS, studyCodeVersion, studyKey } from "./holdout-policy.js";
 import { recordValidation } from "./registry-writer.js";
 
 /**
@@ -109,7 +110,8 @@ async function offline(args: string[], codeVersion: string) {
   const cost = await costPerSide(noObservations, { instrumentKind: "DEX_POOL", instrumentKey: pool, sourceId: "geckoterminal" });
   const { bars, provenance } = await fetchGecko(pool, interval as HistoryInterval, days);
   const study = runIntelligenceStudy({ bars, barMs: INTERVAL_MS[interval as HistoryInterval], costBpsPerSide: cost.bps, periodsPerYear: PERIODS[interval]?.crypto ?? 8760, codeVersion, costIsProxy: true });
-  console.log(JSON.stringify({ mode: "OFFLINE_DRY_RUN", provenance, costBpsPerSide: +cost.bps.toFixed(2), costBasis: cost.basis, study: compact(study) }, null, 1));
+  // No database: these trials cannot join the programme count and no programme DSR is computed. Exploration only.
+  console.log(JSON.stringify({ mode: "OFFLINE_DRY_RUN", evidenceClass: EXPLORATORY_EVIDENCE_CLASS, trialAccounting: "NOT_RECORDED: offline mode has no database; not usable as evidence", provenance, costBpsPerSide: +cost.bps.toFixed(2), costBasis: cost.basis, study: compact(study) }, null, 1));
 }
 
 async function main() {
@@ -127,6 +129,11 @@ async function main() {
     const periods = PERIODS[dataset.interval];
     if (!periods) throw new Error(`no annualisation for interval ${dataset.interval}`);
     const cost = await costPerSide(prisma, dataset);
+    // F03: open the study durably before computing (freezes the programme count it is deflated by); close it with
+    // every trial not already in the registry before anything is printed. Dry runs used to count nothing at all.
+    const key = studyKey({ cli: "intelligence-cli", datasetId, versionHash: dataset.versionHash, codeVersion: studyCodeVersion(), label: codeVersion, record });
+    const opened = await openStudy(prisma, { studyKey: key, actor: "intelligence-cli", note: `intelligence-cli ${datasetId} at ${codeVersion}${record ? " --record" : ""}` });
+    if (record && opened.status === "ALREADY_CLOSED") throw new Error(`REFUSED: study ${key} was already recorded; a rerun would duplicate registry rows`);
     const study = runIntelligenceStudy({
       bars,
       barMs: INTERVAL_MS[dataset.interval as HistoryInterval] ?? inferBarMs(bars),
@@ -134,7 +141,7 @@ async function main() {
       periodsPerYear: dataset.instrumentKind === "EQUITY_ETF" ? periods.equity : periods.crypto,
       calendar: dataset.instrumentKind === "EQUITY_ETF" ? "WEEKDAYS" : "CONTINUOUS",
       codeVersion,
-      programmeTrialCount: await programmeTrialCount(prisma),
+      programmeTrialCount: opened.priorTrials,
       costIsProxy: true,
       // F03: every holdout is withheld. This CLI recorded the access only after evaluating, so a crash or a
       // concurrent run could read final bars without durable consumption. Use a research campaign instead.
@@ -158,7 +165,13 @@ async function main() {
         },
       });
     }
-    console.log(JSON.stringify({ mode: record ? "RECORDED" : "DRY_RUN", datasetId, instrument: dataset.instrumentKey, interval: dataset.interval, costBpsPerSide: +cost.bps.toFixed(2), costBasis: cost.basis, study: compact(study) }, null, 1));
+    // Base re-evaluations and ML learners are never registry rows; gated runs are, but only with --record.
+    const gatedTrials = study.hypotheses.reduce((n, h) => n + h.gated.trialCount, 0);
+    const baseTrials = study.hypotheses.reduce((n, h) => n + h.base.trialCount, 0);
+    const mlTrials = study.ml.oos ? Object.keys(study.ml.oos).length : 0;
+    const closed = await closeStudy(prisma, { studyKey: key, trials: baseTrials + mlTrials + (record ? 0 : gatedTrials), registryTrials: record ? gatedTrials : 0, actor: "intelligence-cli", note: `intelligence-cli ${datasetId}: ${study.conclusion}` });
+    const trialAccounting = { studyKey: key, opened: opened.status, closed: closed.status, priorTrialsFrozen: opened.priorTrials, ledgerTrials: closed.trials, registryTrials: record ? gatedTrials : 0, concurrentTrials: closed.concurrentTrials, priorStale: closed.concurrentTrials > 0 };
+    console.log(JSON.stringify({ mode: record ? "RECORDED" : "DRY_RUN", evidenceClass: EXPLORATORY_EVIDENCE_CLASS, trialAccounting, datasetId, instrument: dataset.instrumentKey, interval: dataset.interval, costBpsPerSide: +cost.bps.toFixed(2), costBasis: cost.basis, study: compact(study) }, null, 1));
   } finally {
     await prisma.$disconnect();
   }

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error -- plain ESM script without type declarations
-import { APPEND_ONLY_TABLES, GUARDED_TABLES, checkDrillArgs, drillDatabaseName, main, parseConnection, probePassed, probeTable } from "../../../scripts/restore-verify.mjs";
+import { APPEND_ONLY_TABLES, GUARDED_TABLES, UPDATE_ONLY_IMMUTABLE_TABLES, checkDrillArgs, drillDatabaseName, main, parseConnection, probePassed, probeTable } from "../../../scripts/restore-verify.mjs";
 
 /**
  * OPERATION INTEGRITY F05 + F12. Every process call is mocked: no psql/pg_restore runs and no SQL reaches
@@ -161,5 +161,29 @@ describe("restore verification covers campaign tables and checks trigger behavio
 
   it("fails a listed table that has no named trigger at all", () => {
     expect(probePassed(probeTable(() => ({ status: 1, stderr: "" }), "ResearchTrialLedger", 0, []))).toBe(false);
+  });
+});
+
+describe("Phase II F12: UPDATE-only immutable tables are probed with an UPDATE, not a DELETE", () => {
+  const triggers = ["CyclePlan.CyclePlan_immutable"];
+  it("CyclePlan with rows: an allowed DELETE is not mistaken for a broken trigger", () => {
+    const seen: string[] = [];
+    const run = (sql: string) => {
+      seen.push(sql);
+      return /UPDATE "CyclePlan"/.test(sql) ? { status: 3, stderr: "ERROR:  CyclePlan is append-only evidence" } : { status: 0, stderr: "" };
+    };
+    const probe = probeTable(run, "CyclePlan", 10, triggers);
+    expect(seen.some((q) => q.includes("DELETE"))).toBe(false);
+    expect(probe).toMatchObject({ deleteRejected: null, updateRejected: true });
+    expect(probePassed(probe)).toBe(true);
+  });
+  it("an inert CyclePlan trigger (UPDATE succeeds) still fails the drill", () => {
+    const probe = probeTable(() => ({ status: 0, stderr: "" }), "CyclePlan", 10, triggers);
+    expect(probe.updateRejected).toBe(false);
+    expect(probePassed(probe)).toBe(false);
+  });
+  it("only CyclePlan is UPDATE-only among the listed tables", () => {
+    expect([...UPDATE_ONLY_IMMUTABLE_TABLES]).toEqual(["CyclePlan"]);
+    expect(APPEND_ONLY_TABLES).toContain("CyclePlan");
   });
 });

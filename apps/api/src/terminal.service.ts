@@ -21,6 +21,7 @@ import {
   type AutopsyFill,
   type Mark,
   type SnapshotQueryPhase,
+  economicExits,
 } from "@odin/analytics";
 import { costForecastReport, forecastRecordFromAutopsy } from "@odin/backtest";
 import { BirdeyeClient } from "@odin/market-data";
@@ -239,11 +240,18 @@ export class TerminalService {
     const historicalDrawdown = await timed("historical_drawdown", true, () =>
       this.historicalDrawdownCache.get(metricsAccountId),
     );
+    // F11: one economic trade per root exit order (a remainder chain is one exit), not one per fill chunk.
+    const exitOrderIds = [...new Set(closed.map((entry) => entry.orderId).filter((id): id is string => id !== null))];
+    const exitOrders = exitOrderIds.length ? await this.prisma.order.findMany({ where: { id: { in: exitOrderIds } }, select: { id: true, clientOrderId: true } }) : [];
+    const economic = economicExits(
+      closed.map((entry) => ({ id: entry.id, amountUsd: entry.amountUsd.toString(), orderId: entry.orderId })),
+      new Map(exitOrders.map((o) => [o.id, o.clientOrderId])),
+    );
     const report = performanceReport({
       valuation,
       startingBalanceUsd: account.startingBalanceUsd.toString(),
       feesUsd: usd(d(fees._sum.amountUsd?.toString() ?? "0").abs()),
-      closedTradePnlUsd: closed.map((entry) => entry.amountUsd.toString()),
+      closedTradePnlUsd: economic.trades.map((trade) => trade.pnlUsd),
     });
     const asOf = now.toISOString();
     const valuationSource = "live valuation: PaperAccount.cashUsd + open positions at latest marks (null when any mark is missing)";
@@ -257,7 +265,8 @@ export class TerminalService {
         from: closed[closed.length - 1]?.createdAt.toISOString() ?? null,
         to: closed[0]?.createdAt.toISOString() ?? null,
         source: `LedgerEntry type=REALIZED_PNL, account ${account.id}`,
-        method: `win/loss counts and sums over the latest ${closedTradeLimit} realised P&L entries (not all-time)`,
+        method: `win/loss counts and sums over economic exits (root exit order of a remainder chain) built from the latest ${closedTradeLimit} realised P&L entries (not all-time); the oldest exit in the window may be partial`,
+        economicTrades: { chunks: economic.chunks, economicTrades: economic.economicTrades, unlinkedEntries: economic.unlinkedEntries, totalRealizedUsd: economic.totalRealizedUsd },
       },
       fees: {
         label: "all_time_fee_ledger_sum",

@@ -21,6 +21,7 @@ import {
 import { PrismaClient } from "@odin/shared/db";
 import { loadRawBars } from "./campaign-data.js";
 import { currentCodeVersion, evaluateHoldout, workRun } from "./campaign-runner.js";
+import { detectOsMemoryLimit, installSupervisorLiveness, osIsolationRefusal } from "./process-guards.js";
 
 /**
  * OPERATION EVIDENCE research campaigns (research only; never touches the trading path):
@@ -79,6 +80,9 @@ const arg = (flags: Flags, index: number, what: string): string => {
 const print = (value: unknown) => console.log(JSON.stringify(value, null, 1));
 
 async function main(): Promise<void> {
+  // F10: when started by the worker tick, exit (and so stop any evaluator, which watches this process the same
+  // way) as soon as the tick's pipe closes. Database leases expire and the next tick resumes the unit.
+  installSupervisorLiveness();
   const [command, ...rest] = process.argv.slice(2);
   const flags = parse(rest);
   const repoRoot = resolve(__dirname, "../../../../..");
@@ -134,10 +138,14 @@ async function main(): Promise<void> {
           runId = next.runId;
         }
         if (!runId) throw new Error("runId is required");
+        // F10: report (and, when required, refuse) the OS-level memory boundary research runs inside.
+        const osLimit = detectOsMemoryLimit();
+        const refusal = osIsolationRefusal(osLimit);
+        if (refusal) throw new Error(refusal);
         // FILE datasets resolve against the directory the command is run from.
         const out = await workRun(prisma, runId, deps, { maxUnits: typeof flags["max-units"] === "string" ? Number(flags["max-units"]) : undefined });
         const state = await prisma.researchCampaignRunState.findUniqueOrThrow({ where: { runId } });
-        return print({ runId, state: state.state, stopped: out.stopped, handled: out.handled });
+        return print({ runId, state: state.state, stopped: out.stopped, handled: out.handled, isolation: { osMemoryLimit: osLimit, heapLimit: "per unit: limits.maxMemoryMbPerUnit (V8 old space only)", rssWatchdog: "per unit: sampled, heap × 1.25 + 384 MB" } });
       }
       case "status": {
         const detail = await runDetail(prisma, arg(flags, 0, "runId"));

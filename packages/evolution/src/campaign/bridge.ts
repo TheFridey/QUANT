@@ -1,4 +1,5 @@
 import { defaultFeatureSetSpec, featureSetSpecHash, type LabelSpec } from "@odin/backtest/ml2";
+import { DSR_PROTOCOL_VERSION } from "@odin/backtest/research";
 import type { PrismaClient } from "@odin/shared/db";
 import { isOperatorActor } from "../genesis/model-lifecycle.js";
 import { currentModelState, registerModel, transitionModel, type ModelVersionRow } from "../genesis/model-registry.js";
@@ -57,6 +58,10 @@ export async function registerCampaignModel(prisma: PrismaClient, input: { unitI
   const model = obj(obj(JSON.parse(holdout.detailCanonical)).model);
   const dataset = obj(holdout.dataset);
   const barMs = typeof dataset.barMs === "number" ? dataset.barMs : null;
+  // F04: a result judged under an earlier DSR protocol (dsr-1: zero dispersion gave a zero benchmark) is not
+  // re-scored or reclassified; it must be revalidated by a new campaign run before it can be observed.
+  const dsrProtocol = obj(obj(holdout.provenance).versions).dsrProtocol;
+  if (dsrProtocol !== DSR_PROTOCOL_VERSION) throw new CampaignError("REVALIDATION_REQUIRED", `unit ${unit.id} was validated under DSR protocol ${typeof dsrProtocol === "string" ? dsrProtocol : "dsr-1 (unversioned)"}; rerun the campaign under ${DSR_PROTOCOL_VERSION} before registering it for observation`);
   const blocker = shadowBlocker({ hypothesisKind: unit.hypothesisKind, calendar: typeof model.calendar === "string" ? model.calendar : null, featureSetHash: typeof model.featureSetHash === "string" ? model.featureSetHash : null, barMs });
   if (blocker) throw new CampaignError("SHADOW_UNSUPPORTED", blocker);
   if (!model.artefact || !model.labelSpec || barMs === null || typeof dataset.contentHash !== "string") throw new CampaignError("NOT_ELIGIBLE", `unit ${unit.id}: the holdout result carries no frozen artefact`);
@@ -108,14 +113,126 @@ export async function startProspectiveObservation(prisma: PrismaClient, input: {
   return { state: head.state };
 }
 
-export const PROSPECTIVE_ROW_LIMIT = 5_000;
+/**
+ * OPERATION INTEGRITY F09: the prospective cohort is read completely, in bounded pages, in one consistent snapshot.
+ *
+ * The judged cohort is the FIXED PREFIX of a model's shadow rows, in (decisionTime, id) order, that ends when the
+ * pre-declared number of independent signals has resolved (see `prospectiveEvidence`). It used to be cut at the
+ * first 5,000 rows, which include abstentions and overlapping predictions, so a declared target above roughly
+ * 5,000 / horizon could never be reached and later rows never entered the calculation.
+ *
+ *  - Order: (decisionTime ASC, id ASC). `id` breaks ties between instruments (or rows) sharing a decision time, so
+ *    the order, and therefore the cutoff, is deterministic.
+ *  - Pages: keyset (`decisionTime > t OR (decisionTime = t AND id > lastId)`), `pageSize` rows each, served by the
+ *    existing `(modelVersionId, decisionTime)` index; no OFFSET, so no row is skipped or repeated at a boundary.
+ *  - Snapshot: `modelProspectiveEvidence` reads every page inside one REPEATABLE READ transaction, so rows inserted
+ *    while the cohort is read (the shadow service keeps writing) cannot appear in a later page mid-read.
+ *  - Boundary: the reader runs the same cutoff scan as `prospectiveEvidence`; once the target is reached it reads
+ *    the remaining rows that share the cutoff decision time and stops. Later rows are counted, never loaded.
+ *  - Bound: at most `maxRows` cohort rows are held. If the target is not reached within that bound the evidence is
+ *    marked truncated and cannot be sufficient; nothing is silently judged on a partial cohort.
+ *  - Retry: the read is a pure function of stored rows; an interrupted read leaves nothing behind and simply reruns.
+ */
+export const PROSPECTIVE_PAGE_SIZE = 2_000;
+export const PROSPECTIVE_MAX_COHORT_ROWS = 250_000;
 
-/** Prospective evidence of one registered model from its stored shadow rows (newest rows, bounded). */
-export async function modelProspectiveEvidence(prisma: PrismaClient, model: Pick<ModelVersionRow, "id" | "validation" | "trainingProtocol" | "artefact" | "labelDefinition">, now: Date = new Date()): Promise<ProspectiveEvidence> {
-  // The EARLIEST rows of the cohort, in order: the judged sample is a fixed prefix, so later rows must not push it out.
-  const rows = await prisma.shadowPrediction.findMany({ where: { modelVersionId: model.id }, include: { outcome: true }, orderBy: { decisionTime: "asc" }, take: PROSPECTIVE_ROW_LIMIT });
+type CohortDb = Pick<PrismaClient, "shadowPrediction">;
+type StoredRow = {
+  id: string;
+  modelVersionId: string;
+  instrumentKey: string;
+  status: string;
+  decisionBarOpenTime: Date;
+  decisionTime: Date;
+  horizonEndsAt: Date;
+  barMs: number;
+  horizonBars: number;
+  probability: number | null;
+  abstainReasons: string[];
+  estimatedCostBps: number;
+  features: unknown;
+  recordCanonical: string;
+  recordHash: string;
+  outcome: { hypotheticalFillAvailable: boolean; realisedNetReturn: number | null; positive: boolean | null; costBpsApplied: number | null } | null;
+};
+
+export type CohortRead = { rows: ProspectiveRow[]; first: { horizonBars: number; barMs: number } | null; pages: number; reached: boolean; truncated: boolean; laterRows: number; cutoffDecisionTime: number | null };
+
+function toProspectiveRow(r: StoredRow): ProspectiveRow {
+  const verified = verifyStoredPrediction(r);
+  return {
+    decisionTime: r.decisionTime.getTime(),
+    horizonEndsAt: r.horizonEndsAt.getTime(),
+    status: r.status as "PREDICTED" | "ABSTAINED",
+    probability: verified ? verified.probability : r.probability,
+    abstainReasons: r.abstainReasons,
+    hashOk: verified !== null,
+    outcome: r.outcome && { available: r.outcome.hypotheticalFillAvailable, net: r.outcome.realisedNetReturn, positive: r.outcome.positive },
+    costBpsApplied: r.outcome?.costBpsApplied ?? null,
+    estimatedCostBps: r.estimatedCostBps,
+    features: r.features as Record<string, number | null> | null,
+  };
+}
+
+const after = (k: { t: Date; id: string }) => ({ OR: [{ decisionTime: { gt: k.t } }, { decisionTime: k.t, id: { gt: k.id } }] });
+
+/** Reads one model's judged cohort (see above). `db` may be a transaction client. */
+export async function readProspectiveCohort(db: CohortDb, input: { modelVersionId: string; entryThreshold: number; targetEffectiveSignals: number; pageSize?: number; maxRows?: number }): Promise<CohortRead> {
+  const pageSize = input.pageSize ?? PROSPECTIVE_PAGE_SIZE;
+  const maxRows = input.maxRows ?? PROSPECTIVE_MAX_COHORT_ROWS;
+  if (!(Number.isInteger(pageSize) && pageSize >= 1) || !(Number.isInteger(maxRows) && maxRows >= 1)) throw new CampaignError("INVALID", "page size and row bound must be positive integers");
+  const rows: ProspectiveRow[] = [];
+  let first: CohortRead["first"] = null;
+  let cursor: { t: Date; id: string } | null = null;
+  let lastKept: { t: Date; id: string } | null = null;
+  let pages = 0;
+  let signals = 0;
+  let lastSignalEnd = Number.NEGATIVE_INFINITY;
+  let cutoff: number | null = null;
+  let truncated = false;
+  read: for (;;) {
+    const page = (await db.shadowPrediction.findMany({
+      where: { modelVersionId: input.modelVersionId, ...(cursor ? after(cursor) : {}) },
+      include: { outcome: true },
+      orderBy: [{ decisionTime: "asc" }, { id: "asc" }],
+      take: pageSize,
+    })) as unknown as StoredRow[];
+    pages += 1;
+    for (const r of page) {
+      const t = r.decisionTime.getTime();
+      if (cutoff !== null && t > cutoff) break read;
+      if (rows.length >= maxRows) {
+        truncated = true;
+        break read;
+      }
+      first ??= { horizonBars: r.horizonBars, barMs: r.barMs };
+      const row = toProspectiveRow(r);
+      rows.push(row);
+      lastKept = { t: r.decisionTime, id: r.id };
+      // Same scan as prospectiveEvidence: resolved, hash-verified signals with non-overlapping horizons.
+      const resolved = row.hashOk && row.status === "PREDICTED" && Boolean(row.outcome?.available) && row.outcome!.net !== null && row.outcome!.positive !== null && row.probability !== null;
+      if (cutoff === null && resolved && row.probability! >= input.entryThreshold && row.decisionTime >= lastSignalEnd) {
+        signals += 1;
+        lastSignalEnd = row.horizonEndsAt;
+        if (signals === input.targetEffectiveSignals) cutoff = t;
+      }
+    }
+    if (page.length < pageSize) break;
+    const last = page[page.length - 1]!;
+    cursor = { t: last.decisionTime, id: last.id };
+  }
+  const laterRows = lastKept === null ? await db.shadowPrediction.count({ where: { modelVersionId: input.modelVersionId } }) : await db.shadowPrediction.count({ where: { modelVersionId: input.modelVersionId, ...after(lastKept) } });
+  return { rows, first, pages, reached: cutoff !== null, truncated, laterRows, cutoffDecisionTime: cutoff };
+}
+
+/** Prospective evidence of one registered model from its stored shadow rows (complete judged cohort, bounded pages). */
+export async function modelProspectiveEvidence(prisma: PrismaClient, model: Pick<ModelVersionRow, "id" | "validation" | "trainingProtocol" | "artefact" | "labelDefinition">, now: Date = new Date(), options: { pageSize?: number; maxRows?: number } = {}): Promise<ProspectiveEvidence> {
   const shadow = obj(obj(model.trainingProtocol).shadow);
   const validation = obj(model.validation);
+  const entryThreshold = typeof shadow.entryThreshold === "number" ? shadow.entryThreshold : 0.55;
+  const targetEffectiveSignals = Number(obj(obj(model.trainingProtocol).campaign).targetEffectiveSignals ?? TARGET_EFFECTIVE_SIGNALS_BOUNDS.max);
+  const maxRows = options.maxRows ?? PROSPECTIVE_MAX_COHORT_ROWS;
+  const cohort = await prisma.$transaction((tx) => readProspectiveCohort(tx, { modelVersionId: model.id, entryThreshold, targetEffectiveSignals, pageSize: options.pageSize, maxRows }), { isolationLevel: "RepeatableRead", timeout: 120_000, maxWait: 10_000 });
   let featureNames: string[] = [];
   try {
     const parsed = JSON.parse(model.artefact) as { features?: unknown };
@@ -123,29 +240,15 @@ export async function modelProspectiveEvidence(prisma: PrismaClient, model: Pick
   } catch {
     // Integrity is judged when the model is loaded; without names drift is simply not assessed.
   }
-  const mapped: ProspectiveRow[] = rows.map((r) => {
-    const verified = verifyStoredPrediction(r);
-    return {
-      decisionTime: r.decisionTime.getTime(),
-      horizonEndsAt: r.horizonEndsAt.getTime(),
-      status: r.status as "PREDICTED" | "ABSTAINED",
-      probability: verified ? verified.probability : r.probability,
-      abstainReasons: r.abstainReasons,
-      hashOk: verified !== null,
-      outcome: r.outcome && { available: r.outcome.hypotheticalFillAvailable, net: r.outcome.realisedNetReturn, positive: r.outcome.positive },
-      costBpsApplied: r.outcome?.costBpsApplied ?? null,
-      estimatedCostBps: r.estimatedCostBps,
-      features: r.features as Record<string, number | null> | null,
-    };
-  });
   return prospectiveEvidence({
-    rows: mapped,
-    entryThreshold: typeof shadow.entryThreshold === "number" ? shadow.entryThreshold : 0.55,
-    horizonBars: rows[0]?.horizonBars ?? Number(obj(model.labelDefinition).horizon ?? 1),
-    barMs: rows[0]?.barMs ?? Number(shadow.barMs ?? 0),
+    rows: cohort.rows,
+    entryThreshold,
+    horizonBars: cohort.first?.horizonBars ?? Number(obj(model.labelDefinition).horizon ?? 1),
+    barMs: cohort.first?.barMs ?? Number(shadow.barMs ?? 0),
     referenceBrier: typeof validation.walkForwardBrier === "number" ? validation.walkForwardBrier : null,
     featureNames,
     now: now.getTime(),
-    targetEffectiveSignals: Number(obj(obj(model.trainingProtocol).campaign).targetEffectiveSignals ?? TARGET_EFFECTIVE_SIGNALS_BOUNDS.max),
+    targetEffectiveSignals,
+    cohort: { pages: cohort.pages, rowsRead: cohort.rows.length, laterRows: cohort.laterRows, truncated: cohort.truncated, maxRows },
   });
 }

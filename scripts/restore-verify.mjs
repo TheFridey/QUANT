@@ -36,6 +36,13 @@ import { pathToFileURL } from "node:url";
 
 export const DRILL_PREFIX = "odin_restore_drill_";
 const MAINTENANCE_DBS = new Set(["postgres", "template1"]);
+/**
+ * Tables that are immutable to UPDATE only: their trigger is BEFORE UPDATE and deletes are allowed by design
+ * (CyclePlan: "deletes stay possible for retention and test resets", migration 20261031120000). Probing a DELETE
+ * there would report a working trigger as broken and fail every drill of a database where the table has rows,
+ * which is every production drill. They are probed with a no-op UPDATE instead (Phase II F12).
+ */
+export const UPDATE_ONLY_IMMUTABLE_TABLES = new Set(["CyclePlan"]);
 /** Tables whose append-only or immutable triggers must survive a restore, with the trigger name suffix. */
 export const APPEND_ONLY_TABLES = [
   "CyclePlan",
@@ -148,7 +155,12 @@ const TRIGGERS_SQL = `SELECT string_agg(c.relname || '.' || t.tgname, ',' ORDER 
 export function probeTable(run, table, rows, restoredTriggers) {
   const named = restoredTriggers.filter((t) => t.startsWith(`${table}.`) && TRIGGER_NAME.test(t));
   let deleteRejected = null;
-  if (rows > 0) {
+  let updateRejected = null;
+  if (rows > 0 && UPDATE_ONLY_IMMUTABLE_TABLES.has(table)) {
+    // A self-assignment fires a FOR EACH ROW BEFORE UPDATE trigger like any other update.
+    const probe = run(`BEGIN; UPDATE "${table}" SET "createdAt" = "createdAt"; ROLLBACK;`);
+    updateRejected = probe.status !== 0 && TRIGGER_ERROR.test(probe.stderr || "");
+  } else if (rows > 0) {
     const probe = run(`BEGIN; DELETE FROM "${table}"; ROLLBACK;`);
     deleteRejected = probe.status !== 0 && TRIGGER_ERROR.test(probe.stderr || "");
   }
@@ -161,12 +173,12 @@ export function probeTable(run, table, rows, restoredTriggers) {
     const stderr = probe.stderr || "";
     truncateRejected = probe.status !== 0 && TRIGGER_ERROR.test(stderr) && stderr.includes(`${table} is`);
   }
-  return { table, rows, triggers: named, deleteRejected, truncateRejected };
+  return { table, rows, triggers: named, deleteRejected, updateRejected, truncateRejected };
 }
 
 /** A probed table passes when it has its named trigger and no behaviour probe that ran came back false. */
 export function probePassed(probe) {
-  return probe.triggers.length > 0 && probe.deleteRejected !== false && probe.truncateRejected !== false;
+  return probe.triggers.length > 0 && probe.deleteRejected !== false && probe.updateRejected !== false && probe.truncateRejected !== false;
 }
 
 export function main(argv, spawn = spawnSync) {

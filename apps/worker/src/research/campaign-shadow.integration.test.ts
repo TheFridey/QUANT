@@ -143,7 +143,7 @@ describe.skipIf(!enabled)("campaign result to prospective shadow observation (Po
     expect(unit.prospective!.netAdvantage).toBeNull();
     expect(unit.stage.missing.join(" ")).toMatch(/0 independent resolved outcomes \(need 30\)/);
     expect(unit.stage.missing.join(" ")).toMatch(/0 of the 30 independent signals declared at registration/);
-    expect(unit.prospective!.observation).toEqual({ targetEffectiveSignals: 30, reached: false, judgedOn: "NOT_YET_JUDGED" });
+    expect(unit.prospective!.observation).toEqual({ targetEffectiveSignals: 30, reached: false, judgedOn: "NOT_YET_JUDGED", pendingOutcomesInSample: 0 });
 
     // Nothing on the trading path was created or changed anywhere along the way.
     expect(await snapshot()).toBe(before);
