@@ -17,11 +17,12 @@
 | `e6daa04` | F11: economic-trade analytics |
 | `f41438f`, `fa8b084` | F10: process guarantees |
 | `c767d50` | F12: restore-drill CyclePlan probe |
+| `a6fa778` | safety-review fixes (H1 CLI hang, M1/M2 trial undercounts, L2, L5) |
 | (docs commits) | F12 reconciliation, matrix, deployment plan, release readiness |
 
 ## Exact next action
 
-1. Open a **draft PR** from `integrity/phase-ii` to `main` (needs the operator's go-ahead). Let CI run on Linux, PostgreSQL 16 and Redis, including `browser-e2e` and `build`. Record the results in `ACCEPTANCE-MATRIX.md`. Pay particular attention to the two F10 SIGKILL descendant tests, which prove the guard only on Linux.
+1. Draft [PR #79](https://github.com/TheFridey/QUANT/pull/79) is open. Read its CI on Linux, PostgreSQL 16 and Redis, including `browser-e2e` and `build`. Record the results in `ACCEPTANCE-MATRIX.md`. Pay particular attention to the two F10 SIGKILL descendant tests, which prove the guard only on Linux.
 2. Operator decisions, listed in `RELEASE-READINESS.md`:
    - legacy trial declaration (answer the questionnaire in `F03-F06-RESEARCH-INTEGRITY.md`);
    - F11 protected execution increment (approval package in `F11-ECONOMIC-TRADE-IDENTITY.md`);

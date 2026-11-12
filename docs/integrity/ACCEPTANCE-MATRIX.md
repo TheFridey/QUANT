@@ -11,8 +11,8 @@
 | Full application build | `pnpm build` | **NOT VERIFIED** | `nest build` fails locally (SWC native binding, x64 Node on ARM; environmental, pre-existing). CI `build` job required. |
 | TypeScript | `pnpm typecheck` | **PASS** | api, worker, web |
 | Lint | `eslint` on every changed directory | **PASS** | repo-wide `pnpm lint` not rerun (Phase I: nested agent worktrees make it noisy locally) |
-| Unit tests | `pnpm vitest run` (no DB) | **1,321 passed, 34 skipped, 3 failed**, then the failures were dispositioned | (1) `restore-drill*.test.ts` ×2: CRLF shebang import (environmental; with LF scripts **34/34 pass**). (2) `process-isolation.test.ts` ×3 under full-suite load: low-priority children starved past fixed test ceilings. Root-caused as a test-timing assumption, not a product defect. Fixed with an abort-driven test (`fa8b084`); **416/416** pass under concurrent load. |
-| PostgreSQL integration | 38 `DATABASE_URL_TEST` files, `--no-file-parallelism`, fresh DB `odin_test_phase2` | **38/38 files, 212/212 tests** | 193 s; PostgreSQL 18.3, not 16 |
+| Unit tests | `pnpm vitest run` (no DB) | at head `a6fa778`: **1,359 passed, 34 skipped, 0 failed** (LF scripts). The earlier run had **1,321 passed, 3 failed**, dispositioned as follows: | (1) `restore-drill*.test.ts` ×2: CRLF shebang import (environmental; with LF scripts **34/34 pass**). (2) `process-isolation.test.ts` ×3 under full-suite load: low-priority children starved past fixed test ceilings. Root-caused as a test-timing assumption, not a product defect. Fixed with an abort-driven test (`fa8b084`); **416/416** pass under concurrent load. |
+| PostgreSQL integration | 38 `DATABASE_URL_TEST` files, `--no-file-parallelism`, fresh DB `odin_test_phase2` | **38/38 files, 216/216 tests** at `a6fa778` (212 before the review fixes) | 177 s; PostgreSQL 18.3, not 16 |
 | Real Redis | — | **NOT VERIFIED** | no Redis locally; CI e2e uses real Redis |
 | Fresh migration | `pnpm db:deploy` on an empty database | **PASS** | 31 migrations |
 | Upgrade migration | — | **N/A** | Phase II adds no migration and no schema change |
@@ -26,7 +26,7 @@
 
 ## Required before qualification
 
-1. Open a draft PR so CI runs: Linux, Node 22, PostgreSQL 16, Redis, `browser-e2e`, `build`.
+1. Draft [PR #79](https://github.com/TheFridey/QUANT/pull/79) is open, so CI runs: Linux, Node 22, PostgreSQL 16, Redis, `browser-e2e`, `build`. The result is pending.
 2. Record the CI run URL and the counts here.
 3. Any failure there blocks.
 

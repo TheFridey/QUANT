@@ -29,7 +29,7 @@ PAPER only. Nothing here enables live money, changes `EXECUTION_MODE`, loosens r
 | F11-X | — | — | **BLOCKED** (protected-path approval). Chained-exit liquidity realism, the SANDBOX fill lock and `requestedQty`. Approval package prepared; no protected file touched. | F11 doc | — |
 | F12 | LOW | PARTIAL | **FIXED**. Phase I's drill probe made every production drill fail on `CyclePlan` (an UPDATE-only trigger was probed with a DELETE); fixed and re-drilled green. The "3,000 unrecorded trials" claims were corrected in ADR-0001, HANDOVER and LEDGER. `docs/STATUS.md` now separates production, `main` and branch. | [`F12-OPERATIONAL-RECONCILIATION.md`](F12-OPERATIONAL-RECONCILIATION.md) | `c767d50`, docs commit |
 
-None of the Phase II findings is `VERIFIED` yet. Linux CI on the PR, and the browser e2e within it, have not run; see [`ACCEPTANCE-MATRIX.md`](ACCEPTANCE-MATRIX.md).
+Independent reviews: statistical (F04), `quant-safety-reviewer` (REJECT; H1, M1 and M2 fixed in `a6fa778`, then APPROVE WITH NOTES) and `regression-reviewer` (no blocking findings). Details in `RELEASE-READINESS.md`. None of the Phase II findings is `VERIFIED` yet. Linux CI on the PR, and the browser e2e within it, have not run; see [`ACCEPTANCE-MATRIX.md`](ACCEPTANCE-MATRIX.md).
 
 ## Phase I record (unchanged, abbreviated)
 
