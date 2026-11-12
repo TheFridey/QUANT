@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { CAMPAIGN_LIMIT_BOUNDS, normaliseInstrument, type CampaignDataset, type RawBars } from "@odin/evolution/campaign";
 import type { PrismaClient } from "@odin/shared/db";
@@ -53,6 +53,15 @@ export function warehouseIdentityMismatch(dataset: Pick<CampaignDataset, "market
 export async function loadRawBars(prisma: PrismaClient, dataset: CampaignDataset, baseDir: string): Promise<RawBars> {
   if (dataset.source.kind === "FILE") {
     const path = isAbsolute(dataset.source.path) ? dataset.source.path : resolve(baseDir, dataset.source.path);
+    // F10: bound what the supervisor loads before reading it. A bar row is well under 256 bytes of CSV.
+    const maxBytes = CAMPAIGN_LIMIT_BOUNDS.maxBarsPerDataset * 256;
+    let size: number;
+    try {
+      size = statSync(path).size;
+    } catch {
+      throw new DatasetLoadError(`cannot read ${dataset.source.path}`);
+    }
+    if (size > maxBytes) throw new DatasetLoadError(`${dataset.source.path} is ${size} bytes, above the ${maxBytes}-byte bound for ${CAMPAIGN_LIMIT_BOUNDS.maxBarsPerDataset} bars; refused before reading`);
     let text: string;
     try {
       text = readFileSync(path, "utf8");
@@ -62,6 +71,7 @@ export async function loadRawBars(prisma: PrismaClient, dataset: CampaignDataset
     const sha256 = createHash("sha256").update(text).digest("hex");
     if (sha256 !== dataset.source.sha256) throw new DatasetLoadError(`${dataset.source.path} hashes to ${sha256}, but the campaign declares ${dataset.source.sha256}; the file is not the declared dataset`);
     const parsed = parseBarsCsv(text);
+    if (parsed.length > CAMPAIGN_LIMIT_BOUNDS.maxBarsPerDataset) throw new DatasetLoadError(`${dataset.source.path} has ${parsed.length} bars, above the ${CAMPAIGN_LIMIT_BOUNDS.maxBarsPerDataset}-bar bound`);
     const hasAvailability = parsed.length > 0 && parsed.every((b) => b.availableAt !== null);
     return {
       bars: parsed.map(({ t, open, high, low, close, volume }) => ({ t, open, high, low, close, volume })),

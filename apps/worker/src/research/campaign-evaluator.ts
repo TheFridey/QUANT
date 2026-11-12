@@ -1,11 +1,12 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { isMainThread, Worker, workerData } from "node:worker_threads";
 import { installNetworkBlock } from "./network-guard.js";
+import { installRssWatchdog, installSupervisorLiveness } from "./process-guards.js";
 
 /**
  * Campaign evaluator process:
  *
- *   node --max-old-space-size=<MB> dist/src/research/campaign-evaluator.js <job.json> <out.json> [maxRuntimeMs] [maxMemoryMb]
+ *   node --max-old-space-size=<MB> dist/src/research/campaign-evaluator.js <job.json> <out.json> [maxRuntimeMs] [maxHeapMb] [maxRssMb]
  *
  * Reads one job file, evaluates it deterministically and writes one result file. It has no database and no
  * network: the supervisor loaded the bars, and the network is blocked before the job is read.
@@ -13,6 +14,12 @@ import { installNetworkBlock } from "./network-guard.js";
  * The evaluation is synchronous CPU work, so it runs in a worker thread while this main thread keeps a timer.
  * That gives the process its own runtime limit: if the supervisor is killed, the evaluator still stops instead
  * of running on as an orphan. The supervisor's kill timer and the heap limits remain the primary limits.
+ *
+ * F10: started by the supervisor with a stdin pipe (ODIN_SUPERVISOR_PIPE=1), it also exits as soon as that pipe
+ * closes, so a killed supervisor never leaves it running until the runtime timer. `maxHeapMb` limits the V8 heap
+ * only; `maxRssMb` is a sampled total-memory watchdog (best effort; the OS cgroup is the hard limit).
+ * This is a resource boundary for TRUSTED deterministic evaluation code. The network block is a guard against
+ * accidents, not an adversarial sandbox; generated code is isolated separately (packages/evolution sandbox).
  */
 
 type Payload = { jobPath: string; outPath: string };
@@ -34,12 +41,14 @@ async function evaluate({ jobPath, outPath }: Payload): Promise<void> {
 }
 
 function supervise(): void {
-  const [jobPath, outPath, runtimeArg, memoryArg] = process.argv.slice(2);
+  const [jobPath, outPath, runtimeArg, memoryArg, rssArg] = process.argv.slice(2);
   if (!jobPath || !outPath) {
     console.error("usage: campaign-evaluator <job.json> <out.json> [maxRuntimeMs] [maxMemoryMb]");
     process.exit(2);
   }
   installNetworkBlock();
+  installSupervisorLiveness();
+  installRssWatchdog(Number(rssArg));
   const maxRuntimeMs = Number(runtimeArg);
   const maxMemoryMb = Number(memoryArg);
   const worker = new Worker(__filename, { workerData: { jobPath, outPath } satisfies Payload, ...(Number.isFinite(maxMemoryMb) && maxMemoryMb > 0 ? { resourceLimits: { maxOldGenerationSizeMb: maxMemoryMb } } : {}) });
