@@ -25,3 +25,14 @@ export async function holdoutAvailable(
 export async function programmeTrialCount(prisma: PrismaClient): Promise<number> {
   return (await programmeTrials(prisma)).total;
 }
+
+/**
+ * OPERATION INTEGRITY F06: the programme count used to deflate a study's DSR. An operator-supplied
+ * `--prior-trials` may raise the durable count (for searches the ledger never saw) but never lower it, so a
+ * flag cannot make a study look less selected than the authoritative ledger says it is.
+ */
+export function resolvePriorTrials(supplied: number | null | undefined, durable: number): { priorTrials: number; source: "LEDGER" | "SUPPLIED_ABOVE_LEDGER"; ignoredSupplied: number | null } {
+  if (supplied === null || supplied === undefined) return { priorTrials: durable, source: "LEDGER", ignoredSupplied: null };
+  if (supplied > durable) return { priorTrials: supplied, source: "SUPPLIED_ABOVE_LEDGER", ignoredSupplied: null };
+  return { priorTrials: durable, source: "LEDGER", ignoredSupplied: supplied < durable ? supplied : null };
+}

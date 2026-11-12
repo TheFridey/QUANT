@@ -6,7 +6,7 @@ import { INTERVAL_MS, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
 import { costPerSide } from "./cost-basis.js";
 import { declareLegacyTrials } from "@odin/evolution/campaign";
-import { programmeTrialCount } from "./holdout-policy.js";
+import { programmeTrialCount, resolvePriorTrials } from "./holdout-policy.js";
 import { ML_CLI_USAGE, parseBarsCsv, parseMlArgs } from "./ml-args.js";
 
 /**
@@ -134,7 +134,8 @@ async function main() {
         slippageBps = 0;
         costBasis = `ASCEND-06 combined per-side cost (fee + spread + impact): ${cost.basis}`;
       }
-      priorTrials = args.priorTrials ?? (await programmeTrialCount(prisma));
+      // F06: a supplied --prior-trials can raise, never lower, the durable programme count.
+      priorTrials = resolvePriorTrials(args.priorTrials, await programmeTrialCount(prisma)).priorTrials;
     } finally {
       await prisma.$disconnect();
     }

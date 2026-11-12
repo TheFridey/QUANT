@@ -5,7 +5,7 @@ import { excludeWeekendStubBars, inferBarMs, MARKET_CONFIGS, runHorizonStudy, ty
 import { INTERVAL_MS, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
 import { declareLegacyTrials } from "@odin/evolution/campaign";
-import { programmeTrialCount } from "./holdout-policy.js";
+import { programmeTrialCount, resolvePriorTrials } from "./holdout-policy.js";
 import { HORIZON_CLI_USAGE, parseHorizonArgs } from "./horizon-args.js";
 import { parseBarsCsv } from "./ml-args.js";
 
@@ -85,7 +85,8 @@ async function main() {
       barMs = INTERVAL_MS[dataset.interval as HistoryInterval] ?? inferBarMs(bars);
       instrument = args.instrument ?? dataset.instrumentKey;
       datasetKey = `${dataset.instrumentKey}|${dataset.interval}`;
-      priorTrials = args.priorTrials ?? (await programmeTrialCount(prisma));
+      // F06: a supplied --prior-trials can raise, never lower, the durable programme count.
+      priorTrials = resolvePriorTrials(args.priorTrials, await programmeTrialCount(prisma)).priorTrials;
       source = { kind: "WAREHOUSE", datasetId: dataset.id, instrument: dataset.instrumentKey, instrumentKind: dataset.instrumentKind, interval: dataset.interval, versionHash: dataset.versionHash, bars: bars.length };
     } finally {
       await prisma.$disconnect();
