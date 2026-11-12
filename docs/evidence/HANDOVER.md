@@ -41,7 +41,7 @@ Baseline before the work (main `8317aff`): 1,167 unit tests passed with the same
 ## Blocked or waiting on the operator
 
 - **Real campaign on gold/FX**: needs warehouse data, which is only in production. Command shape is in `demo/README.md`. Expect the recorded result (no candidate) to repeat; the campaign makes it reproducible.
-- **Declare the unrecorded legacy trials** in production (about 3,000 from earlier HORIZON CLI runs): `campaign-cli declare-legacy-trials --count N --by NAME --note "…"`. Until then the production programme count understates.
+- **Declare the unrecorded legacy trials** in production: `campaign-cli declare-legacy-trials --count N --by NAME --note "…"`. N is **not** 3,000: that figure was a cumulative count including ~2,454 registry rows the ledger already counts; the unrecorded part is roughly 550 (answer the questionnaire in [`docs/integrity/F03-F06-RESEARCH-INTEGRITY.md`](../integrity/F03-F06-RESEARCH-INTEGRITY.md) first). Until then the production programme count understates by about that much.
 - **Decisions**: the deflated-Sharpe variance floor; whether a lost holdout may be recomputed; the staleness limit and observation length to use when a real model is first registered.
 - `quant-safety-reviewer`: CHANGES REQUESTED (small) on `fc8ffd8`; after the fixes in `79b6ffe`, **APPROVE WITH NOTES** on `8de63d6`. Its two low notes are addressed in the commit after that (minimum-sample guard moved off the closing paths; runbook wording on the CLI environment). Carried notes: no test enforces "no writes to trading tables" (the import-boundary test cannot see Prisma capability), and the CLI started by the worker job is not detached, so a ceiling kill can leave an evaluator running until its own runtime limit.
 

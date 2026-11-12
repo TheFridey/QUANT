@@ -56,7 +56,7 @@ Rationale: the deflated Sharpe ratio's expected maximum grows with the number of
 
 The unit count includes `TEST` windows; the registry count does not. This is slightly conservative and deliberate.
 
-`campaign-cli declare-legacy-trials` records trials that were run before the ledger existed. **It has not been run against production**: the roughly 3,000 unrecorded HORIZON CLI trials are still outside the count there until the operator declares them.
+`campaign-cli declare-legacy-trials` records trials that were run before the ledger existed. **It has not been run against production.** Correction (OPERATION INTEGRITY Phase II): "about 3,000" was the cumulative programme count typed as `--prior-trials`, and it already included about 2,454 `ResearchTrial` registry rows that the ledger counts. The genuinely unrecorded part is roughly 550 CSV-mode HORIZON/ML trials; see [`docs/integrity/F03-F06-RESEARCH-INTEGRITY.md`](../integrity/F03-F06-RESEARCH-INTEGRITY.md) for the evidence and the operator questionnaire. Do not declare 3,000.
 
 ### Holdout accounting
 
