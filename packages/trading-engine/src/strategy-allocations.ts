@@ -102,6 +102,8 @@ export async function applyAllocationFill(
         pairAddress: input.pairAddress,
         lifecycleId: input.lifecycleId ?? null,
         qty: nextQty.toFixed(8),
+        // PCR-1: the owner's monotonic counter (only BUY fills reach this upsert).
+        cumBoughtQty: qty.toFixed(8),
         avgCostUsd: nextAvg.toFixed(8),
         realizedPnlUsd: "0",
         committedCapitalUsd: costBasisKnown ? notional.plus(fee).toFixed(8) : "0",
@@ -114,6 +116,7 @@ export async function applyAllocationFill(
       },
       update: {
         qty: nextQty.toFixed(8),
+        cumBoughtQty: { increment: qty.toFixed(8) },
         avgCostUsd: nextAvg.toFixed(8),
         lifecycleId: input.lifecycleId ?? existing?.lifecycleId ?? null,
         committedCapitalUsd: costBasisKnown
