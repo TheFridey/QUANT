@@ -26,7 +26,7 @@ import {
   type DecisionDraft,
   type ProposedOrder,
 } from "@odin/agent-core";
-import { performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
+import { economicExits, performanceReport, valuePortfolio, type Mark } from "@odin/analytics";
 import {
   BirdeyeClient,
   buildFixturePairsAtStep,
@@ -1650,11 +1650,18 @@ export class StageRunner {
       orderBy: { createdAt: "desc" },
       take: 200,
     });
+    // F11: trade statistics over economic exits (root exit order of a remainder chain), not fill chunks.
+    const exitOrderIds = [...new Set(closed.map((entry) => entry.orderId).filter((id): id is string => id !== null))];
+    const exitOrders = exitOrderIds.length ? await this.prisma.order.findMany({ where: { id: { in: exitOrderIds } }, select: { id: true, clientOrderId: true } }) : [];
+    const economic = economicExits(
+      closed.map((entry) => ({ id: entry.id, amountUsd: entry.amountUsd.toString(), orderId: entry.orderId })),
+      new Map(exitOrders.map((o) => [o.id, o.clientOrderId])),
+    );
     const report = performanceReport({
       valuation: loaded.valuation,
       startingBalanceUsd: account.startingBalanceUsd.toString(),
       feesUsd: usd(d(fees._sum.amountUsd?.toString() ?? "0").abs()),
-      closedTradePnlUsd: closed.map((entry) => entry.amountUsd.toString()),
+      closedTradePnlUsd: economic.trades.map((trade) => trade.pnlUsd),
     });
     const equityUsd = loaded.valuation.equityUsd;
     const hwm =
@@ -1687,6 +1694,9 @@ export class StageRunner {
           expectancyUsd: report.expectancyUsd,
           maxDrawdownPct: report.maxDrawdownPct,
           sampleSize: report.sampleSize,
+          tradeBasis: "ECONOMIC_EXIT",
+          realizedChunks: economic.chunks,
+          unlinkedRealizedEntries: economic.unlinkedEntries,
           observed: report.observed,
         }),
       },
