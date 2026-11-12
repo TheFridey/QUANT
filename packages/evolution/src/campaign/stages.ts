@@ -52,7 +52,9 @@ export type ProspectiveEvidence = {
   /** Mean net return of the signals themselves, after costs, with a block-bootstrap interval. Must be above zero. */
   signalsNet: { estimate: number; lower: number; upper: number } | null;
   /** Pre-declared observation length and how far it has got. */
-  observation: { targetEffectiveSignals: number; reached: boolean; judgedOn: "FIXED_SAMPLE" | "NOT_YET_JUDGED" };
+  observation: { targetEffectiveSignals: number; reached: boolean; judgedOn: "FIXED_SAMPLE" | "NOT_YET_JUDGED"; pendingOutcomesInSample: number };
+  /** F09: how the cohort was read (null when rows were passed in directly). */
+  cohort: CohortProgress | null;
   /** Mean net of signals minus mean net of every resolved prediction, with a block-bootstrap interval. */
   netAdvantage: { estimate: number; lower: number; upper: number; blockLength: number } | null;
   uncertaintyNote: string | null;
@@ -64,7 +66,9 @@ export type ProspectiveEvidence = {
 };
 
 /** Prospective (shadow) evidence of one frozen model cohort. Missing measurements stay null, never zero. */
-export function prospectiveEvidence(input: { rows: ProspectiveRow[]; entryThreshold: number; horizonBars: number; barMs: number; referenceBrier: number | null; featureNames: string[]; now: number; targetEffectiveSignals: number }): ProspectiveEvidence {
+export type CohortProgress = { pages: number; rowsRead: number; laterRows: number; truncated: boolean; maxRows: number };
+
+export function prospectiveEvidence(input: { rows: ProspectiveRow[]; entryThreshold: number; horizonBars: number; barMs: number; referenceBrier: number | null; featureNames: string[]; now: number; targetEffectiveSignals: number; cohort?: CohortProgress }): ProspectiveEvidence {
   const allOk = input.rows.filter((r) => r.hashOk);
   const isResolved = (r: ProspectiveRow) => r.status === "PREDICTED" && Boolean(r.outcome?.available) && r.outcome!.net !== null && r.outcome!.positive !== null && r.probability !== null;
   // The judged sample ends when the pre-declared number of independent signals has resolved; later rows are
@@ -84,8 +88,14 @@ export function prospectiveEvidence(input: { rows: ProspectiveRow[]; entryThresh
       }
     }
   }
-  const reached = Number.isFinite(cutoff);
-  const judged = reached ? input.rows.filter((r) => r.decisionTime <= cutoff) : input.rows;
+  const cutoffFound = Number.isFinite(cutoff);
+  const judged = cutoffFound ? input.rows.filter((r) => r.decisionTime <= cutoff) : input.rows;
+  // F09: the judged sample is final only when nothing inside it can still change. An earlier prediction whose
+  // outcome has not arrived could resolve later, move the cutoff earlier and alter the sample, so the judgement
+  // waits for it (conservative: a permanently missing outcome keeps the evidence insufficient, and says so).
+  const pendingInJudged = judged.filter((r) => r.hashOk && r.status === "PREDICTED" && !r.outcome).length;
+  const truncated = input.cohort?.truncated ?? false;
+  const reached = cutoffFound && pendingInJudged === 0 && !truncated;
   const board = computeLeaderboardRow({ rows: judged, entryThreshold: input.entryThreshold, horizonBars: input.horizonBars, now: input.now, graceMs: input.horizonBars * input.barMs });
   const ok = judged.filter((r) => r.hashOk);
   const resolved = ok.filter(isResolved).sort((a, b) => a.decisionTime - b.decisionTime);
@@ -126,7 +136,9 @@ export function prospectiveEvidence(input: { rows: ProspectiveRow[]; entryThresh
   const integrityFailures = input.rows.length - allOk.length;
   const missing: string[] = [];
   if (effectiveOutcomes < PROSPECTIVE_MINIMUMS.effectiveOutcomes) missing.push(`${effectiveOutcomes} independent resolved outcomes (need ${PROSPECTIVE_MINIMUMS.effectiveOutcomes})`);
-  if (!reached) missing.push(`${effectiveSignals} of the ${input.targetEffectiveSignals} independent signals declared at registration have resolved; the evidence is judged once, when that number is reached`);
+  if (truncated) missing.push(`cohort read stopped at ${input.cohort!.maxRows} rows before the declared ${input.targetEffectiveSignals} independent signals resolved; a truncated cohort is never judged`);
+  else if (cutoffFound && pendingInJudged > 0) missing.push(`${pendingInJudged} prediction(s) inside the judged sample still have no outcome; the sample is judged only when none can still change it`);
+  else if (!cutoffFound) missing.push(`${effectiveSignals} of the ${input.targetEffectiveSignals} independent signals declared at registration have resolved; the evidence is judged once, when that number is reached`);
   if (!signalsCi) missing.push("no confidence interval for the signals' own net return yet");
   else if (!(signalsCi.lower > 0)) missing.push(`signals' own net return after costs: interval lower bound ${(signalsCi.lower * 10_000).toFixed(1)} bps is not above 0`);
   if (!board.netAdvantage) missing.push(`no confidence interval for the net advantage yet${board.netAdvantageNote ? ` (${board.netAdvantageNote})` : ""}`);
@@ -152,7 +164,8 @@ export function prospectiveEvidence(input: { rows: ProspectiveRow[]; entryThresh
     meanNetSignals: board.meanNetSignals,
     meanNetAll: board.meanNetAll,
     signalsNet: signalsCi && { estimate: signalsCi.estimate, lower: signalsCi.lower, upper: signalsCi.upper },
-    observation: { targetEffectiveSignals: input.targetEffectiveSignals, reached, judgedOn: reached ? "FIXED_SAMPLE" : "NOT_YET_JUDGED" },
+    observation: { targetEffectiveSignals: input.targetEffectiveSignals, reached, judgedOn: reached ? "FIXED_SAMPLE" : "NOT_YET_JUDGED", pendingOutcomesInSample: cutoffFound ? pendingInJudged : 0 },
+    cohort: input.cohort ?? null,
     netAdvantage: board.netAdvantage && { estimate: board.netAdvantage.estimate, lower: board.netAdvantage.lower, upper: board.netAdvantage.upper, blockLength: board.netAdvantage.blockLength },
     uncertaintyNote: board.netAdvantageNote,
     calibration: cal && { brier: cal.brier, ece: cal.ece, baseRate: resolved.filter((r) => r.outcome!.positive).length / resolved.length },
