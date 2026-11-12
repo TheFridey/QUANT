@@ -58,7 +58,8 @@ export function campaignMaxUnits(env: NodeJS.ProcessEnv = process.env): number {
 export type TickResult = { status: "DISABLED" } | { status: "RAN"; exitCode: number | null; timedOut: boolean; output: string };
 
 /** Starts the campaign CLI as a separate, low-priority process and resolves when it exits. */
-export function runCampaignTick(env: NodeJS.ProcessEnv = process.env, options: { cliPath?: string; ceilingMs?: number; execArgv?: string[] } = {}): Promise<TickResult> {
+/** `signal` cancels the tick (for example on worker shutdown): the CLI is killed and, through its pipe, its evaluator. */
+export function runCampaignTick(env: NodeJS.ProcessEnv = process.env, options: { cliPath?: string; ceilingMs?: number; execArgv?: string[]; signal?: AbortSignal } = {}): Promise<TickResult> {
   if (!campaignWorkerEnabled(env)) return Promise.resolve({ status: "DISABLED" });
   const cli = options.cliPath ?? resolve(__dirname, "research/campaign-cli.js");
   return new Promise((done) => {
@@ -80,12 +81,17 @@ export function runCampaignTick(env: NodeJS.ProcessEnv = process.env, options: {
       timedOut = true;
       child.kill("SIGKILL");
     }, options.ceilingMs ?? units * UNIT_CEILING_MS + TICK_MARGIN_MS);
+    const onAbort = () => child.kill("SIGKILL");
+    if (options.signal?.aborted) onAbort();
+    else options.signal?.addEventListener("abort", onAbort, { once: true });
     child.on("error", (error) => {
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       done({ status: "RAN", exitCode: null, timedOut, output: error.message });
     });
     child.on("exit", (code) => {
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       done({ status: "RAN", exitCode: code, timedOut, output });
     });
   });
