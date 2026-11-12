@@ -22,9 +22,11 @@
  * - the scratch database is dropped afterwards unless `--keep`
  *
  * Pass criteria: pg_restore exits 0; a non-empty latest Prisma migration; every user trigger in the source
- * exists in the restore; each listed append-only table has its named trigger, and a table with rows still
- * rejects DELETE with the trigger's own error; no table is missing or extra; no restored count exceeds the
- * source (lower counts are drift, because a live database keeps growing after the dump).
+ * exists in the restore; each listed append-only or guarded table has its named trigger, a table with rows
+ * still rejects DELETE with the trigger's own error, and a table with a `_no_truncate` trigger rejects
+ * TRUNCATE; no table is missing or extra; no restored count exceeds the source (lower counts are drift,
+ * because a live database keeps growing after the dump). A listable backup file is not evidence: only a
+ * run that ends `"ok": true` shows the dump restores and verifies.
  *
  * Use a drill role without superuser where possible: a tampered dump runs SQL with the restoring role.
  */
@@ -49,9 +51,23 @@ export const APPEND_ONLY_TABLES = [
   "ResearchTrial",
   "StrategyArtifact",
   "StrategyPromotion",
+  // F12: research campaign evidence and GENESIS model/shadow tables (migrations 2026-11).
+  "ModelLifecycleEvent",
+  "ModelPaperApproval",
+  "ModelVersion",
+  "ResearchCampaign",
+  "ResearchCampaignEvent",
+  "ResearchCampaignResult",
+  "ResearchCampaignRun",
+  "ResearchHoldoutLedger",
+  "ResearchTrialLedger",
+  "ShadowOutcome",
+  "ShadowPrediction",
 ];
-const TRIGGER_NAME = /_(append_only|immutable|evidence_immutable)$/;
-const TRIGGER_ERROR = /append-only|EVIDENCE_IMMUTABLE|immutable/i;
+/** F12: mutable-state tables whose guard trigger forbids DELETE and identity changes. */
+export const GUARDED_TABLES = ["ResearchCampaignRunState", "ResearchCampaignUnit"];
+const TRIGGER_NAME = /_(append_only|immutable|evidence_immutable|guard)$/;
+const TRIGGER_ERROR = /append-only|EVIDENCE_IMMUTABLE|immutable|never deleted/i;
 
 export function drillDatabaseName(now = new Date()) {
   return `${DRILL_PREFIX}${now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
@@ -119,27 +135,53 @@ export function connectionEnv(conn, database, extra = {}) {
   return env;
 }
 
-function psql(env, sql) {
-  return spawnSync("psql", ["-X", "-v", "ON_ERROR_STOP=1", "-At", "-c", sql], { encoding: "utf8", env });
-}
 
 const COUNT_SQL = `SELECT string_agg(format('%s=%s', c.relname, (xpath('/row/n/text()', query_to_xml(format('select count(*) as n from public.%I', c.relname), false, true, '')))[1]::text), ',' ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r'`;
 const TRIGGERS_SQL = `SELECT string_agg(c.relname || '.' || t.tgname, ',' ORDER BY 1) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND NOT t.tgisinternal`;
 
-function counts(env) {
-  const r = psql(env, COUNT_SQL);
-  if (r.status !== 0) throw new Error(`count failed: ${(r.stderr || "").slice(0, 300)}`);
-  const line = r.stdout.trim();
-  return Object.fromEntries(line.split(",").filter(Boolean).map((kv) => { const [k, v] = kv.split("="); return [k, Number(v)]; }));
+/**
+ * Behaviour, not just names (F12): a table with rows must reject DELETE with the trigger's own error; a
+ * table with a `_no_truncate` trigger must reject TRUNCATE (statement-level, so this works on empty tables
+ * too). Every probe runs inside a transaction that is rolled back, on the scratch database only.
+ * Returns null for a check that cannot be made (no rows / no truncate trigger).
+ */
+export function probeTable(run, table, rows, restoredTriggers) {
+  const named = restoredTriggers.filter((t) => t.startsWith(`${table}.`) && TRIGGER_NAME.test(t));
+  let deleteRejected = null;
+  if (rows > 0) {
+    const probe = run(`BEGIN; DELETE FROM "${table}"; ROLLBACK;`);
+    deleteRejected = probe.status !== 0 && TRIGGER_ERROR.test(probe.stderr || "");
+  }
+  let truncateRejected = null;
+  if (restoredTriggers.includes(`${table}.${table}_no_truncate`)) {
+    // CASCADE: a plain TRUNCATE of a table referenced by a foreign key fails on the FK before any trigger
+    // fires, which proves nothing. The rejection must also name this table, so a working trigger on a
+    // referencing table cannot stand in for an inert one here.
+    const probe = run(`BEGIN; TRUNCATE "${table}" CASCADE; ROLLBACK;`);
+    const stderr = probe.stderr || "";
+    truncateRejected = probe.status !== 0 && TRIGGER_ERROR.test(stderr) && stderr.includes(`${table} is`);
+  }
+  return { table, rows, triggers: named, deleteRejected, truncateRejected };
 }
 
-function triggers(env) {
-  const r = psql(env, TRIGGERS_SQL);
-  if (r.status !== 0) throw new Error(`trigger listing failed: ${(r.stderr || "").slice(0, 300)}`);
-  return r.stdout.trim().split(",").filter(Boolean);
+/** A probed table passes when it has its named trigger and no behaviour probe that ran came back false. */
+export function probePassed(probe) {
+  return probe.triggers.length > 0 && probe.deleteRejected !== false && probe.truncateRejected !== false;
 }
 
-function main(argv) {
+export function main(argv, spawn = spawnSync) {
+  const psql = (env, sql) => spawn("psql", ["-X", "-v", "ON_ERROR_STOP=1", "-At", "-c", sql], { encoding: "utf8", env });
+  const counts = (env) => {
+    const r = psql(env, COUNT_SQL);
+    if (r.status !== 0) throw new Error(`count failed: ${(r.stderr || "").slice(0, 300)}`);
+    const line = r.stdout.trim();
+    return Object.fromEntries(line.split(",").filter(Boolean).map((kv) => { const [k, v] = kv.split("="); return [k, Number(v)]; }));
+  };
+  const triggers = (env) => {
+    const r = psql(env, TRIGGERS_SQL);
+    if (r.status !== 0) throw new Error(`trigger listing failed: ${(r.stderr || "").slice(0, 300)}`);
+    return r.stdout.trim().split(",").filter(Boolean);
+  };
   const args = argv.slice(2);
   const value = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
   const adminUrl = process.env.RESTORE_ADMIN_URL ?? "";
@@ -166,7 +208,7 @@ function main(argv) {
     if (where.status !== 0 || where.stdout.trim() !== scratchName) {
       return finish({ ...report, error: `Scratch connection reached '${where.stdout.trim()}', not ${scratchName}; refusing to restore` }, 1);
     }
-    const restore = spawnSync("pg_restore", ["--no-owner", "--no-acl", "--exit-on-error", "-d", scratchName, dump], { encoding: "utf8", env: scratchEnv });
+    const restore = spawn("pg_restore", ["--no-owner", "--no-acl", "--exit-on-error", "-d", scratchName, dump], { encoding: "utf8", env: scratchEnv });
     report.steps.restore = { status: restore.status, stderr: (restore.stderr || "").slice(0, 500) };
     report.restoreSeconds = +((Date.now() - started) / 1000).toFixed(1);
     if (restore.status !== 0) return finish({ ...report, error: "pg_restore failed" }, 1);
@@ -178,17 +220,10 @@ function main(argv) {
     report.latestMigration = migration.status === 0 && migration.stdout.trim() ? migration.stdout.trim() : null;
 
     const restoredTriggers = triggers(scratchEnv);
-    report.appendOnly = APPEND_ONLY_TABLES.map((table) => {
-      const named = restoredTriggers.filter((t) => t.startsWith(`${table}.`) && TRIGGER_NAME.test(t));
-      // Row-level triggers only fire on existing rows, so an empty table cannot show rejection (null).
-      const rows = restored[table] ?? 0;
-      let deleteRejected = null;
-      if (rows > 0) {
-        const probe = psql(scratchEnv, `BEGIN; DELETE FROM "${table}"; ROLLBACK;`);
-        deleteRejected = probe.status !== 0 && TRIGGER_ERROR.test(probe.stderr || "");
-      }
-      return { table, rows, triggers: named, deleteRejected };
-    });
+    // Row-level triggers only fire on existing rows, so an empty table cannot show DELETE rejection (null).
+    const probe = (table) => probeTable((sql) => psql(scratchEnv, sql), table, restored[table] ?? 0, restoredTriggers);
+    report.appendOnly = APPEND_ONLY_TABLES.map(probe);
+    report.guarded = GUARDED_TABLES.map(probe);
 
     const sourceCounts = counts(sourceEnv);
     const sourceTriggers = triggers(sourceEnv);
@@ -205,7 +240,7 @@ function main(argv) {
     }
     report.sourceComparison = drift;
 
-    const triggersOk = report.appendOnly.every((a) => a.triggers.length > 0 && a.deleteRejected !== false);
+    const triggersOk = [...report.appendOnly, ...report.guarded].every(probePassed);
     const driftOk = drift.missingTables.length === 0 && drift.extraTables.length === 0 && drift.missingTriggers.length === 0 && drift.restoredAboveSource.length === 0;
     report.ok = triggersOk && driftOk && report.latestMigration !== null;
     report.totalSeconds = +((Date.now() - started) / 1000).toFixed(1);

@@ -143,7 +143,19 @@ database (~1 GB on 1 Nov 2026).
 Evidence: local drill on 2 Nov 2026 (57 tables, 2,128 rows, exact match, no missing triggers, restore
 under 1 s) and fail-closed controls (truncated dump → exit 1; application DB or `?dbname=` in the admin
 URL → refused). A production-dump drill is still `NOT_VERIFIED` (needs VPS access).
-`scripts/backup-restore-nonprod.mjs` remains for plain-SQL test-database resets.
+`scripts/backup-restore-nonprod.mjs` is **retired** (OPERATION INTEGRITY F05, 12 Nov 2026) and now refuses
+every invocation without connecting: it checked only the URL path, then passed the whole URI (with its
+password) to `psql` on argv and ran `DROP SCHEMA public CASCADE`, so a query parameter such as `?dbname=`
+or `?host=` could aim the reset at a different database. Its earlier "non-prod only" wording was not a
+guarantee. To reset a test database, create a fresh `odin_test` database and run `pnpm db:deploy`
+against it; to prove a dump restores, use `restore-verify.mjs` above.
+
+The drill also probes behaviour (F12): the research campaign and GENESIS append-only tables and the
+guarded `ResearchCampaignRunState`/`ResearchCampaignUnit` tables must keep their named triggers, reject
+`DELETE` when they have rows, and reject `TRUNCATE` where a `_no_truncate` trigger exists (statement-level,
+so empty tables are checked too). A backup file that exists or lists cleanly is not evidence; only a run
+ending `"ok": true` is. A real drill against a disposable Postgres has not been run in this remediation
+(no local Docker); the 2 Nov evidence above predates the F12 probes.
 
 ### Recovery objectives (proposed, not yet agreed with the operator)
 
