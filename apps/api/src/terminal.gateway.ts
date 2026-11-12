@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { Injectable, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from "@nestjs/common";
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -37,7 +37,8 @@ export function socketAuthMiddleware(auth: SocketAuth) {
         (socket.data as { token?: string }).token = raw;
         next();
       })
-      .catch(() => next(new Error("UNAUTHORISED")));
+      // F02: an unreadable revocation store refuses the handshake, distinguishably from a bad token.
+      .catch((error: unknown) => next(new Error(error instanceof ServiceUnavailableException ? "AUTH_UNAVAILABLE" : "UNAUTHORISED")));
   };
 }
 

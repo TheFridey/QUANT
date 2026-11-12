@@ -48,11 +48,24 @@ async function ensureReady(client: IORedis): Promise<void> {
   await client.connect();
 }
 
+/** Each queued id is removed only after Redis confirms its write; a failure leaves the rest queued. */
 async function flushPendingWrites(client: IORedis): Promise<void> {
-  const now = Date.now();
   for (const [id, expMs] of PENDING_WRITES) {
+    const now = Date.now();
     if (expMs > now) await client.set(`${REDIS_PREFIX}${id}`, "1", "PX", Math.max(1_000, expMs - now));
     PENDING_WRITES.delete(id);
+  }
+}
+
+/**
+ * F02: thrown when Redis is configured but whether a token is revoked cannot be established
+ * (connect failure, read failure, or active backoff). Callers must refuse the session; unknown
+ * revocation status never means "not revoked".
+ */
+export class RevocationStatusUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`Revocation status unavailable: ${reason}`);
+    this.name = "RevocationStatusUnavailableError";
   }
 }
 
@@ -93,8 +106,10 @@ export function tokenFingerprint(token: string): string {
 
 /**
  * Server-side JWT revocation (D25).
- * In-memory always; Redis used when REDIS_URL is reachable so multi-process API
- * replicas share logout state. Failures fall back to memory — single-operator scope.
+ * In-memory always. With REDIS_URL set, Redis is the shared store for every API process, so a
+ * revocation must be readable from Redis before an unknown token is accepted: when Redis cannot be
+ * read the check fails closed (F02). Without REDIS_URL the process is single-instance and memory is
+ * the store.
  */
 /**
  * Returns true when the revocation is durable for every API process: written to Redis, or there is
@@ -122,22 +137,28 @@ export async function revokeToken(id: string, expMs: number): Promise<boolean> {
   }
 }
 
+/**
+ * True when revoked (locally known, or recorded in Redis); false only when not revoked is established:
+ * Redis confirmed it, or no Redis is configured. Throws RevocationStatusUnavailableError when Redis is
+ * configured but could not be read, including during backoff (F02: fail closed, bounded reconnects).
+ */
 export async function isTokenRevoked(id: string): Promise<boolean> {
   pruneMemory();
   const localExp = MEMORY.get(id);
   if (localExp && localExp > Date.now()) return true;
   const client = redisClient();
-  // While Redis is backing off, memory is the source of revocation (single-operator scope).
-  if (!client || !redisAvailable()) return false;
+  if (!client) return false;
+  if (!redisAvailable()) throw new RevocationStatusUnavailableError("Redis backing off after a failure");
   try {
     await ensureReady(client);
+    // Queued revocations reach Redis before any read is answered, so replicas converge on recovery.
     await flushPendingWrites(client);
     const value = await client.get(`${REDIS_PREFIX}${id}`);
     markRedisUp();
     return value === "1";
   } catch {
     markRedisDown();
-    return false;
+    throw new RevocationStatusUnavailableError("Redis unreachable or read failed");
   }
 }
 
@@ -147,6 +168,18 @@ export function resetTokenRevocationForTests(): void {
   PENDING_WRITES.clear();
   redisFailures = 0;
   redisDownUntil = 0;
+}
+
+/** Test helper — end the backoff window now (simulates time passing). */
+export function clearRedisBackoffForTests(): void {
+  redisDownUntil = 0;
+}
+
+/** Test helper — disconnect this module's Redis client so tests do not leak sockets. */
+export async function closeTokenRevocationForTests(): Promise<void> {
+  const client = redis;
+  redis = undefined;
+  if (client) client.disconnect();
 }
 
 /** Test helper — current Redis backoff state. */

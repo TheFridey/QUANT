@@ -3,7 +3,7 @@ import { JwtService } from "@nestjs/jwt";
 import { randomUUID } from "node:crypto";
 import { hashPassword, verifyPassword } from "@odin/shared/password";
 import { PrismaClient } from "@odin/shared/db";
-import { isTokenRevoked, revokeToken, tokenFingerprint } from "./token-revocation.js";
+import { isTokenRevoked, RevocationStatusUnavailableError, revokeToken, tokenFingerprint } from "./token-revocation.js";
 
 export type AuthUser = { id: string; email: string; role: string };
 
@@ -90,7 +90,17 @@ export class AuthService {
     const payload = await this.verifyPayload(token);
     if (!payload.sub || !payload.email || !payload.role) throw new UnauthorizedException("Invalid session");
     const id = payload.jti ?? tokenFingerprint(token);
-    if (await isTokenRevoked(id)) throw new UnauthorizedException("Session revoked");
+    let revoked: boolean;
+    try {
+      revoked = await isTokenRevoked(id);
+    } catch (error) {
+      // F02: unknown revocation status is not "not revoked". 503 so the web keeps the session but refuses work.
+      if (error instanceof RevocationStatusUnavailableError) {
+        throw new ServiceUnavailableException("Session check unavailable: revocation store unreachable");
+      }
+      throw error;
+    }
+    if (revoked) throw new UnauthorizedException("Session revoked");
     return { id: payload.sub, email: payload.email, role: payload.role };
   }
 
