@@ -1,0 +1,153 @@
+diff --git a/packages/trading-engine/src/store.ts b/packages/trading-engine/src/store.ts
+--- a/packages/trading-engine/src/store.ts
++++ b/packages/trading-engine/src/store.ts
+@@ -1,4 +1,4 @@
+-import { classifyFreshness, d, newId, type DataMode, type ReasonCode, type StrategyConfig } from "@odin/shared";
++import { classifyFreshness, d, exitStampFor, newId, type DataMode, type ReasonCode, type StrategyConfig } from "@odin/shared";
+ import { Prisma, type PrismaClient } from "@odin/shared/db";
+ import { findEligibleFillObservation } from "./eligible-observation.js";
+ import { applyFill, type BookState } from "./ledger.js";
+@@ -34,5 +34,9 @@
+   estimatedCostUsd?: string | null;
+   estimatedNotionalUsd?: string | null;
+   submissionState?: string | null;
++  /** PCR-1: booking stamps a pending order carries to its exit remainder (inherited, not re-taken). */
++  positionLifecycleId?: string | null;
++  positionBoughtQtyAtBooking?: string | null;
++  allocationBoughtQtyAtBooking?: string | null;
+ };
+
+@@ -39,7 +43,45 @@
+ export async function lockAccount(tx: Prisma.TransactionClient, accountId: string): Promise<void> {
+   await tx.$queryRaw`SELECT id FROM "PaperAccount" WHERE id = ${accountId} FOR UPDATE`;
+ }
+
++/**
++ * PCR-1: booking stamps for an order written now. Called only inside the account-locked transaction that
++ * writes the order, so they describe exactly the position (and, for STRATEGY, the owner's allocation) the
++ * order was decided against. BUYs and flat pairs get nulls.
++ */
++async function currentLotStamp(
++  tx: Prisma.TransactionClient,
++  accountId: string,
++  order: Pick<CommitOrder, "pairAddress" | "side" | "ownerScope" | "strategyInstanceId">,
++): Promise<{ positionLifecycleId: string | null; positionBoughtQtyAtBooking: string | null; allocationBoughtQtyAtBooking: string | null }> {
++  const none = { positionLifecycleId: null, positionBoughtQtyAtBooking: null, allocationBoughtQtyAtBooking: null };
++  if (order.side !== "SELL") return none;
++  const position = await tx.position.findUnique({ where: { accountId_pairAddress: { accountId, pairAddress: order.pairAddress } } });
++  const allocation =
++    order.ownerScope === "STRATEGY" && order.strategyInstanceId
++      ? await tx.strategyAllocation.findUnique({
++          where: { accountId_strategyInstanceId_pairAddress: { accountId, strategyInstanceId: order.strategyInstanceId, pairAddress: order.pairAddress } },
++        })
++      : null;
++  const stamp = exitStampFor(
++    position ? { qty: position.baseQty.toString(), lotId: position.lifecycleId, cumBoughtQty: position.cumBoughtQty.toString() } : null,
++    allocation ? { qty: allocation.qty.toString(), cumBoughtQty: allocation.cumBoughtQty.toString() } : null,
++  );
++  return {
++    positionLifecycleId: stamp.lotId,
++    positionBoughtQtyAtBooking: stamp.boughtQtyAtBooking,
++    allocationBoughtQtyAtBooking: stamp.allocationBoughtQtyAtBooking ?? null,
++  };
++}
++
++/**
++ * PCR-1: change to Position.cumBoughtQty for a fill. Only BUY fills move the monotonic counter; it is applied
++ * in the same upsert (same transaction) that applies the fill to the position.
++ */
++function boughtDelta(side: string, qty: string): string {
++  return side === "BUY" ? d(qty).toFixed(8) : "0";
++}
++
+ type FillGateInput = { order: CommitOrder; config: StrategyConfig; mode: DataMode; now: Date };
+ type MarketObservation = Prisma.MarketObservationGetPayload<object>;
+
+@@ -143,6 +185,15 @@
+       strategyInstanceId: input.order.strategyInstanceId ?? null,
+       intentId: input.order.intentId ?? null,
+       ownerScope: input.order.ownerScope ?? "LEGACY",
++      // PCR-1: a remainder inherits its parent's booking stamps (pending parent); an immediate parent is
++      // stamped now, in the transaction of its own fill, which equals its booking-time state.
++      ...(input.order.positionBoughtQtyAtBooking !== undefined
++        ? {
++            positionLifecycleId: input.order.positionLifecycleId ?? null,
++            positionBoughtQtyAtBooking: input.order.positionBoughtQtyAtBooking,
++            allocationBoughtQtyAtBooking: input.order.allocationBoughtQtyAtBooking ?? null,
++          }
++        : await currentLotStamp(tx, input.accountId, { ...input.order, side: "SELL" })),
+       submissionState: input.order.submissionState ?? "LOCAL",
+       submittedAt: input.now,
+       eligibleAt: input.now,
+@@ -200,6 +251,7 @@
+         strategyInstanceId: input.order.strategyInstanceId ?? null,
+         intentId: input.order.intentId ?? null,
+         ownerScope: input.order.ownerScope ?? "LEGACY",
++        ...(await currentLotStamp(tx, input.accountId, input.order)),
+         submissionState: input.order.submissionState ?? "LOCAL",
+         submittedAt: input.now,
+         eligibleAt,
+@@ -306,4 +358,7 @@
+       intentId: order.intentId,
+       ownerScope: order.ownerScope as OwnerScope,
++      positionLifecycleId: order.positionLifecycleId,
++      positionBoughtQtyAtBooking: order.positionBoughtQtyAtBooking?.toString() ?? null,
++      allocationBoughtQtyAtBooking: order.allocationBoughtQtyAtBooking?.toString() ?? null,
+     },
+     config: input.config,
+@@ -446,11 +501,13 @@
+     where: { accountId_pairAddress: { accountId: input.accountId, pairAddress: input.order.pairAddress } },
+     create: {
+       accountId: input.accountId,
+       ...nextPosition,
++      cumBoughtQty: boughtDelta(input.order.side, quoted.fill.qty),
+       strategyInstanceId: input.order.strategyInstanceId ?? null,
+     },
+     update: {
+       ...nextPosition,
++      cumBoughtQty: { increment: boughtDelta(input.order.side, quoted.fill.qty) },
+       ...(input.order.side === "BUY" && input.order.strategyInstanceId
+         ? { strategyInstanceId: input.order.strategyInstanceId }
+         : {}),
+@@ -602,11 +659,13 @@
+     where: { accountId_pairAddress: { accountId: input.accountId, pairAddress: input.order.pairAddress } },
+     create: {
+       accountId: input.accountId,
+       ...nextPosition,
++      cumBoughtQty: boughtDelta(input.order.side, quoted.fill.qty),
+       strategyInstanceId: input.order.strategyInstanceId ?? null,
+     },
+     update: {
+       ...nextPosition,
++      cumBoughtQty: { increment: boughtDelta(input.order.side, quoted.fill.qty) },
+       ...(input.order.side === "BUY" && input.order.strategyInstanceId
+         ? { strategyInstanceId: input.order.strategyInstanceId }
+         : {}),
+@@ -794,10 +853,11 @@
+     where: { accountId_pairAddress: { accountId: input.accountId, pairAddress: order.pairAddress } },
+     create: {
+       accountId: input.accountId,
+       ...nextPosition,
++      cumBoughtQty: boughtDelta(order.side, fillQty.toFixed(8)),
+       strategyInstanceId: order.strategyInstanceId,
+     },
+-    update: nextPosition,
++    update: { ...nextPosition, cumBoughtQty: { increment: boughtDelta(order.side, fillQty.toFixed(8)) } },
+   });
+   const lifecycleId = await ensurePositionLifecycleOnOpen(tx, {
+     accountId: input.accountId,
+diff --git a/packages/trading-engine/src/strategy-allocations.ts b/packages/trading-engine/src/strategy-allocations.ts
+--- a/packages/trading-engine/src/strategy-allocations.ts
++++ b/packages/trading-engine/src/strategy-allocations.ts
+@@ -103,4 +103,6 @@
+         lifecycleId: input.lifecycleId ?? null,
+         qty: nextQty.toFixed(8),
++        // PCR-1: the owner's monotonic counter (only BUY fills reach this upsert).
++        cumBoughtQty: qty.toFixed(8),
+         avgCostUsd: nextAvg.toFixed(8),
+         realizedPnlUsd: "0",
+@@ -115,3 +117,4 @@
+       update: {
+         qty: nextQty.toFixed(8),
++        cumBoughtQty: { increment: qty.toFixed(8) },
+         avgCostUsd: nextAvg.toFixed(8),

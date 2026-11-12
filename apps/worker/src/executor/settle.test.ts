@@ -40,7 +40,7 @@ function fakeTx(order: ReturnType<typeof pendingSell>, positionQty: string | nul
     engineControl: { findUnique: vi.fn().mockResolvedValue({ status: "RUNNING", config: {} }) },
     order: { findMany: vi.fn().mockResolvedValue([order]), update },
     position: {
-      findFirst: vi.fn().mockResolvedValue(positionQty === null ? null : { baseQty: { toString: () => positionQty } }),
+      findFirst: vi.fn().mockResolvedValue(positionQty === null ? null : { baseQty: { toString: () => positionQty }, lifecycleId: "lot_A", cumBoughtQty: { toString: () => positionQty } }),
     },
   };
   return { tx: tx as unknown as Prisma.TransactionClient, update };

@@ -24,34 +24,36 @@ export async function retryProtectionExits(
     accountId: ctx.accountId,
     attemptExit: async (intent) => {
       try {
-        const leg = await prisma.protectionOrder.findUnique({ where: { id: intent.legId } });
-        if (!leg) return { ok: false, error: "LEG_MISSING" };
-        if (leg.accountId !== intent.accountId) return { ok: false, error: "ACCOUNT_MISMATCH" };
-        const pair = instrumentIdFromPositionKey(leg.positionKey, intent.accountId);
-        if (!pair) return { ok: false, error: "POSITION_KEY_DECODE" };
-        const observation = await prisma.marketObservation.findFirst({
-          where: {
-            pairAddress: pair,
-            priceUsd: { not: null },
-            tradingEnvironment: ctx.tradingEnvironment,
-          },
-          orderBy: { receivedAt: "desc" },
-        });
-        if (!observation) return { ok: false, error: "MISSING_PRICE" };
-        const position = await prisma.position.findFirst({
-          where: { accountId: intent.accountId, pairAddress: pair },
-        });
-        if (!position || d(position.baseQty.toString()).lte(0)) {
-          return { ok: true };
-        }
-        // Fence: do not reduce a reopened lot with an old unresolved intent.
-        if (leg.lifecycleId && position.lifecycleId && leg.lifecycleId !== position.lifecycleId) {
-          return { ok: true };
-        }
         const config = await prisma.engineControl.findUnique({ where: { id: "primary" } });
         const parsed = strategyConfigOrExitOnly(config?.config ?? {}).config;
+        // PCR-1 / F-PCR1-a: every read that decides whether and how much to sell happens under the account
+        // lock, in the transaction that books the exit. Reading the position and the lot fence before the
+        // lock let a concurrent close-and-reopen slip in between, so a stale intent could sell the new lot.
         const result = await prisma.$transaction(async (tx) => {
           await lockAccount(tx, intent.accountId);
+          const leg = await tx.protectionOrder.findUnique({ where: { id: intent.legId } });
+          if (!leg) return { status: "SKIPPED" as const, error: "LEG_MISSING" };
+          if (leg.accountId !== intent.accountId) return { status: "SKIPPED" as const, error: "ACCOUNT_MISMATCH" };
+          const pair = instrumentIdFromPositionKey(leg.positionKey, intent.accountId);
+          if (!pair) return { status: "SKIPPED" as const, error: "POSITION_KEY_DECODE" };
+          const position = await tx.position.findFirst({
+            where: { accountId: intent.accountId, pairAddress: pair },
+          });
+          // Nothing left to protect: the intent is resolved.
+          if (!position || d(position.baseQty.toString()).lte(0)) return { status: "RESOLVED" as const };
+          // Fence: an old unresolved intent never reduces a different (reopened) lot.
+          if (leg.lifecycleId && position.lifecycleId && leg.lifecycleId !== position.lifecycleId) {
+            return { status: "RESOLVED" as const };
+          }
+          const observation = await tx.marketObservation.findFirst({
+            where: {
+              pairAddress: pair,
+              priceUsd: { not: null },
+              tradingEnvironment: ctx.tradingEnvironment,
+            },
+            orderBy: { receivedAt: "desc" },
+          });
+          if (!observation) return { status: "SKIPPED" as const, error: "MISSING_PRICE" };
           const protKey = intentIdempotencyKey({
             cycleId: `prot_retry_${intent.id}`,
             accountId: intent.accountId,
@@ -83,6 +85,8 @@ export async function retryProtectionExits(
             now,
           });
         });
+        if (result.status === "RESOLVED") return { ok: true };
+        if (result.status === "SKIPPED") return { ok: false, error: result.error };
         return result.status === "FILLED"
           ? { ok: true }
           : { ok: false, error: result.reason ?? result.status };
