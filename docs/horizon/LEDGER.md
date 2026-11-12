@@ -2,6 +2,57 @@
 
 Operation HORIZON (multi-asset expansion). Evidence labels as in [`docs/genesis/EXECUTION_LEDGER.md`](../genesis/EXECUTION_LEDGER.md). Diagnosis: [`DIAGNOSIS.md`](DIAGNOSIS.md). Nothing here enables new trading.
 
+## Checkpoint 9: 12 Nov 2026 (`bed2f36` deployed; OPERATION INTEGRITY Phase II)
+Operator: "merge to main and push live"; on the restore-drill gate: "Deploy, drill later". [#79](https://github.com/TheFridey/QUANT/pull/79) merged as `bed2f36`. PR CI on head `93d428e`, run [43255721368](https://github.com/TheFridey/QUANT/actions/runs/43255721368), all green:
+- test: 232 files, 1,569 passed, 1 skipped, on Postgres 16 and Redis 7. `process-isolation` passed 14/14 on Linux.
+- browser-e2e: 14 passed.
+- build-packages: green.
+
+`main` had not moved since `33c6a4a`, so the merged tree is the tested merge ref. No protected path, no migration, no lockfile change. Ledger: [`docs/integrity/STATUS.md`](../integrity/STATUS.md).
+
+Preflight (read-only):
+- **Before:** `2cc6627`, all services active, health `ok`, 61 GB free.
+- **Migrations:** 31 applied, latest `20261102120000_order_position_lifecycle`.
+- **Instrument kinds:** `COMMODITY,EQUITY_ETF,FX_PAIR,SOLANA_POOL`, all accepted.
+- **Research:** 2,170 `ResearchTrial` registry rows; `ResearchTrialLedger` empty; 0 campaign models; no campaign runs.
+- **Execution:** 0 pending orders, 0 open positions; EngineControl RUNNING.
+- **Accounting:** realised P&L −2,584.50205063 over 267 entries; fees −657.67146362; 0 promotions; 49,384 `CyclePlan` rows.
+- **Not checked by the session:** the PAPER-only env keys. A repo hook blocks any command naming them, so the operator verifies them manually. Engine config hash and behaviour were checked instead.
+
+Deploy:
+- **Backup:** `quant-20261112T170409Z.dump` (1.38 GB, 75 tables of data listed).
+- **Restore drill on it:** **not run** (`NOT_VERIFIED`). The drill needs a password-authenticated role (local TCP is scram-sha-256), and the operator chose to deploy and drill later.
+- **Snapshot:** `/srv/quant/releases/2cc6627-20261112T171006Z`.
+- **Build:** checked out `bed2f36` (detached); `pnpm install --frozen-lockfile`; `pnpm db:deploy` reported "No pending migrations"; `pnpm build` with `.env` sourced exited 0 with 0 errors.
+- **Built output confirmed:** `dsr-2.0.0` (backtest), `readProspectiveCohort` (evolution), `economicExits` (api, worker), `installSupervisorLiveness` (campaign-cli), and the `UPDATE_ONLY_IMMUTABLE_TABLES` drill fix.
+- **Restart:** `quant-worker`, `quant-api` and `quant-web`, 17:11:37–17:11:43 UTC.
+
+Smoke (observed):
+- health 200 `ok`; `/api/ready` 200; `/api/research/campaigns` 401 without a token; web 307.
+- 0 error lines in the API, worker and web journals.
+- The worker logs `research campaign job disabled` and `genesis shadow disabled`.
+- 9 cycles COMPLETE (plus 1 running) and 144 observations in about 2.5 minutes.
+- EngineControl RUNNING, config hash `5ff22766…` unchanged.
+- Realised P&L unchanged at −2,584.50205063 over 267 entries.
+- Fees −658.81878407. The −1.14732045 difference is one PAPER BUY ENTRY fee at 17:09:00, under the old code before the restart.
+- 0 promotions; 0 pending orders.
+- The first new equity snapshot has `tradeBasis = ECONOMIC_EXIT`, `closedTrades` 200 from 200 realised chunks, 0 unlinked. There are no chunked exits in the window, so the count is unchanged from before (200).
+
+Behaviour changes to know:
+- **DSR protocol is now `dsr-2.0.0`.** Campaign results validated before it need a rerun before shadow registration. There are none on production.
+- **Legacy research CLIs record studies in `ResearchTrialLedger`.** Each writes `study-open:` / `study-close:` `LEGACY_DECLARED` rows.
+- **Prospective cohorts are read completely.**
+- **Trade statistics count economic exits.**
+- **The restore drill now passes on tables with `CyclePlan` rows.**
+
+Rollback: redeploy the snapshot. The schema is identical, so no database action is needed.
+
+Still open:
+- the production restore drill (operator, with `RESTORE_ADMIN_URL`);
+- the legacy trial declaration. Production has 2,170 registry rows, not ~2,454, so the unrecorded figure is about 3,000 − 2,170 ≈ 830 by the same method. Answer the questionnaire before declaring;
+- the F11 protected increment;
+- VPS research isolation.
+
 ## Checkpoint 8: 12 Nov 2026 (`2cc6627` deployed; OPERATION INTEGRITY audit remediation)
 
 Operator: "merge all to main and push live", then "Main green, deploy". Merged [#77](https://github.com/TheFridey/QUANT/pull/77) (F01 PCR-1 lifecycle fence, `e002bf7`), then the stack [#73](https://github.com/TheFridey/QUANT/pull/73) (F02 auth fails closed), [#74](https://github.com/TheFridey/QUANT/pull/74) (F05 restore helper retired, F12 drill probes), [#75](https://github.com/TheFridey/QUANT/pull/75) (F03/F06 legacy holdouts withheld, prior-trials floor) and [#76](https://github.com/TheFridey/QUANT/pull/76) (F07/F08 atomic dataset pin, warehouse identity). PR CI green on all five; `main` CI on `2cc6627` green (test, browser-e2e, build-packages). Ledger: [`docs/integrity/STATUS.md`](../integrity/STATUS.md). F01 touches protected paths and was approved by the operator in chat; `quant-safety-reviewer` APPROVE WITH NOTES.

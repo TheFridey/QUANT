@@ -1,6 +1,10 @@
 # Release readiness — OPERATION INTEGRITY Phase II
 
-## Classification: **READY WITH EXPLICIT EXTERNAL BLOCKERS**
+## Outcome (12 Nov 2026, 17:11 UTC): merged as `bed2f36` and deployed
+
+PR CI on Linux was green (run 43255721368: test 1,569 passed, browser-e2e 14 passed, build green). The deploy followed `DEPLOYMENT-PLAN.md`, except that the production restore drill was not run: the operator chose "deploy, drill later". Smoke checks and accounting identities held after the deploy (`docs/horizon/LEDGER.md`, checkpoint 9).
+
+## Classification at qualification time: **READY WITH EXPLICIT EXTERNAL BLOCKERS**
 
 The engineering work is complete to the extent possible without operator action. Linux CI on [PR #79](https://github.com/TheFridey/QUANT/pull/79) has not yet reported. A CI failure there downgrades this classification to NOT READY. This is not `READY FOR OPERATOR APPROVAL`, because the qualifying CI run, real-Redis verification and the browser e2e are still missing.
 

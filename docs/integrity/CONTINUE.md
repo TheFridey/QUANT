@@ -22,7 +22,7 @@
 
 ## Exact next action
 
-1. Draft [PR #79](https://github.com/TheFridey/QUANT/pull/79) is open. Read its CI on Linux, PostgreSQL 16 and Redis, including `browser-e2e` and `build`. Record the results in `ACCEPTANCE-MATRIX.md`. Pay particular attention to the two F10 SIGKILL descendant tests, which prove the guard only on Linux.
+1. Done: [PR #79](https://github.com/TheFridey/QUANT/pull/79) was merged (`bed2f36`) with CI green and deployed 12 Nov 2026 (LEDGER checkpoint 9). Still open: the production restore drill on `quant-20261112T170409Z.dump` (operator credentials). Historical note on the earlier step: read its CI on Linux, PostgreSQL 16 and Redis, including `browser-e2e` and `build`. Record the results in `ACCEPTANCE-MATRIX.md`. Pay particular attention to the two F10 SIGKILL descendant tests, which prove the guard only on Linux.
 2. Operator decisions, listed in `RELEASE-READINESS.md`:
    - legacy trial declaration (answer the questionnaire in `F03-F06-RESEARCH-INTEGRITY.md`);
    - F11 protected execution increment (approval package in `F11-ECONOMIC-TRADE-IDENTITY.md`);

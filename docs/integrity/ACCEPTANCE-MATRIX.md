@@ -26,7 +26,12 @@
 
 ## Required before qualification
 
-1. Draft [PR #79](https://github.com/TheFridey/QUANT/pull/79) is open, so CI runs: Linux, Node 22, PostgreSQL 16, Redis, `browser-e2e`, `build`. The result is pending.
+1. **Done.** [PR #79](https://github.com/TheFridey/QUANT/pull/79) CI on head `93d428e`, run [43255721368](https://github.com/TheFridey/QUANT/actions/runs/43255721368):
+   - test: 232 files, 1,569 passed, 1 skipped, on PostgreSQL 16 and Redis 7. It includes `process-isolation` 14/14 on Linux, `study-accounting.integration` 11/11 and `cohort.integration` 3/3.
+   - browser-e2e: 14 passed.
+   - build-packages: green.
+
+   This closes the full build, real Redis, browser e2e and Linux F10 rows above.
 2. Record the CI run URL and the counts here.
 3. Any failure there blocks.
 
