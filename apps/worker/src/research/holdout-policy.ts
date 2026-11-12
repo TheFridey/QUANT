@@ -1,20 +1,20 @@
+import { createHash } from "node:crypto";
 import { programmeTrials } from "@odin/evolution/campaign";
 import type { PrismaClient } from "@odin/shared/db";
 
 /**
- * SINGULARITY-00 holdout policy. The registry's unique key (strategy × version × dataset) only stops an exact
- * repeat. A version bump or a re-imported dataset of the same instrument would otherwise get a fresh look at
- * the same final bars. So a strategy id may consume a holdout once per instrument and interval, across every
- * version and dataset. Renaming a strategy still evades this; that is caught by review, and the programme
- * trial count below deflates every DSR regardless of name.
+ * RETIRED (OPERATION INTEGRITY F06). The SINGULARITY-00 check keyed holdout access on strategy × raw instrumentKey ×
+ * interval, so a formatting alias of the same instrument ("EUR_USD" vs "EUR/USD") or an overlapping dataset could
+ * look unconsumed, and it was read before evaluation but written after it (F03). The only holdout path is now the
+ * research campaign's holdout ledger (normalised instrument, market, interval, dataset lineage and window overlap,
+ * committed before any holdout bar is read). This stub keeps the export so an old import fails safe: it never grants
+ * access, whatever it is asked.
  */
 export async function holdoutAvailable(
-  prisma: Pick<PrismaClient, "historicalDataset" | "researchHoldoutAccess">,
-  input: { strategyId: string; instrumentKey: string; interval: string },
-): Promise<boolean> {
-  const siblings = await prisma.historicalDataset.findMany({ where: { instrumentKey: input.instrumentKey, interval: input.interval }, select: { id: true } });
-  const prior = await prisma.researchHoldoutAccess.findFirst({ where: { strategyId: input.strategyId, datasetId: { in: siblings.map((d) => d.id) } }, select: { id: true } });
-  return prior === null;
+  _prisma: unknown,
+  _input: { strategyId: string; instrumentKey: string; interval: string },
+): Promise<false> {
+  return false;
 }
 
 /**
@@ -36,3 +36,17 @@ export function resolvePriorTrials(supplied: number | null | undefined, durable:
   if (supplied > durable) return { priorTrials: supplied, source: "SUPPLIED_ABOVE_LEDGER", ignoredSupplied: null };
   return { priorTrials: durable, source: "LEDGER", ignoredSupplied: supplied < durable ? supplied : null };
 }
+
+/**
+ * OPERATION INTEGRITY F03/F06: the stable identity of one exploratory study run. Same CLI, dataset content, code
+ * version and arguments give the same key, so a retry reuses its accounting instead of counting twice or resetting.
+ * Keys are sorted so argument order does not create a "new" study.
+ */
+export function studyKey(identity: Record<string, unknown>): string {
+  const canon = (v: unknown): unknown =>
+    Array.isArray(v) ? v.map(canon) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v as object).sort().map((k) => [k, canon((v as Record<string, unknown>)[k])])) : v === undefined ? null : v;
+  return createHash("sha256").update(JSON.stringify(canon(identity))).digest("hex");
+}
+
+/** Labels every legacy CLI report: exploration only, never qualified evidence (campaigns are the sole evidence path). */
+export const EXPLORATORY_EVIDENCE_CLASS = "EXPLORATORY: not qualified evidence; holdouts withheld; use a research campaign" as const;

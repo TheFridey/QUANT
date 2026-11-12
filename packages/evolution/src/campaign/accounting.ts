@@ -102,3 +102,74 @@ export async function declareLegacyTrials(prisma: PrismaClient, input: { trials:
     return tx.researchTrialLedger.create({ data: { kind: "LEGACY_DECLARED", trials: input.trials, actor: input.actor, note: input.note.trim() } });
   });
 }
+
+/**
+ * OPERATION INTEGRITY F03/F06: trial accounting for the exploratory (non-campaign) research CLIs.
+ *
+ * Campaigns are the only lifecycle that produces qualified evidence. The legacy CLIs remain for offline exploration,
+ * withhold every holdout, and must still count every trial they compute, because a human reading their output can
+ * select on it. Their trial counts depend on data-scaled grids, so an exact bound is not known before computation.
+ * The rule is therefore OPEN before computing, CLOSE before disclosing:
+ *  - OPEN: one LEGACY_DECLARED row (0 trials, note `study-open:<key>`) under TRIAL_LEDGER_LOCK, freezing the programme
+ *    count the study is deflated by. A retry of the same study key reuses it, so the prior cannot drift.
+ *  - CLOSE: one LEGACY_DECLARED row with the trials actually computed (note `study-close:<key>`), committed before any
+ *    result is printed. A retry of a closed key adds nothing (the study is deterministic per key, as for a campaign
+ *    unit retry). If the close cannot be written the caller must not print results.
+ *  - A crash between OPEN and CLOSE leaves an unclosed OPEN row: nothing was disclosed, so nothing was selected on.
+ *    `openStudies` reports it for operator reconciliation; it is never silently dropped.
+ *  - Other ledger activity between OPEN and CLOSE (a concurrent study or campaign) is reported as `concurrentTrials`,
+ *    so a study whose frozen prior is stale says so instead of looking less selected than it was.
+ * No schema change: the existing CHECK permits LEGACY_DECLARED rows with `trials >= 0` and a non-empty note.
+ */
+export const STUDY_OPEN_PREFIX = "study-open:";
+export const STUDY_CLOSE_PREFIX = "study-close:";
+
+export type StudyOpen = { status: "OPENED" | "ALREADY_OPEN" | "ALREADY_CLOSED"; studyKey: string; priorTrials: number; openedAt: Date; closedTrials: number | null };
+
+function assertStudyKey(key: string): void {
+  if (!/^[a-f0-9]{64}$/.test(key)) throw new Error("study key must be a 64-hex sha256 of the study identity");
+}
+
+export async function openStudy(prisma: PrismaClient, input: { studyKey: string; actor: string; note: string }): Promise<StudyOpen> {
+  assertStudyKey(input.studyKey);
+  if (!input.note.trim()) throw new Error("a study needs a note naming the CLI, dataset and code version");
+  return campaignTx(prisma, async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${TRIAL_LEDGER_LOCK})`;
+    const open = await tx.researchTrialLedger.findFirst({ where: { kind: "LEGACY_DECLARED", note: { startsWith: `${STUDY_OPEN_PREFIX}${input.studyKey} ` } }, orderBy: { createdAt: "asc" } });
+    const close = await tx.researchTrialLedger.findFirst({ where: { kind: "LEGACY_DECLARED", note: { startsWith: `${STUDY_CLOSE_PREFIX}${input.studyKey} ` } }, orderBy: { createdAt: "asc" } });
+    if (open) return { status: close ? ("ALREADY_CLOSED" as const) : ("ALREADY_OPEN" as const), studyKey: input.studyKey, priorTrials: open.priorTrials ?? 0, openedAt: open.createdAt, closedTrials: close?.trials ?? null };
+    const prior = (await programmeTrials(tx)).total;
+    const row = await tx.researchTrialLedger.create({ data: { kind: "LEGACY_DECLARED", trials: 0, priorTrials: prior, actor: input.actor, note: `${STUDY_OPEN_PREFIX}${input.studyKey} ${input.note.trim()}` } });
+    return { status: "OPENED" as const, studyKey: input.studyKey, priorTrials: prior, openedAt: row.createdAt, closedTrials: null };
+  });
+}
+
+export type StudyClose = { status: "CLOSED" | "ALREADY_CLOSED"; trials: number; concurrentTrials: number };
+
+export async function closeStudy(prisma: PrismaClient, input: { studyKey: string; trials: number; actor: string; note: string; registryTrials?: number }): Promise<StudyClose> {
+  assertStudyKey(input.studyKey);
+  if (!Number.isInteger(input.trials) || input.trials < 0) throw new Error("study trial count must be a non-negative integer");
+  return campaignTx(prisma, async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${TRIAL_LEDGER_LOCK})`;
+    const open = await tx.researchTrialLedger.findFirst({ where: { kind: "LEGACY_DECLARED", note: { startsWith: `${STUDY_OPEN_PREFIX}${input.studyKey} ` } }, orderBy: { createdAt: "asc" } });
+    if (!open) throw new Error(`TRIAL_ACCOUNTING: study ${input.studyKey} was never opened; open it before computing`);
+    const existing = await tx.researchTrialLedger.findFirst({ where: { kind: "LEGACY_DECLARED", note: { startsWith: `${STUDY_CLOSE_PREFIX}${input.studyKey} ` } }, orderBy: { createdAt: "asc" } });
+    const own = (existing ? existing.trials : input.trials) + (input.registryTrials ?? 0);
+    if (!existing) await tx.researchTrialLedger.create({ data: { kind: "LEGACY_DECLARED", trials: input.trials, actor: input.actor, note: `${STUDY_CLOSE_PREFIX}${input.studyKey} ${input.note.trim() || "closed"}` } });
+    // Trials anyone else committed (ledger or registry) since this study froze its prior: its deflation is stale by
+    // at least this much. Never negative: a retry of a closed study has nothing of its own left to add.
+    const concurrentTrials = Math.max(0, (await programmeTrials(tx)).total - (open.priorTrials ?? 0) - own);
+    return { status: existing ? ("ALREADY_CLOSED" as const) : ("CLOSED" as const), trials: existing ? existing.trials : input.trials, concurrentTrials };
+  });
+}
+
+/** Studies opened but never closed (crashed or interrupted before disclosure), for operator reconciliation. */
+export async function openStudies(db: Db): Promise<Array<{ studyKey: string; actor: string; openedAt: Date; note: string }>> {
+  const rows = await db.$queryRaw<Array<{ note: string; actor: string; createdAt: Date }>>`
+    SELECT o."note", o."actor", o."createdAt" FROM "ResearchTrialLedger" o
+     WHERE o."kind" = 'LEGACY_DECLARED' AND o."note" LIKE ${`${STUDY_OPEN_PREFIX}%`}
+       AND NOT EXISTS (SELECT 1 FROM "ResearchTrialLedger" c WHERE c."kind" = 'LEGACY_DECLARED'
+             AND c."note" LIKE ${STUDY_CLOSE_PREFIX} || substr(o."note", ${STUDY_OPEN_PREFIX.length + 1}::int, 64) || ' %')
+     ORDER BY o."createdAt" ASC`;
+  return rows.map((r) => ({ studyKey: r.note.slice(STUDY_OPEN_PREFIX.length, STUDY_OPEN_PREFIX.length + 64), actor: r.actor, openedAt: r.createdAt, note: r.note }));
+}

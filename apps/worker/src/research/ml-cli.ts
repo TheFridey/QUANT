@@ -5,8 +5,8 @@ import { DEFAULT_ML2_CONFIG, horizonsFor, inferBarMs, ML2_PROTOCOL_VERSION, runM
 import { INTERVAL_MS, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
 import { costPerSide } from "./cost-basis.js";
-import { declareLegacyTrials } from "@odin/evolution/campaign";
-import { programmeTrialCount, resolvePriorTrials } from "./holdout-policy.js";
+import { closeStudy, openStudy } from "@odin/evolution/campaign";
+import { EXPLORATORY_EVIDENCE_CLASS, resolvePriorTrials, studyKey } from "./holdout-policy.js";
 import { ML_CLI_USAGE, parseBarsCsv, parseMlArgs } from "./ml-args.js";
 
 /**
@@ -95,6 +95,7 @@ async function main() {
   let priorTrials: number;
   let calendar: SessionCalendar;
   let barAvailableAt: number[] | undefined;
+  let study: { key: string; status: string; priorTrials: number } | null = null;
   if (args.csvPath) {
     const text = readFileSync(args.csvPath, "utf8");
     const parsed = parseBarsCsv(text);
@@ -134,8 +135,12 @@ async function main() {
         slippageBps = 0;
         costBasis = `ASCEND-06 combined per-side cost (fee + spread + impact): ${cost.basis}`;
       }
+      // F03: open the study durably before computing; its programme count is frozen there (retries reuse it).
       // F06: a supplied --prior-trials can raise, never lower, the durable programme count.
-      priorTrials = resolvePriorTrials(args.priorTrials, await programmeTrialCount(prisma)).priorTrials;
+      const key = studyKey({ cli: "ml-cli", datasetId: dataset.id, versionHash: dataset.versionHash, codeVersion: process.env.GIT_COMMIT ?? "unknown", args, feeBps, slippageBps });
+      const opened = await openStudy(prisma, { studyKey: key, actor: "ml-cli", note: `ml-cli ${dataset.id} at ${process.env.GIT_COMMIT ?? "unknown"}` });
+      study = { key, status: opened.status, priorTrials: opened.priorTrials };
+      priorTrials = resolvePriorTrials(args.priorTrials, opened.priorTrials).priorTrials;
     } finally {
       await prisma.$disconnect();
     }
@@ -151,13 +156,14 @@ async function main() {
     config: { scheme: args.scheme, calibration: args.calibration, folds: args.folds ?? DEFAULT_ML2_CONFIG.folds, seed: args.seed ?? DEFAULT_ML2_CONFIG.seed, prefixProbes: args.prefixProbes ?? DEFAULT_ML2_CONFIG.prefixProbes },
     priorTrialCount: priorTrials,
   });
-  // The trials this study ran join the programme count in warehouse mode (the study itself is not stored).
-  let trialsRecorded: number | string = "NOT_RECORDED: CSV mode has no database";
-  if (!args.csvPath && report.trialCount > 0) {
+  // F03: close before disclose. The trials join the programme count before anything is printed; if the close
+  // cannot be committed this throws and no result is shown.
+  let trialsRecorded: Record<string, unknown> | string = "NOT_RECORDED: CSV mode has no database";
+  if (!args.csvPath && study) {
     const prisma = new PrismaClient();
     try {
-      await declareLegacyTrials(prisma, { trials: report.trialCount, actor: "ml-cli", note: `ml-cli ${args.datasetId} horizon ${horizon} at ${process.env.GIT_COMMIT ?? "unknown"}: ${report.verdict}` });
-      trialsRecorded = report.trialCount;
+      const closed = await closeStudy(prisma, { studyKey: study.key, trials: report.trialCount, actor: "ml-cli", note: `ml-cli ${args.datasetId} horizon ${horizon}: ${report.verdict}` });
+      trialsRecorded = { studyKey: study.key, opened: study.status, closed: closed.status, trials: closed.trials, priorTrialsFrozen: study.priorTrials, concurrentTrials: closed.concurrentTrials, priorStale: closed.concurrentTrials > 0 };
     } finally {
       await prisma.$disconnect();
     }
@@ -168,6 +174,7 @@ async function main() {
       {
         mode: !args.csvPath ? "STUDY_NOT_STORED_TRIALS_COUNTED" : "READ_ONLY",
         evidence: "RESEARCH_ONLY",
+        evidenceClass: EXPLORATORY_EVIDENCE_CLASS,
         protocol: ML2_PROTOCOL_VERSION,
         codeVersion: process.env.GIT_COMMIT ?? "unknown",
         source,
