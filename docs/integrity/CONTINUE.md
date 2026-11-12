@@ -22,7 +22,8 @@ Nothing is pushed, merged or deployed unless the PR links in STATUS.md say other
 3. F11 analytics: group `REALIZED_PNL` by economic exit (root of the remainder chain) before `performance.ts` counts trades; preserve cash/ledger/P&L totals.
 4. F09: keyset pagination over `(decisionTime, id)` in `packages/evolution/src/campaign/bridge.ts`, bounded per page, fixed cohort.
 5. F04: get an independent statistical review of the proposed degenerate-dispersion policy before changing `metrics.ts`; version the protocol.
-6. F01 / F11 execution: blocked on explicit operator approval for protected paths.
+6. F11 execution: blocked on explicit operator approval for protected paths. F01 is in #77 (`integrity/f01-pcr1-fence`, off `main`); follow-ups from its safety review: lock SANDBOX `applyExternalFill`, keep the original qty on CAP.
+7. The disposable test DB `odin_test_integrity` recorded the briefly renamed `20261112120000_order_position_lifecycle`; recreate it before further integration runs.
 
 ## Local verification environment
 
