@@ -1,5 +1,7 @@
 # HORIZON Phase II: current state (17 Nov 2026)
 
+> **Superseded (17 Nov 2026)** by OPERATION AURUM (gold-only spread-bet simulation): see [`docs/aurum/README.md`](../../aurum/README.md). Kept as history; the multi-market execution roadmap is not being pursued.
+
 Reconnaissance for OPERATION HORIZON Phase II (BREAKOUT). PAPER only; nothing here enables live money, changes `EXECUTION_MODE`, loosens a risk limit or touches a protected path.
 
 **Evidence labels:** `REPO` (code at `main` `873bdd6`, cited `file:line`) · `PROD` (read-only VPS query or probe, 17 Nov 2026 10:16–10:30 UTC) · `INFERRED` (reasoning, not observed) · `UNVERIFIED` (not checked).

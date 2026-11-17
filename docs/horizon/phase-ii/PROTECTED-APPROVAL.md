@@ -1,5 +1,7 @@
 # HORIZON Phase II: protected-path approval request
 
+> **Superseded (17 Nov 2026)** by OPERATION AURUM (gold-only spread-bet simulation): see [`docs/aurum/README.md`](../../aurum/README.md). Kept as history; the multi-market execution roadmap is not being pursued.
+
 **Status: REQUEST. Nothing here has been applied.** The agent stops here. Each line item needs:
 
 1. the operator's explicit approval in chat, naming the item;
