@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AURUM_ACCOUNT_CEILINGS, AURUM_PROPOSED_ACCOUNT_CONFIG, sizeStakeWithinAccountRisk, validateAurumAccountConfig } from "./aurum-account-config.js";
+import { AURUM_ACCOUNT_CEILINGS, AURUM_PROPOSED_ACCOUNT_CONFIG, sizeStakeWithinAccountRisk, validateAurumAccountConfig } from "./index.js";
 import { AURUM_GENERIC_GOLD_DFB_V1, sizeStake } from "./spread-bet.js";
 
 const C = AURUM_PROPOSED_ACCOUNT_CONFIG;

@@ -32,3 +32,4 @@ export * from "./spread-bet.js";
 export * from "./spread-bet-lifecycle.js";
 export * from "./aurum-scope.js";
 export * from "./aurum-readiness.js";
+export * from "./aurum-account-config.js";
