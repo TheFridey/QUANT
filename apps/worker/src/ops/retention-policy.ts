@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 
 /**
  * OPERATION AURUM Workstream Zero: dependency-aware retention for the four high-growth tables.
- * **Planning and dry-run only.** Nothing here deletes or archives; the executor is blocked until it is
- * proven on a disposable database (docs/aurum/STORAGE-PLAN.md) and the operator approves the policy.
+ * This module is pure: policy, SQL text and manifest checks. The executor (`retention-executor.ts`) acts
+ * only on a policy whose hash is listed in `APPROVED_RETENTION_POLICY_HASHES`, which is empty until the
+ * operator approves the policy (docs/aurum/STORAGE-PLAN.md, decision D1).
  *
  * A row is a candidate only when it is older than the hot window AND no evidence references it.
  * Evidence (orders, fills, intents, equity, watchlist, backtests) is preserved indefinitely.
@@ -92,6 +93,12 @@ export const PRESERVED_FOREVER = [
 ] as const;
 
 export const MIN_HOT_DAYS = 7;
+
+/**
+ * Policy hashes the operator has approved for execution. **Empty**: nothing may be archived or deleted
+ * until the operator approves a policy and this list is changed in a reviewed commit (STORAGE-PLAN D1).
+ */
+export const APPROVED_RETENTION_POLICY_HASHES: readonly string[] = Object.freeze([]);
 export const MAX_BATCH_ROWS = 10_000;
 
 export function validatePolicy(policy: readonly TableRetention[]): { ok: true } | { ok: false; reason: string } {
@@ -106,14 +113,17 @@ export function validatePolicy(policy: readonly TableRetention[]): { ok: true } 
       return { ok: false, reason: `BAD_COLUMN:${p.table}` };
     }
     if (p.preserveWhen.length === 0) return { ok: false, reason: `NO_DEPENDENCY_RULES:${p.table}` };
+    // P3: hard invariant. Observation windows are research dataset identity and are not yet mapped to a
+    // preservation rule, so no policy may make MarketObservation executable.
+    if (p.table === "MarketObservation" && !p.executorBlocked) return { ok: false, reason: "MARKET_OBSERVATION_MUST_STAY_BLOCKED" };
   }
   return { ok: true };
 }
 
-/** Policies an archive/delete executor may act on: valid and not blocked. */
+/** Policies an archive/delete executor may act on: valid, not blocked, and never MarketObservation. */
 export function executablePolicies(policy: readonly TableRetention[]): TableRetention[] {
   if (!validatePolicy(policy).ok) return [];
-  return policy.filter((p) => !p.executorBlocked);
+  return policy.filter((p) => !p.executorBlocked && p.table !== "MarketObservation");
 }
 
 function ageExpr(policy: TableRetention): string {
@@ -154,6 +164,31 @@ export function batchSelectSql(policy: TableRetention): string {
   ].join("\n");
 }
 
+/**
+ * One-statement batch export ($1 cutoff, $2 last key or '', $3 limit): the keys and the exact row text
+ * come from one snapshot. `doc` is `to_jsonb(t)::text`; its md5 is the row hash checked at delete and restore.
+ */
+export function batchExportSql(policy: TableRetention): string {
+  return [
+    `SELECT t."${policy.keyColumn}"::text AS key, to_jsonb(t)::text AS doc FROM "${policy.table}" t`,
+    `WHERE ${candidateWhere(policy)} AND t."${policy.keyColumn}" > $2`,
+    `ORDER BY t."${policy.keyColumn}" ASC LIMIT $3`,
+  ].join("\n");
+}
+
+/**
+ * Delete with revalidation ($1 cutoff, $2 keys, $3 row md5s). A row is deleted only if it is still a
+ * candidate (age and every dependency re-checked now) AND its content is unchanged since export.
+ * Anything else stays in place; its archive copy is then redundant and restore skips it on conflict.
+ */
+export function batchDeleteSql(policy: TableRetention): string {
+  return [
+    `DELETE FROM "${policy.table}" t USING unnest($2::text[], $3::text[]) AS v(k, h)`,
+    `WHERE t."${policy.keyColumn}" = v.k AND md5(to_jsonb(t)::text) = v.h AND ${candidateWhere(policy)}`,
+    `RETURNING t."${policy.keyColumn}"::text AS key`,
+  ].join("\n");
+}
+
 export function clampBatch(rows: number): number {
   if (!Number.isInteger(rows) || rows <= 0) throw new Error("INVALID_BATCH");
   return Math.min(rows, MAX_BATCH_ROWS);
@@ -168,6 +203,11 @@ export type ArchiveBatchEntry = {
   file: string;
   sha256: string;
   bytes: number;
+  /** Executor state. PENDING_DELETE: archive published, delete not confirmed (resolved on resume). */
+  status?: "PENDING_DELETE" | "DELETED";
+  deletedRows?: number;
+  /** Rows kept because they changed or gained evidence after export. Their archive copy is redundant. */
+  retainedRows?: number;
 };
 
 export type ArchiveManifest = {
@@ -176,6 +216,12 @@ export type ArchiveManifest = {
   policyHash: string;
   cutoffs: Record<string, string>;
   batches: ArchiveBatchEntry[];
+  runId?: string;
+  state?: "RUNNING" | "COMPLETE";
+  /** Last fully resolved key per table; a resumed run continues after it. */
+  cursor?: Record<string, string>;
+  lastError?: string;
+  estimate?: Record<string, unknown>;
 };
 
 export function sha256(data: Buffer | string): string {
@@ -192,23 +238,47 @@ export function policyHash(policy: readonly TableRetention[]): string {
  * Verifies every batch file against its recorded hash and size before anything may be deleted, and
  * again after restore. `read` returns the file bytes or null when missing.
  */
-export type ManifestFailure = "MISSING" | "SIZE_MISMATCH" | "HASH_MISMATCH" | "DUPLICATE_BATCH" | "POLICY_MISMATCH";
+export type ManifestFailure =
+  | "MISSING"
+  | "SIZE_MISMATCH"
+  | "HASH_MISMATCH"
+  | "DUPLICATE_BATCH"
+  | "DUPLICATE_FILE"
+  | "BAD_KEY_RANGE"
+  | "KEY_RANGE_OVERLAP"
+  | "POLICY_MISMATCH"
+  | "BAD_VERSION";
 
+/**
+ * P1: `expectedPolicyHash` is mandatory; an empty or different value fails as POLICY_MISMATCH.
+ * P2: a file name or content hash may appear once only, and key ranges within a table may not overlap
+ * (keys compare as JS strings; the executor refuses any batch whose database order disagrees).
+ */
 export function verifyManifest(
   manifest: ArchiveManifest,
   read: (file: string) => Buffer | null,
-  expectedPolicyHash?: string,
+  expectedPolicyHash: string,
 ): { ok: true; rows: number } | { ok: false; failures: { file: string; reason: ManifestFailure }[] } {
   const failures: { file: string; reason: ManifestFailure }[] = [];
-  if (expectedPolicyHash !== undefined && manifest.policyHash !== expectedPolicyHash) {
+  if (manifest.version !== "aurum-retention-1") failures.push({ file: "(manifest)", reason: "BAD_VERSION" });
+  if (typeof expectedPolicyHash !== "string" || expectedPolicyHash.length === 0 || manifest.policyHash !== expectedPolicyHash) {
     failures.push({ file: "(manifest)", reason: "POLICY_MISMATCH" });
   }
   let rows = 0;
   const seqs = new Set<string>();
+  const files = new Set<string>();
+  const hashes = new Set<string>();
+  const ranges = new Map<string, ArchiveBatchEntry[]>();
   for (const b of manifest.batches) {
     const key = `${b.table}:${b.seq}`;
+    const duplicate = seqs.has(key) || files.has(b.file) || hashes.has(b.sha256);
     if (seqs.has(key)) failures.push({ file: b.file, reason: "DUPLICATE_BATCH" });
+    else if (duplicate) failures.push({ file: b.file, reason: "DUPLICATE_FILE" });
     seqs.add(key);
+    files.add(b.file);
+    hashes.add(b.sha256);
+    if (!(b.firstKey <= b.lastKey) || !Number.isInteger(b.rows) || b.rows <= 0) failures.push({ file: b.file, reason: "BAD_KEY_RANGE" });
+    else if (!duplicate) ranges.set(b.table, [...(ranges.get(b.table) ?? []), b]);
     const data = read(b.file);
     if (data === null) {
       failures.push({ file: b.file, reason: "MISSING" });
@@ -217,6 +287,15 @@ export function verifyManifest(
     if (data.byteLength !== b.bytes) failures.push({ file: b.file, reason: "SIZE_MISMATCH" });
     else if (sha256(data) !== b.sha256) failures.push({ file: b.file, reason: "HASH_MISMATCH" });
     rows += b.rows;
+  }
+  for (const list of ranges.values()) {
+    const sorted = [...list].sort((a, b) => (a.firstKey < b.firstKey ? -1 : a.firstKey > b.firstKey ? 1 : a.seq - b.seq));
+    let maxLast = "";
+    for (let i = 0; i < sorted.length; i++) {
+      const cur = sorted[i]!;
+      if (i > 0 && cur.firstKey <= maxLast) failures.push({ file: cur.file, reason: "KEY_RANGE_OVERLAP" });
+      if (cur.lastKey > maxLast) maxLast = cur.lastKey;
+    }
   }
   return failures.length === 0 ? { ok: true, rows } : { ok: false, failures };
 }
