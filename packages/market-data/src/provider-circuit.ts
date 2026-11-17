@@ -11,7 +11,7 @@
  * - HALF_OPEN: after `retryAt`, exactly one probe request is allowed; success closes, failure reopens with
  *   a doubled backoff.
  *
- * N3 (generation fence): every state change increments `epoch`, and each admission returns it as `token`.
+ * N3 (generation fence): every completed result and state change increments `epoch`; admission returns it as `token`.
  * A result reported with a token from an earlier epoch is stale and changes nothing material. In HALF_OPEN the
  * token is mandatory, so only the current probe can close or reopen the breaker; an out-of-order success from
  * an expired probe cannot close a newer probe's generation.
@@ -74,12 +74,12 @@ const epochOf = (r: CircuitRecord): number => (Number.isInteger(r.epoch) ? (r.ep
 
 /**
  * True when a result carrying `token` belongs to the record's current generation. A token from another
- * generation is always stale. Without a token, a HALF_OPEN success is refused (closing needs proof that it
- * came from the current probe), while a failure is accepted, because reopening is the conservative direction.
+ * generation is always stale. Missing tokens are refused for either outcome in every state.
+ * Concurrent CLOSED requests share a generation: the first completion consumes it. Callers must
+ * serialise requests per key when every result must contribute to the consecutive-failure count.
  */
-function isCurrent(record: CircuitRecord, token: number | undefined, outcome: "SUCCESS" | "FAILURE"): boolean {
-  if (token !== undefined) return token === epochOf(record);
-  return !(record.state === "HALF_OPEN" && outcome === "SUCCESS");
+function isCurrent(record: CircuitRecord, token: number | undefined): boolean {
+  return token !== undefined && token === epochOf(record);
 }
 
 function stale(record: CircuitRecord): CircuitRecord {
@@ -105,6 +105,12 @@ export function initialCircuit(key: string): CircuitRecord {
     epoch: 0,
     staleResults: 0,
   };
+}
+
+/** Administrative in-process reset: invalidate all outstanding completions. Reinitialisation
+ * with initialCircuit is only safe before requests exist (e.g. a fresh process). */
+export function resetCircuit(record: CircuitRecord): CircuitRecord {
+  return { ...initialCircuit(record.key), epoch: epochOf(record) + 1 };
 }
 
 function validPolicy(policy: CircuitPolicy): CircuitPolicy {
@@ -194,10 +200,11 @@ export function admitRequest(
  * HALF_OPEN generation (N3).
  */
 export function recordSuccess(record: CircuitRecord, now: number, token?: number): CircuitRecord {
-  if (record.state === "OPEN") return { ...record, lastSuccessAt: now };
-  if (!isCurrent(record, token, "SUCCESS")) return stale(record);
-  // Closing from HALF_OPEN is a state change; a success while CLOSED keeps the generation.
-  const epoch = record.state === "HALF_OPEN" ? epochOf(record) + 1 : epochOf(record);
+  if (!isCurrent(record, token)) return stale(record);
+  if (record.state === "OPEN") return stale(record);
+  // Consume the generation on every completion, including CLOSED. Concurrent or duplicate
+  // completions admitted before this result can no longer erase or add failures.
+  const epoch = epochOf(record) + 1;
   return { ...initialCircuit(record.key), lastSuccessAt: now, epoch, staleResults: record.staleResults ?? 0 };
 }
 
@@ -210,13 +217,13 @@ export function recordFailure(
   policy: CircuitPolicy = DEFAULT_CIRCUIT_POLICY,
 ): CircuitRecord {
   const p = validPolicy(policy);
-  // A late failure while already OPEN is recorded but does not extend the backoff or count as a new opening.
-  if (record.state === "OPEN") return { ...record, lastFailure: failure.kind, lastError: failure.error ?? null };
+  // Late results never overwrite the newer generation's failure or success diagnostics.
+  if (!isCurrent(record, failure.token)) return stale(record);
+  if (record.state === "OPEN") return stale(record);
   // A failure from an earlier generation must not reopen a newer probe or count against a later CLOSED period.
-  if (!isCurrent(record, failure.token, "FAILURE")) return stale(record);
   const consecutiveFailures = record.consecutiveFailures + 1;
   const opens = record.state === "HALF_OPEN" || OPEN_IMMEDIATELY.has(failure.kind) || consecutiveFailures >= p.failureThreshold;
-  const base = { ...record, consecutiveFailures, lastFailure: failure.kind, lastError: failure.error ?? null, halfOpenInFlight: false, halfOpenSince: null };
+  const base = { ...record, epoch: epochOf(record) + 1, consecutiveFailures, lastFailure: failure.kind, lastError: failure.error ?? null, halfOpenInFlight: false, halfOpenSince: null };
   if (!opens) return { ...base, state: "CLOSED" };
   const openings = record.openings + 1;
   return { ...base, state: "OPEN", openings, epoch: epochOf(record) + 1, retryAt: now + backoffMs(record.key, openings, p, failure.retryAfterMs) };

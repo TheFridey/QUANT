@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_GOLD_SHADOW_CONFIG, GoldShadowFeed, failureKindFor, validateGoldShadowConfig, type GoldShadowConfig, type PricingFetcher } from "./gold-shadow-feed.js";
 import { parseOandaPricing, type OandaPriceSnapshot, type OandaResult } from "./providers/oanda-practice.js";
 
@@ -196,5 +196,96 @@ describe("AURUM gold shadow feed (default off, never executable)", () => {
     expect(s.quoteAgeMs).toBe(10_300);
     expect(s.receiveAgeMs).toBe(10_000);
     expect(s.latest?.executable).toBe(false);
+    expect(s.currentQuality).toMatchObject({ admissible: false });
+    expect(s.currentQuality!.reasons).toContain("QUOTE_STALE");
+  });
+
+  it("rejects future events before they poison the ordering watermark", async () => {
+    const h = harness();
+    h.respond(async (n) => oanda(n, { time: new Date(n.getTime() + 86400000).toISOString() }));
+    expect(await h.feed.poll()).toMatchObject({ status: "REJECTED", reason: "FUTURE_EVENT_TIME" });
+    expect(h.feed.quotes()).toHaveLength(0);
+    h.advance(5000);
+    h.respond(async (n) => oanda(n));
+    expect((await h.feed.poll()).status).toBe("ACCEPTED");
+  });
+
+  it("aborts a timed-out request, rejects late completion and prevents overlapping abandoned calls", async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: (r: OandaResult<OandaPriceSnapshot[]>) => void;
+      let signal: AbortSignal | undefined;
+      let calls = 0;
+      let now = OPEN;
+      const feed = new GoldShadowFeed({ ...ON, requestTimeoutMs: 100 }, {
+        now: () => now,
+        pricing: async (_, s) => { calls++; signal = s; return new Promise((resolve) => { release = resolve; }); },
+      });
+      const pending = feed.poll();
+      await vi.advanceTimersByTimeAsync(101);
+      expect(await pending).toMatchObject({ status: "PROVIDER_FAILURE", code: "TIMEOUT" });
+      expect(signal?.aborted).toBe(true);
+      now = new Date(OPEN.getTime() + 6000);
+      expect(await feed.poll()).toMatchObject({ status: "THROTTLED" });
+      expect(calls).toBe(1);
+      release(oanda(OPEN));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(feed.quotes()).toHaveLength(0);
+      const retry = feed.poll();
+      await vi.advanceTimersByTimeAsync(101);
+      expect(await retry).toMatchObject({ status: "PROVIDER_FAILURE", code: "TIMEOUT" });
+      expect(calls).toBe(2);
+      release(oanda(now));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not relabel fixtures or accept missing tradeability as quality-passing", async () => {
+    const h = harness();
+    h.respond(async (n) => {
+      const r = oanda(n);
+      if (r.ok) r.data[0]!.quality.feed = "OFFLINE_FIXTURE";
+      return r;
+    });
+    expect(await h.feed.poll()).toMatchObject({ status: "REJECTED", reason: "INVALID_PROVENANCE" });
+    h.advance(5000);
+    h.respond(async (n) => {
+      const r = oanda(n);
+      if (r.ok) r.data[0]!.tradeable = null;
+      return r;
+    });
+    const r = await h.feed.poll();
+    expect(r.status === "ACCEPTED" && r.quote.quality.reasons).toContain("PROVIDER_NOT_TRADEABLE");
+  });
+
+  it("returns isolated snapshots and copies caller configuration", async () => {
+    const config = { ...ON };
+    const h = harness(config);
+    config.enabled = false;
+    const r = await h.feed.poll();
+    if (r.status !== "ACCEPTED") throw new Error(r.status);
+    r.quote.eventTime = "2099-01-01T00:00:00Z";
+    h.feed.quotes()[0]!.eventTime = "2099-01-01T00:00:00Z";
+    h.feed.status().latest!.quality.reasons.push("QUOTE_STALE");
+    expect(h.feed.status().latest!.eventTime).toBe("2026-11-17T14:59:59.700Z");
+    expect(h.feed.status().latest!.quality.reasons).toEqual([]);
+  });
+
+  it("returns INVALID_CONFIG for malformed circuit policies without throwing", async () => {
+    const h = harness({ ...ON, circuit: { ...ON.circuit, probeTimeoutMs: 0 } });
+    expect(await h.feed.poll()).toEqual({ status: "INVALID_CONFIG", reason: "INVALID_CIRCUIT_POLICY" });
+    expect(h.calls).toEqual([]);
+  });
+
+  it("does not expose provider or thrown error payloads", async () => {
+    for (const thrown of [false, true]) {
+      const h = harness();
+      h.respond(async () => {
+        if (thrown) throw new Error("secret-sentinel");
+        return { ok: false, code: "HTTP_ERROR", error: "secret-sentinel" };
+      });
+      const r = await h.feed.poll();
+      expect(r.status).toBe("PROVIDER_FAILURE");
+      expect(JSON.stringify([r, h.feed.status()])).not.toContain("secret-sentinel");
+    }
   });
 });

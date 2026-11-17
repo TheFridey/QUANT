@@ -2,6 +2,7 @@ import {
   AURUM_GENERIC_GOLD_DFB_V1,
   assessQuoteAdmission,
   deriveSpreadBetQuote,
+  describeQuoteQuality,
   evaluateSession,
   type QuoteAdmission,
   type QuoteQuality,
@@ -52,6 +53,8 @@ export type GoldShadowConfig = {
   bufferSize: number;
   /** Polls closer together than this are refused without a request. */
   minPollIntervalMs: number;
+  /** Bounds the whole pricing operation, including body consumption. */
+  requestTimeoutMs: number;
   circuit: CircuitPolicy;
 };
 
@@ -63,6 +66,7 @@ export const DEFAULT_GOLD_SHADOW_CONFIG: Readonly<GoldShadowConfig> = Object.fre
   clockSkewToleranceMs: 250,
   bufferSize: 720,
   minPollIntervalMs: 5_000,
+  requestTimeoutMs: 10_000,
   circuit: DEFAULT_CIRCUIT_POLICY,
 });
 
@@ -71,9 +75,15 @@ export function validateGoldShadowConfig(c: GoldShadowConfig): { ok: true } | { 
   if (typeof c.enabled !== "boolean") return { ok: false, reason: "ENABLED_NOT_BOOLEAN" };
   if (!pos(c.maxSpreadBps) || c.maxSpreadBps > 100) return { ok: false, reason: "INVALID_SPREAD_CAP" };
   if (!pos(c.maxQuoteAgeMs) || c.maxQuoteAgeMs > 60_000) return { ok: false, reason: "INVALID_MAX_AGE" };
-  if (!(c.clockSkewToleranceMs >= 0 && c.clockSkewToleranceMs <= 1_000)) return { ok: false, reason: "INVALID_SKEW" };
+  if (!Number.isFinite(c.clockSkewToleranceMs) || !(c.clockSkewToleranceMs >= 0 && c.clockSkewToleranceMs <= 1_000)) return { ok: false, reason: "INVALID_SKEW" };
   if (!Number.isInteger(c.bufferSize) || c.bufferSize < 1 || c.bufferSize > 100_000) return { ok: false, reason: "INVALID_BUFFER" };
   if (!pos(c.minPollIntervalMs) || c.minPollIntervalMs < 1_000) return { ok: false, reason: "INVALID_POLL_INTERVAL" };
+  if (!pos(c.requestTimeoutMs) || c.requestTimeoutMs > 60_000) return { ok: false, reason: "INVALID_REQUEST_TIMEOUT" };
+  try {
+    admitRequest(initialCircuit("config-validation"), 0, c.circuit);
+  } catch {
+    return { ok: false, reason: "INVALID_CIRCUIT_POLICY" };
+  }
   return { ok: true };
 }
 
@@ -103,8 +113,8 @@ export type ShadowPollResult =
   | { status: "INVALID_CONFIG"; reason: string }
   | { status: "THROTTLED"; nextPollAt: number }
   | { status: "CIRCUIT_OPEN"; retryAt: number | null; reason: string }
-  | { status: "PROVIDER_FAILURE"; code: OandaFailureCode | "NO_QUOTE" | "THREW"; error: string; circuit: CircuitRecord["state"] }
-  | { status: "REJECTED"; reason: "MISSING_EVENT_TIME" | "ONE_SIDED"; snapshot: Pick<OandaPriceSnapshot, "time" | "bid" | "ask"> }
+  | { status: "PROVIDER_FAILURE"; code: OandaFailureCode | "NO_QUOTE" | "THREW" | "TIMEOUT"; error: string; circuit: CircuitRecord["state"] }
+  | { status: "REJECTED"; reason: "MISSING_EVENT_TIME" | "ONE_SIDED" | "FUTURE_EVENT_TIME" | "INVALID_PROVENANCE"; snapshot: Pick<OandaPriceSnapshot, "time" | "bid" | "ask"> }
   | { status: "DUPLICATE"; eventTime: string }
   | { status: "OUT_OF_ORDER"; eventTime: string; lastEventTime: string }
   | { status: "ACCEPTED"; quote: GoldReferenceQuote; simulated: GoldSimulatedQuote | { unavailable: string } };
@@ -122,10 +132,12 @@ export type ShadowCounters = {
   qualityFailures: number;
 };
 
-export type PricingFetcher = (instruments: readonly string[]) => Promise<OandaResult<OandaPriceSnapshot[]>>;
+export type PricingFetcher = (instruments: readonly string[], signal?: AbortSignal) => Promise<OandaResult<OandaPriceSnapshot[]>>;
 
-export function failureKindFor(code: OandaFailureCode | "NO_QUOTE" | "THREW"): ProviderFailureKind {
+export function failureKindFor(code: OandaFailureCode | "NO_QUOTE" | "THREW" | "TIMEOUT"): ProviderFailureKind {
   switch (code) {
+    case "TIMEOUT":
+      return "TIMEOUT";
     case "AUTH_FAILED":
       return "AUTH_FAILED";
     case "MISSING_CREDENTIALS":
@@ -168,7 +180,9 @@ export class GoldShadowFeed {
   constructor(
     private readonly config: GoldShadowConfig,
     private readonly deps: { pricing: PricingFetcher; now: () => Date },
-  ) {}
+  ) {
+    this.config = structuredClone(config);
+  }
 
   private latest(): GoldReferenceQuote | null {
     return this.buffer.length > 0 ? this.buffer[this.buffer.length - 1]! : null;
@@ -196,38 +210,59 @@ export class GoldShadowFeed {
     this.inFlight = true;
     this.counters.requests++;
     let result: OandaResult<OandaPriceSnapshot[]>;
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Only actual transport settlement releases the slot. A fetcher that ignores abort
+    // cannot create an unbounded pile of overlapping abandoned requests.
+    const request = Promise.resolve().then(() => this.deps.pricing([GOLD_PROVIDER_INSTRUMENT], abort.signal));
+    void request.then(() => { this.inFlight = false; }, () => { this.inFlight = false; });
     try {
-      result = await this.deps.pricing([GOLD_PROVIDER_INSTRUMENT]);
-    } catch (err) {
-      result = { ok: false, code: "INVALID", error: `THREW:${err instanceof Error ? err.message : String(err)}` };
-      return this.fail("THREW", result.error, token);
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { abort.abort(); reject(new Error("GOLD_PRICING_TIMEOUT")); }, this.config.requestTimeoutMs);
+      });
+      result = await Promise.race([request, timeout]);
+    } catch {
+      if (abort.signal.aborted) return this.fail("TIMEOUT", token);
+      result = { ok: false, code: "INVALID", error: "Gold pricing request threw" };
+      return this.fail("THREW", token);
     } finally {
-      this.inFlight = false;
+      if (timer !== undefined) clearTimeout(timer);
     }
-    if (!result.ok) return this.fail(result.code, result.error, token);
+    if (!result.ok) return this.fail(result.code, token);
     const snap = result.data.find((s) => s.instrument === GOLD_PROVIDER_INSTRUMENT);
-    if (!snap) return this.fail("NO_QUOTE", "XAU_USD missing from pricing response", token);
+    if (!snap) return this.fail("NO_QUOTE", token);
     // The provider answered: that is a success for the breaker, whatever the quote's quality.
     this.circuit = recordSuccess(this.circuit, this.deps.now().getTime(), token);
     return this.accept(snap, this.deps.now());
   }
 
-  private fail(code: OandaFailureCode | "NO_QUOTE" | "THREW", error: string, token: number): ShadowPollResult {
+  private fail(code: OandaFailureCode | "NO_QUOTE" | "THREW" | "TIMEOUT", token: number): ShadowPollResult {
     this.counters.providerFailures++;
-    this.circuit = recordFailure(this.circuit, { kind: failureKindFor(code), error, token }, this.deps.now().getTime(), this.config.circuit);
-    return { status: "PROVIDER_FAILURE", code, error, circuit: this.circuit.state };
+    // Provider/transport messages may contain URLs or credentials. The API-safe diagnostic is a code.
+    const safeError = `Gold pricing failed (${code})`;
+    this.circuit = recordFailure(this.circuit, { kind: failureKindFor(code), error: safeError, token }, this.deps.now().getTime(), this.config.circuit);
+    return { status: "PROVIDER_FAILURE", code, error: safeError, circuit: this.circuit.state };
   }
 
   private accept(snap: OandaPriceSnapshot, receivedAt: Date): ShadowPollResult {
     const bid = snap.bid === null ? Number.NaN : Number(snap.bid);
     const ask = snap.ask === null ? Number.NaN : Number(snap.ask);
-    if (!snap.time) {
+    if (!snap.time || !Number.isFinite(Date.parse(snap.time))) {
       this.counters.rejected++;
       return { status: "REJECTED", reason: "MISSING_EVENT_TIME", snapshot: { time: snap.time, bid: snap.bid, ask: snap.ask } };
     }
-    if (!(bid > 0) || !(ask > 0) || snap.bid === null || snap.ask === null) {
+    if (!Number.isFinite(bid) || !Number.isFinite(ask) || !Number.isFinite(bid + ask) || !(bid > 0) || !(ask > 0) || snap.bid === null || snap.ask === null) {
       this.counters.rejected++;
       return { status: "REJECTED", reason: "ONE_SIDED", snapshot: { time: snap.time, bid: snap.bid, ask: snap.ask } };
+    }
+    // A future timestamp must never become the ordering watermark and suppress valid later observations.
+    if (Date.parse(snap.time) > receivedAt.getTime() + this.config.clockSkewToleranceMs) {
+      this.counters.rejected++;
+      return { status: "REJECTED", reason: "FUTURE_EVENT_TIME", snapshot: { time: snap.time, bid: snap.bid, ask: snap.ask } };
+    }
+    if (snap.quality.source !== GOLD_PROVIDER_ID || snap.quality.feed !== "OANDA_PRACTICE" || snap.quality.eventTime !== snap.time) {
+      this.counters.rejected++;
+      return { status: "REJECTED", reason: "INVALID_PROVENANCE", snapshot: { time: snap.time, bid: snap.bid, ask: snap.ask } };
     }
     const last = this.latest();
     if (last) {
@@ -245,7 +280,8 @@ export class GoldShadowFeed {
     }
     const session = evaluateSession({ session: "METALS_ENERGY_CFD", now: receivedAt });
     const quality = assessQuoteAdmission({
-      quality: snap.quality,
+      // This provider reports tradeability. Unknown therefore fails this feed's quality rule.
+      quality: { ...snap.quality, providerTradeable: snap.tradeable === true },
       dataState: "DEMO",
       bid: snap.bid,
       ask: snap.ask,
@@ -278,12 +314,12 @@ export class GoldShadowFeed {
         disclosure: "OANDA practice dealer-indicative price. Not an exchange price and not a broker quote for this account.",
       },
       mid: ((bid + ask) / 2).toFixed(5),
-      spreadBps: ask > bid ? Number(spreadBpsOf(bid, ask).toFixed(4)) : 0,
+      spreadBps: Number(spreadBpsOf(bid, ask).toFixed(4)),
       providerTradeable: snap.tradeable,
       session: { status: session.status, reason: session.reason },
       quality,
     };
-    this.buffer.push(quote);
+    this.buffer.push(structuredClone(quote));
     while (this.buffer.length > this.config.bufferSize) this.buffer.shift();
     this.counters.accepted++;
     const sim = deriveSpreadBetQuote(AURUM_GENERIC_GOLD_DFB_V1, quote, "BASELINE");
@@ -295,10 +331,18 @@ export class GoldShadowFeed {
     const latest = this.latest();
     return {
       enabled: this.config.enabled === true,
+      requestInFlight: this.inFlight,
       provider: GOLD_PROVIDER_ID,
       instrument: GOLD_PROVIDER_INSTRUMENT,
       circuit: { ...this.circuit },
-      latest,
+      latest: latest ? structuredClone(latest) : null,
+      currentQuality: latest ? assessQuoteAdmission({
+        quality: describeQuoteQuality({ source: GOLD_PROVIDER_ID, feed: "OANDA_PRACTICE", now, eventTime: latest.eventTime, bid: latest.bid, ask: latest.ask, providerTradeable: latest.providerTradeable === true }),
+        dataState: "DEMO", bid: latest.bid, ask: latest.ask, receivedAt: new Date(latest.receivedAt), now,
+        maxAgeMs: this.config.maxQuoteAgeMs, maxSpreadBps: this.config.maxSpreadBps,
+        clockSkewToleranceMs: this.config.clockSkewToleranceMs,
+        session: evaluateSession({ session: "METALS_ENERGY_CFD", now }).status, instrumentEnabled: true,
+      }) : null,
       quoteAgeMs: latest ? now.getTime() - Date.parse(latest.eventTime) : null,
       receiveAgeMs: latest ? now.getTime() - Date.parse(latest.receivedAt) : null,
       buffered: this.buffer.length,
@@ -309,6 +353,6 @@ export class GoldShadowFeed {
 
   /** Copy of the bounded buffer, oldest first. */
   quotes(): GoldReferenceQuote[] {
-    return [...this.buffer];
+    return structuredClone(this.buffer);
   }
 }

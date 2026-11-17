@@ -5,14 +5,24 @@ import {
   circuitKey,
   DEFAULT_CIRCUIT_POLICY,
   initialCircuit,
-  recordFailure,
-  recordSuccess,
+  resetCircuit,
+  recordFailure as rawFailure,
+  recordSuccess as rawSuccess,
   summariseCircuits,
   type CircuitPolicy,
+  type CircuitRecord,
 } from "./provider-circuit.js";
 
 const NO_JITTER: CircuitPolicy = { ...DEFAULT_CIRCUIT_POLICY, jitterFraction: 0 };
 const T0 = 1_000_000;
+
+// Existing sequential scenarios complete the current admitted generation explicitly.
+function recordFailure(r: CircuitRecord, f: Parameters<typeof rawFailure>[1], now: number, p = NO_JITTER) {
+  return rawFailure(r, { ...f, token: f.token ?? r.epoch ?? 0 }, now, p);
+}
+function recordSuccess(r: CircuitRecord, now: number, token = r.epoch ?? 0) {
+  return rawSuccess(r, now, token);
+}
 
 describe("provider circuit breaker (HORIZON Phase II, unwired)", () => {
   it("stays closed below the failure threshold and opens at it", () => {
@@ -72,7 +82,7 @@ describe("provider circuit breaker (HORIZON Phase II, unwired)", () => {
     expect(late).toMatchObject({ state: "HALF_OPEN", halfOpenInFlight: true, staleResults: 1 });
     expect(admitRequest(late, expired.retryAt! + 2, NO_JITTER).admission).toMatchObject({ allowed: false, reason: "HALF_OPEN_PROBE_IN_FLIGHT" });
     // A success without a token is never accepted in HALF_OPEN.
-    expect(recordSuccess(probe2.record, expired.retryAt! + 1)).toMatchObject({ state: "HALF_OPEN", staleResults: 1 });
+    expect(rawSuccess(probe2.record, expired.retryAt! + 1)).toMatchObject({ state: "HALF_OPEN", staleResults: 1 });
     // Only probe 2 closes it.
     expect(recordSuccess(late, expired.retryAt! + 3, probe2.admission.token)).toMatchObject({ state: "CLOSED", consecutiveFailures: 0 });
   });
@@ -112,6 +122,36 @@ describe("provider circuit breaker (HORIZON Phase II, unwired)", () => {
   it("backoff grows exponentially and is capped", () => {
     const values = [1, 2, 3, 4, 10, 30].map((n) => backoffMs("k", n, NO_JITTER));
     expect(values).toEqual([5_000, 10_000, 20_000, 40_000, 300_000, 300_000]);
+  });
+
+  it("consumes CLOSED completions so old and duplicate results cannot erase or add failures", () => {
+    const r = initialCircuit("k");
+    const token = admitRequest(r, T0).admission.token;
+    const failed = rawFailure(r, { kind: "NETWORK", token }, T0 + 1, NO_JITTER);
+    expect(rawSuccess(failed, T0 + 2, token)).toMatchObject({ consecutiveFailures: 1, staleResults: 1 });
+    expect(rawFailure(failed, { kind: "NETWORK", token }, T0 + 2, NO_JITTER)).toMatchObject({ consecutiveFailures: 1, staleResults: 1 });
+    const succeeded = rawSuccess(r, T0 + 1, token);
+    expect(rawFailure(succeeded, { kind: "AUTH_FAILED", token }, T0 + 2, NO_JITTER)).toMatchObject({ state: "CLOSED", consecutiveFailures: 0, staleResults: 1 });
+  });
+
+  it("rejects missing tokens in every state and fences OPEN diagnostics", () => {
+    const closed = initialCircuit("k");
+    const open = recordFailure(closed, { kind: "AUTH_FAILED" }, T0);
+    const half = admitRequest(open, open.retryAt!, NO_JITTER).record;
+    for (const r of [closed, open, half]) {
+      expect(rawSuccess(r, T0 + 1)).toEqual({ ...r, staleResults: (r.staleResults ?? 0) + 1 });
+      expect(rawFailure(r, { kind: "NETWORK" }, T0 + 1, NO_JITTER)).toEqual({ ...r, staleResults: (r.staleResults ?? 0) + 1 });
+    }
+    expect(rawSuccess(open, T0 + 2, closed.epoch)).toMatchObject({ lastSuccessAt: null, staleResults: 1 });
+    expect(rawFailure(open, { kind: "NETWORK", token: closed.epoch }, T0 + 2, NO_JITTER)).toMatchObject({ lastFailure: "AUTH_FAILED", staleResults: 1 });
+  });
+
+  it("fences old completions after an explicit reset", () => {
+    const r = initialCircuit("k");
+    const token = admitRequest(r, T0).admission.token;
+    const reset = resetCircuit(r);
+    expect(rawSuccess(reset, T0 + 1, token)).toMatchObject({ state: "CLOSED", lastSuccessAt: null, staleResults: 1 });
+    expect(rawFailure(reset, { kind: "AUTH_FAILED", token }, T0 + 1)).toMatchObject({ state: "CLOSED", lastFailure: null, staleResults: 1 });
   });
 
   it("jitter is deterministic per key, bounded, and differs across keys", () => {
