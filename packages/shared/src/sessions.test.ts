@@ -75,3 +75,52 @@ describe("market sessions", () => {
     expect(evaluateSession({ session: "INDEX_EXTENDED", now: afterHours }).status).toBe("CLOSED");
   });
 });
+
+describe("HORIZON Phase II session corrections", () => {
+  const at = (iso: string, session: Parameters<typeof evaluateSession>[0]["session"]) => evaluateSession({ session, now: new Date(iso) });
+
+  it("closes RTH at 13:00 ET on an NYSE early-close day (day after Thanksgiving 2026, EST)", () => {
+    expect(at("2026-11-27T17:59:00Z", "INDEX_RTH")).toMatchObject({ status: "OPEN", reason: "INDEX_RTH" }); // 12:59 ET
+    expect(at("2026-11-27T18:00:00Z", "INDEX_RTH")).toMatchObject({ status: "CLOSED", reason: "US_EQUITY_EARLY_CLOSE" }); // 13:00 ET
+    expect(at("2026-11-27T21:30:00Z", "INDEX_RTH")).toMatchObject({ status: "CLOSED", reason: "OUTSIDE_RTH" }); // 16:30 ET
+    expect(at("2026-11-27T21:59:00Z", "INDEX_EXTENDED").status).toBe("OPEN"); // 16:59 ET
+    expect(at("2026-11-27T22:00:00Z", "INDEX_EXTENDED").status).toBe("CLOSED"); // 17:00 ET
+  });
+
+  it("closes early on the day before Independence Day 2025 (EDT)", () => {
+    expect(at("2025-07-03T16:59:00Z", "INDEX_RTH").status).toBe("OPEN"); // 12:59 EDT
+    expect(at("2025-07-03T17:00:00Z", "INDEX_RTH").reason).toBe("US_EQUITY_EARLY_CLOSE");
+  });
+
+  it("leaves a normal day unchanged", () => {
+    expect(at("2026-11-17T20:59:00Z", "INDEX_RTH").status).toBe("OPEN"); // 15:59 ET
+    expect(at("2026-11-17T21:00:00Z", "INDEX_RTH").status).toBe("CLOSED");
+  });
+
+  it("is UNKNOWN (fail closed) for equity years without a holiday table", () => {
+    expect(at("2028-03-15T15:00:00Z", "INDEX_RTH")).toMatchObject({ status: "UNKNOWN", reason: "US_EQUITY_CALENDAR_NOT_COVERED" });
+    expect(entriesAllowedInSession("INDEX_EXTENDED", new Date("2024-03-15T15:00:00Z"))).toBe(false);
+    // Weekends are still plainly closed.
+    expect(at("2028-03-18T15:00:00Z", "INDEX_RTH").status).toBe("CLOSED");
+    // Crypto and FX do not depend on the equity table.
+    expect(at("2028-03-15T15:00:00Z", "CRYPTO_24x7").status).toBe("OPEN");
+    expect(at("2028-03-15T15:00:00Z", "FX_WEEKDAY").status).toBe("OPEN");
+  });
+
+  it("models the metals/energy CFD daily break and weekend in New York time across DST", () => {
+    // Tuesday 17 Nov 2026 (EST, UTC-5)
+    expect(at("2026-11-17T21:59:00Z", "METALS_ENERGY_CFD").status).toBe("OPEN"); // 16:59 ET
+    expect(at("2026-11-17T22:00:00Z", "METALS_ENERGY_CFD")).toMatchObject({ status: "CLOSED", reason: "CFD_DAILY_BREAK" });
+    expect(at("2026-11-17T22:59:00Z", "METALS_ENERGY_CFD").reason).toBe("CFD_DAILY_BREAK");
+    expect(at("2026-11-17T23:00:00Z", "METALS_ENERGY_CFD").status).toBe("OPEN"); // 18:00 ET
+    // Summer (EDT, UTC-4): the break moves to 21:00-22:00 UTC.
+    expect(at("2026-07-14T21:30:00Z", "METALS_ENERGY_CFD").reason).toBe("CFD_DAILY_BREAK");
+    expect(at("2026-07-14T22:00:00Z", "METALS_ENERGY_CFD").status).toBe("OPEN");
+    // Friday close, Saturday, Sunday before 18:00 ET, Sunday open.
+    expect(at("2026-11-20T21:59:00Z", "METALS_ENERGY_CFD").status).toBe("OPEN");
+    expect(at("2026-11-20T22:00:00Z", "METALS_ENERGY_CFD").reason).toBe("CFD_WEEKEND");
+    expect(at("2026-11-21T15:00:00Z", "METALS_ENERGY_CFD").reason).toBe("CFD_WEEKEND");
+    expect(at("2026-11-22T22:59:00Z", "METALS_ENERGY_CFD").reason).toBe("CFD_WEEKEND"); // Sun 17:59 ET
+    expect(at("2026-11-22T23:00:00Z", "METALS_ENERGY_CFD").status).toBe("OPEN"); // Sun 18:00 ET
+  });
+});

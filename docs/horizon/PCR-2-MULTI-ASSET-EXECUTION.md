@@ -1,5 +1,7 @@
 # PCR-2: multi-asset paper execution (protected change request)
 
+> **Superseded in part (17 Nov 2026).** PCR-1 has since merged. Current line numbers, the new item C8, the C4 widening and the F11-X interactions are in [`phase-ii/PCR-2-REBASED.md`](phase-ii/PCR-2-REBASED.md); the approval request is [`phase-ii/PROTECTED-APPROVAL.md`](phase-ii/PROTECTED-APPROVAL.md). The intent below is unchanged.
+
 Status: **proposal only. Nothing in this document has been applied.** Raised by OPERATION HORIZON on 5 Nov 2026 against `main` `b8cb0ce`. Every change below touches a protected path (AGENTS.md) or sits directly on the order path, so each needs the operator's protected-edit unlock, tests and an independent `quant-safety-reviewer` verdict before merge. Activation (wiring non-Solana instruments into live paper entries) is a separate operator decision after merge.
 
 PAPER only throughout. No live money, no real-venue order submission, no signing or key handling, no change to `EXECUTION_MODE`, `LIVE_MONEY_*`, risk limits or `DEFAULT_STRATEGY`.

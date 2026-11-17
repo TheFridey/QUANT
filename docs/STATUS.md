@@ -16,6 +16,17 @@ Live money is disabled (`packages/shared/src/execution-gate.ts`), and `EXECUTION
 | `PARTIAL` | Part done, with the rest named |
 | `DEFERRED` | Not done; the reason is given |
 
+## OPERATION HORIZON Phase II (17 Nov 2026, branch `horizon/phase-ii-breakout`, not merged)
+
+Current state, blockers and plans: [`horizon/phase-ii/`](horizon/phase-ii/) (start with `CURRENT-STATE.md`; the record is `EXECUTION-LEDGER.md`).
+
+| Layer | State |
+| --- | --- |
+| Production | `bed2f36`, healthy. Solana only. Account `primary` is at 30.13% drawdown against a 30% limit, so new BUYs are refused (operator decision; not loosened) |
+| Providers | OANDA practice and Alpaca IEX configured and answering read-only; nothing non-crypto is ingested |
+| Branch | pure, unwired prerequisites: quote-admission classifier (PCR-2 C1/C5), session fixes (NYSE early closes, fail-closed calendar years, metals/energy CFD hours for XAU), provider circuit breaker, maturity ladder and per-class scan capacity |
+| Needs approval | protected items A1–A8 in `horizon/phase-ii/PROTECTED-APPROVAL.md`; retention; legacy trial declaration |
+
 ## OPERATION INTEGRITY (12 Nov 2026)
 
 Finding ledger, evidence and release state: [`integrity/STATUS.md`](integrity/STATUS.md). In short:
@@ -139,4 +150,6 @@ Research only. Detail, review outcome and open decisions: [`evidence/ADR-0001-re
 
 ## Next
 
-Per the remediation document: record 30 days of DexScreener data, then run one backtest with the corrected impact model and latency. No new features before that.
+The remediation document's next step is still open: record 30 days of DexScreener data, then run one backtest with the corrected impact model and latency.
+
+Multi-asset work follows [`horizon/phase-ii/ROLLOUT-PLAN.md`](horizon/phase-ii/ROLLOUT-PLAN.md). Its step 0 needs three operator decisions: the drawdown latch, retention, and the legacy trial declaration.

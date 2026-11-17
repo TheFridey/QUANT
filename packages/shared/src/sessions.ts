@@ -57,15 +57,37 @@ export const US_EQUITY_HOLIDAYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * NYSE 13:00 ET early closes. 2025 and 2026 are copied from the observed dates in
+ * `packages/market-data/src/history/calendar.ts` (NYSE_SPECIAL_DAYS). 2027 carries only the standing
+ * day-after-Thanksgiving rule; the operator must confirm 2027 against the published NYSE calendar.
+ */
+export const US_EQUITY_EARLY_CLOSES: ReadonlySet<string> = new Set([
+  "2025-07-03",
+  "2025-11-28",
+  "2025-12-24",
+  "2026-11-27",
+  "2026-12-24",
+  "2027-11-26",
+]);
+
+/**
+ * Years whose US equity holidays are in the tables above. Outside them an equity session is UNKNOWN
+ * (fail closed) rather than open by clock rules alone (HORIZON Phase II).
+ */
+export const US_EQUITY_CALENDAR_YEARS: readonly number[] = [2025, 2026, 2027];
+
+/**
  * Evaluate whether a market session is open at `now`.
  *
  * - CRYPTO_24x7: always open
  * - FX_WEEKDAY: open Sun 17:00 ET → Fri 17:00 ET (weekend closure depth); closed on FX weekend
  * - INDEX_RTH: Mon–Fri 09:30–16:00 ET excluding US equity holidays
  * - INDEX_EXTENDED: Mon–Fri 04:00–20:00 ET excluding US equity holidays
+ * - METALS_ENERGY_CFD: Sun 18:00 ET → Fri 17:00 ET with a daily 17:00–18:00 ET break (dealer CFD hours;
+ *   the provider's own `tradeable` flag stays authoritative at quote time)
  *
- * Holidays outside the static table remain OPEN/CLOSED by clock rules only
- * (UNKNOWN is reserved for unparseable timezone parts).
+ * Equity sessions close at 13:00 ET (RTH) / 17:00 ET (extended) on NYSE early-close days, and are UNKNOWN
+ * for years outside `US_EQUITY_CALENDAR_YEARS`.
  */
 export function evaluateSession(input: {
   session: SessionKind;
@@ -79,28 +101,38 @@ export function evaluateSession(input: {
   if (input.session === "FX_WEEKDAY") {
     return evaluateFxWeekday(parts);
   }
+  if (input.session === "METALS_ENERGY_CFD") {
+    return evaluateMetalsEnergyCfd(parts);
+  }
 
   // Equity cash sessions: weekends + known holidays close entries.
   if (parts.weekday === 0 || parts.weekday === 6) {
     return { status: "CLOSED", reason: "WEEKEND", ...parts };
   }
+  if (!US_EQUITY_CALENDAR_YEARS.includes(Number(parts.etDate.slice(0, 4)))) {
+    return { status: "UNKNOWN", reason: "US_EQUITY_CALENDAR_NOT_COVERED", ...parts };
+  }
   if (US_EQUITY_HOLIDAYS.has(parts.etDate)) {
     return { status: "CLOSED", reason: "US_EQUITY_HOLIDAY", ...parts };
   }
+  const earlyClose = US_EQUITY_EARLY_CLOSES.has(parts.etDate);
 
   const minutes = parts.hour * 60 + parts.minute;
   if (input.session === "INDEX_RTH") {
     const open = 9 * 60 + 30;
-    const close = 16 * 60;
+    const close = earlyClose ? 13 * 60 : 16 * 60;
+    if (earlyClose && minutes >= close && minutes < 16 * 60) {
+      return { status: "CLOSED", reason: "US_EQUITY_EARLY_CLOSE", ...parts };
+    }
     if (minutes >= open && minutes < close) {
       return { status: "OPEN", reason: "INDEX_RTH", ...parts };
     }
     return { status: "CLOSED", reason: "OUTSIDE_RTH", ...parts };
   }
 
-  // INDEX_EXTENDED: 04:00–20:00 ET Mon–Fri
+  // INDEX_EXTENDED: 04:00–20:00 ET Mon–Fri (17:00 ET on early-close days)
   const open = 4 * 60;
-  const close = 20 * 60;
+  const close = earlyClose ? 17 * 60 : 20 * 60;
   if (minutes >= open && minutes < close) {
     return { status: "OPEN", reason: "INDEX_EXTENDED", ...parts };
   }
@@ -141,6 +173,25 @@ function evaluateFxWeekday(parts: ReturnType<typeof etParts>): SessionEval {
     return { status: "OPEN", reason: "FX_WEEKDAY", ...parts };
   }
   return { status: "CLOSED", reason: "FX_WEEKEND", ...parts };
+}
+
+/**
+ * Metals and energy CFDs (OANDA XAU/XAG/WTICO/BCO): open Sunday 18:00 ET, closed daily 17:00–18:00 ET,
+ * closed from Friday 17:00 ET. Times are America/New_York, so the UTC hours move with US DST.
+ */
+function evaluateMetalsEnergyCfd(parts: ReturnType<typeof etParts>): SessionEval {
+  const minutes = parts.hour * 60 + parts.minute;
+  const breakStart = 17 * 60;
+  const breakEnd = 18 * 60;
+  if (parts.weekday === 6) return { status: "CLOSED", reason: "CFD_WEEKEND", ...parts };
+  if (parts.weekday === 5 && minutes >= breakStart) return { status: "CLOSED", reason: "CFD_WEEKEND", ...parts };
+  if (parts.weekday === 0) {
+    return minutes >= breakEnd
+      ? { status: "OPEN", reason: "METALS_ENERGY_CFD", ...parts }
+      : { status: "CLOSED", reason: "CFD_WEEKEND", ...parts };
+  }
+  if (minutes >= breakStart && minutes < breakEnd) return { status: "CLOSED", reason: "CFD_DAILY_BREAK", ...parts };
+  return { status: "OPEN", reason: "METALS_ENERGY_CFD", ...parts };
 }
 
 function etParts(now: Date): {
