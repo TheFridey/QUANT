@@ -78,6 +78,16 @@ describe("provider circuit breaker (HORIZON Phase II, unwired)", () => {
     expect(summariseCircuits([xau, eur, spy])).toEqual({ open: ["oanda_practice:XAU_USD"], halfOpen: [], closed: 2 });
   });
 
+  it("ignores late results while OPEN and expires a probe that never reports", () => {
+    const open = recordFailure(initialCircuit("k"), { kind: "AUTH_FAILED" }, T0, NO_JITTER);
+    expect(recordSuccess(open, T0 + 1)).toMatchObject({ state: "OPEN", retryAt: open.retryAt });
+    expect(recordFailure(open, { kind: "NETWORK" }, T0 + 2, NO_JITTER)).toMatchObject({ state: "OPEN", openings: 1, retryAt: open.retryAt });
+    const probing = admitRequest(open, T0 + 5_000, NO_JITTER).record;
+    const stuck = admitRequest(probing, T0 + 5_000 + NO_JITTER.probeTimeoutMs, NO_JITTER);
+    expect(stuck.admission).toMatchObject({ allowed: false, state: "OPEN" });
+    expect(stuck.record).toMatchObject({ state: "OPEN", openings: 2, lastError: "HALF_OPEN_PROBE_TIMEOUT" });
+  });
+
   it("refuses an invalid policy instead of running unbounded", () => {
     expect(() => backoffMs("k", 1, { ...NO_JITTER, failureThreshold: 0 })).toThrow("INVALID_CIRCUIT_POLICY");
     expect(() => backoffMs("k", 1, { ...NO_JITTER, maxBackoffMs: 1 })).toThrow("INVALID_CIRCUIT_POLICY");

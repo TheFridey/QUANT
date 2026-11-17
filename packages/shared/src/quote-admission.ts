@@ -15,6 +15,7 @@ import type { SessionStatus } from "./sessions.js";
  */
 
 export const QUOTE_ADMISSION_REASONS = [
+  "DATA_STATE_NOT_ADMISSIBLE",
   "NOT_REAL_TIME",
   "REFERENCE_RATE",
   "COVERAGE_NOT_EXECUTABLE",
@@ -37,8 +38,16 @@ export type QuoteAdmissionReason = (typeof QUOTE_ADMISSION_REASONS)[number];
 /** Coverages that can stand behind an internal paper fill. Reference rates, recorded and unknown never can. */
 export const EXECUTABLE_COVERAGES = ["CONSOLIDATED", "SINGLE_VENUE", "DEALER_INDICATIVE"] as const;
 
+/**
+ * Stored freshness labels this function may consider at all. DELAYED, STALE and REPLAY are refused whatever the
+ * descriptor says, so a mislabelled descriptor can never lift a delayed or stale observation (safety review M1).
+ */
+export const ADMISSIBLE_DATA_STATES = ["LIVE", "DEMO"] as const;
+
 export type QuoteAdmissionInput = {
   quality: QuoteQuality;
+  /** The observation's stored `dataState` / freshness label. */
+  dataState: string;
   /** Provider bid and ask as received (decimal text or number); used to detect crossed/locked books. */
   bid: string | number | null;
   ask: string | number | null;
@@ -76,11 +85,15 @@ function finite(value: string | number | null | undefined): number | null {
 export function assessQuoteAdmission(input: QuoteAdmissionInput): QuoteAdmission {
   const reasons: QuoteAdmissionReason[] = [];
   const q = input.quality;
-  const nowMs = input.now.getTime();
+  const nowMs = input.now instanceof Date ? input.now.getTime() : Number.NaN;
   const maxAge = Number.isFinite(input.maxAgeMs) && input.maxAgeMs > 0 ? input.maxAgeMs : null;
-  const skew = Math.min(Math.max(input.clockSkewToleranceMs ?? 0, 0), 1000);
+  const rawSkew = input.clockSkewToleranceMs ?? 0;
+  const skewValid = Number.isFinite(rawSkew) && rawSkew >= 0;
+  const skew = skewValid ? Math.min(rawSkew, 1000) : 0;
 
-  if (maxAge === null) reasons.push("INVALID_LIMIT");
+  // A non-finite clock or tolerance would silently disable every time check below, so it is a refusal.
+  if (maxAge === null || !skewValid || !Number.isFinite(nowMs)) reasons.push("INVALID_LIMIT");
+  if (!(ADMISSIBLE_DATA_STATES as readonly string[]).includes(input.dataState)) reasons.push("DATA_STATE_NOT_ADMISSIBLE");
 
   if (q.coverage === "REFERENCE_RATE" || q.timeliness === "REFERENCE") reasons.push("REFERENCE_RATE");
   if (q.timeliness !== "REAL_TIME") reasons.push("NOT_REAL_TIME");
@@ -99,7 +112,7 @@ export function assessQuoteAdmission(input: QuoteAdmissionInput): QuoteAdmission
   let eventAgeMs: number | null = null;
   if (!Number.isFinite(eventMs)) {
     reasons.push("MISSING_EVENT_TIME");
-  } else {
+  } else if (Number.isFinite(nowMs)) {
     eventAgeMs = nowMs - eventMs;
     if (eventAgeMs < -skew) reasons.push("FUTURE_EVENT_TIME");
     else if (maxAge !== null && eventAgeMs > maxAge) reasons.push("QUOTE_STALE");
@@ -109,7 +122,7 @@ export function assessQuoteAdmission(input: QuoteAdmissionInput): QuoteAdmission
   let receiveAgeMs: number | null = null;
   if (!Number.isFinite(receivedMs)) {
     reasons.push("RECEIVE_STALE");
-  } else {
+  } else if (Number.isFinite(nowMs)) {
     receiveAgeMs = nowMs - receivedMs;
     if (receiveAgeMs < -skew) reasons.push("FUTURE_RECEIVE_TIME");
     else if (maxAge !== null && receiveAgeMs > maxAge) reasons.push("RECEIVE_STALE");
@@ -119,9 +132,10 @@ export function assessQuoteAdmission(input: QuoteAdmissionInput): QuoteAdmission
   if (q.providerTradeable === false) reasons.push("PROVIDER_NOT_TRADEABLE");
   if (input.session !== "OPEN") reasons.push("SESSION_NOT_OPEN");
 
+  // The spread is computed from the bid/ask passed in, not the descriptor's own figure, so the two cannot disagree.
   const cap = input.maxSpreadBps;
   if (cap !== null && cap !== undefined) {
-    const spreadBps = finite(q.spreadBps);
+    const spreadBps = bid !== null && ask !== null && ask > bid && bid > 0 ? ((ask - bid) / ((ask + bid) / 2)) * 10_000 : null;
     if (!Number.isFinite(cap) || cap <= 0) reasons.push("INVALID_LIMIT");
     else if (spreadBps === null) reasons.push("SPREAD_UNKNOWN");
     else if (spreadBps > cap) reasons.push("SPREAD_ABOVE_CAP");

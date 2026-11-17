@@ -35,6 +35,8 @@ export type CircuitPolicy = {
   maxBackoffMs: number;
   /** 0..0.5: fraction of the backoff added as deterministic per-key jitter. */
   jitterFraction: number;
+  /** A half-open probe with no recorded result after this long counts as failed, so the breaker cannot stick. */
+  probeTimeoutMs: number;
 };
 
 export const DEFAULT_CIRCUIT_POLICY: CircuitPolicy = {
@@ -42,6 +44,7 @@ export const DEFAULT_CIRCUIT_POLICY: CircuitPolicy = {
   baseBackoffMs: 5_000,
   maxBackoffMs: 300_000,
   jitterFraction: 0.2,
+  probeTimeoutMs: 30_000,
 };
 
 export type CircuitRecord = {
@@ -52,6 +55,7 @@ export type CircuitRecord = {
   openings: number;
   retryAt: number | null;
   halfOpenInFlight: boolean;
+  halfOpenSince: number | null;
   lastFailure: ProviderFailureKind | null;
   lastError: string | null;
   lastSuccessAt: number | null;
@@ -69,6 +73,7 @@ export function initialCircuit(key: string): CircuitRecord {
     openings: 0,
     retryAt: null,
     halfOpenInFlight: false,
+    halfOpenSince: null,
     lastFailure: null,
     lastError: null,
     lastSuccessAt: null,
@@ -85,7 +90,9 @@ function validPolicy(policy: CircuitPolicy): CircuitPolicy {
     policy.maxBackoffMs >= policy.baseBackoffMs &&
     Number.isFinite(policy.jitterFraction) &&
     policy.jitterFraction >= 0 &&
-    policy.jitterFraction <= 0.5;
+    policy.jitterFraction <= 0.5 &&
+    Number.isFinite(policy.probeTimeoutMs) &&
+    policy.probeTimeoutMs > 0;
   if (!ok) throw new Error("INVALID_CIRCUIT_POLICY");
   return policy;
 }
@@ -114,24 +121,42 @@ export type CircuitAdmission = { allowed: boolean; state: CircuitState; reason: 
  * Ask whether a request may be sent now. Returns the record to store: when an OPEN breaker's retry time
  * has passed, it becomes HALF_OPEN with one probe in flight.
  */
-export function admitRequest(record: CircuitRecord, now: number): { admission: CircuitAdmission; record: CircuitRecord } {
+export function admitRequest(
+  record: CircuitRecord,
+  now: number,
+  policy: CircuitPolicy = DEFAULT_CIRCUIT_POLICY,
+): { admission: CircuitAdmission; record: CircuitRecord } {
+  const p = validPolicy(policy);
   if (record.state === "CLOSED") {
     return { admission: { allowed: true, state: "CLOSED", reason: "CLOSED", retryAt: null }, record };
   }
   if (record.state === "OPEN") {
     if (record.retryAt !== null && now >= record.retryAt) {
-      const next = { ...record, state: "HALF_OPEN" as const, halfOpenInFlight: true };
+      const next = { ...record, state: "HALF_OPEN" as const, halfOpenInFlight: true, halfOpenSince: now };
       return { admission: { allowed: true, state: "HALF_OPEN", reason: "HALF_OPEN_PROBE", retryAt: record.retryAt }, record: next };
     }
     return { admission: { allowed: false, state: "OPEN", reason: "OPEN_UNTIL_RETRY", retryAt: record.retryAt }, record };
   }
+  if (record.halfOpenInFlight && record.halfOpenSince !== null && now - record.halfOpenSince >= p.probeTimeoutMs) {
+    // The probe never reported: treat it as a failure and reopen with a longer backoff.
+    const reopened = recordFailure(record, { kind: "TIMEOUT", error: "HALF_OPEN_PROBE_TIMEOUT" }, now, p);
+    return { admission: { allowed: false, state: "OPEN", reason: "OPEN_UNTIL_RETRY", retryAt: reopened.retryAt }, record: reopened };
+  }
   if (record.halfOpenInFlight) {
     return { admission: { allowed: false, state: "HALF_OPEN", reason: "HALF_OPEN_PROBE_IN_FLIGHT", retryAt: record.retryAt }, record };
   }
-  return { admission: { allowed: true, state: "HALF_OPEN", reason: "HALF_OPEN_PROBE", retryAt: record.retryAt }, record: { ...record, halfOpenInFlight: true } };
+  return {
+    admission: { allowed: true, state: "HALF_OPEN", reason: "HALF_OPEN_PROBE", retryAt: record.retryAt },
+    record: { ...record, halfOpenInFlight: true, halfOpenSince: now },
+  };
 }
 
+/**
+ * A success closes the breaker only from CLOSED or HALF_OPEN. A late success from a request admitted before
+ * the breaker opened is ignored while OPEN, so it cannot cut a backoff short.
+ */
 export function recordSuccess(record: CircuitRecord, now: number): CircuitRecord {
+  if (record.state === "OPEN") return { ...record, lastSuccessAt: now };
   return { ...initialCircuit(record.key), lastSuccessAt: now };
 }
 
@@ -144,9 +169,11 @@ export function recordFailure(
   policy: CircuitPolicy = DEFAULT_CIRCUIT_POLICY,
 ): CircuitRecord {
   const p = validPolicy(policy);
+  // A late failure while already OPEN is recorded but does not extend the backoff or count as a new opening.
+  if (record.state === "OPEN") return { ...record, lastFailure: failure.kind, lastError: failure.error ?? null };
   const consecutiveFailures = record.consecutiveFailures + 1;
   const opens = record.state === "HALF_OPEN" || OPEN_IMMEDIATELY.has(failure.kind) || consecutiveFailures >= p.failureThreshold;
-  const base = { ...record, consecutiveFailures, lastFailure: failure.kind, lastError: failure.error ?? null, halfOpenInFlight: false };
+  const base = { ...record, consecutiveFailures, lastFailure: failure.kind, lastError: failure.error ?? null, halfOpenInFlight: false, halfOpenSince: null };
   if (!opens) return { ...base, state: "CLOSED" };
   const openings = record.openings + 1;
   return { ...base, state: "OPEN", openings, retryAt: now + backoffMs(record.key, openings, p, failure.retryAfterMs) };

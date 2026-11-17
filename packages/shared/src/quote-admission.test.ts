@@ -21,6 +21,7 @@ function input(overrides: Partial<QuoteAdmissionInput> & { feed?: QuoteFeed; eve
     });
   return {
     quality,
+    dataState: overrides.dataState ?? "DEMO",
     bid,
     ask,
     receivedAt: overrides.receivedAt ?? new Date("2026-11-17T10:27:08.900Z"),
@@ -120,17 +121,35 @@ describe("assessQuoteAdmission (PCR-2 C1/C5, unwired)", () => {
     expect(assessQuoteAdmission(input({ session })).reasons).toEqual(["SESSION_NOT_OPEN"]);
   });
 
-  it("applies an optional spread cap, failing closed when the spread is unknown or the cap is invalid", () => {
+  it("applies an optional spread cap from the raw bid/ask, failing closed when the cap is invalid", () => {
     expect(assessQuoteAdmission(input({ maxSpreadBps: 1 })).admissible).toBe(true); // 0.7279 bps
     expect(assessQuoteAdmission(input({ maxSpreadBps: 0.5 })).reasons).toEqual(["SPREAD_ABOVE_CAP"]);
-    const noSpread = { ...input().quality, spreadBps: null };
-    expect(assessQuoteAdmission(input({ quality: noSpread, maxSpreadBps: 5 })).reasons).toEqual(["SPREAD_UNKNOWN"]);
+    // A descriptor claiming a tight spread cannot hide a wide raw book.
+    const claimed = { ...input().quality, spreadBps: "0.1" };
+    expect(assessQuoteAdmission(input({ quality: claimed, bid: "1.0", ask: "1.1", maxSpreadBps: 5 })).reasons).toEqual(["SPREAD_ABOVE_CAP"]);
+    const oneSided = { ...input().quality, twoSided: false };
+    expect(assessQuoteAdmission(input({ quality: oneSided, ask: null, maxSpreadBps: 5 })).reasons).toEqual(["ONE_SIDED_QUOTE", "SPREAD_UNKNOWN"]);
     expect(assessQuoteAdmission(input({ maxSpreadBps: Number.NaN })).reasons).toEqual(["INVALID_LIMIT"]);
     expect(assessQuoteAdmission(input({ maxSpreadBps: 0 })).reasons).toEqual(["INVALID_LIMIT"]);
   });
 
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])("treats maxAgeMs=%s as invalid and refuses", (maxAgeMs) => {
     expect(assessQuoteAdmission(input({ maxAgeMs })).reasons).toContain("INVALID_LIMIT");
+  });
+
+  it.each(["DELAYED", "STALE", "REPLAY", "", "live"])("refuses stored dataState %j whatever the descriptor claims", (dataState) => {
+    expect(assessQuoteAdmission(input({ dataState })).reasons).toContain("DATA_STATE_NOT_ADMISSIBLE");
+  });
+
+  it("a non-finite skew tolerance or clock refuses instead of disabling the time checks (safety review M2)", () => {
+    const future = new Date(NOW.getTime() + 60_000).toISOString();
+    expect(assessQuoteAdmission(input({ eventTime: future, clockSkewToleranceMs: Number.NaN })).reasons).toEqual(
+      expect.arrayContaining(["INVALID_LIMIT", "FUTURE_EVENT_TIME"]),
+    );
+    expect(assessQuoteAdmission(input({ clockSkewToleranceMs: -5 })).reasons).toContain("INVALID_LIMIT");
+    const badNow = assessQuoteAdmission(input({ now: new Date(Number.NaN) }));
+    expect(badNow.admissible).toBe(false);
+    expect(badNow.reasons).toContain("INVALID_LIMIT");
   });
 
   it("property: across a grid of inputs, nothing with REFERENCE_RATE coverage or a closed session is ever admissible", () => {

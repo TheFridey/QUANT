@@ -276,7 +276,8 @@ export const SEED_INSTRUMENTS: Instrument[] = [
     quote: "USD",
     tickSize: "0.01",
     lotSize: "0.001",
-    session: "METALS_ENERGY_CFD",
+    // Kept on INDEX_EXTENDED: METALS_ENERGY_CFD would widen the entry window (overnight, US holidays); needs operator approval.
+    session: "INDEX_EXTENDED",
     providerId: "commodity_stub",
     providerSymbol: "CL",
     executionCapabilities: ["PAPER_SPOT"],

@@ -92,8 +92,8 @@ Ordered along the path. All `REPO` unless marked. Full table with owners: [`BLOC
 
 | Defect | Where | State |
 | --- | --- | --- |
-| Commodity session: XAU used FX hours, WTI used US 04:00–20:00 | `packages/shared/src/instruments.ts` | **Fixed** (`0119fdf`): new `METALS_ENERGY_CFD` session |
-| No NYSE early closes; holidays beyond 2027 treated as open | `packages/shared/src/sessions.ts` | **Fixed** (`0119fdf`): early closes from `history/calendar.ts`; UNKNOWN outside covered years |
+| Commodity session: XAU used FX hours, WTI used US 04:00–20:00 | `packages/shared/src/instruments.ts` | XAU **fixed**: on `METALS_ENERGY_CFD` (daily break now closed, which is narrower). WTI **kept on `INDEX_EXTENDED`**, because moving it would widen the planner entry window (overnight, US holidays). That needs operator approval (safety review L6) |
+| No NYSE early closes; holidays beyond 2027 treated as open | `packages/shared/src/sessions.ts` | **Fixed** (`0119fdf`): early closes from `history/calendar.ts`; UNKNOWN outside covered years. **From 1 Jan 2028 every equity session is UNKNOWN and refuses entries** until the tables are extended |
 | FTSE uses the US RTH session (at 10:25 UTC the probe reports `SESSION_CLOSED: OUTSIDE_RTH` while the LSE is open) | `instruments.ts` | Open: research-only, needs a UK calendar |
 | Registry provider ids are stubs (`fx_stub`, `index_yahoo_delayed`, `commodity_stub`); the gateway routes commodities to no provider (`packages/market-data/src/gateway.ts:52-54`), while the probe routes them to OANDA | `instruments.ts`, `gateway.ts` | Open: part of ingest wiring |
 | Missing instruments: XAG, AUD/USD, USD/CAD, Brent, DIA, IWM | `instruments.ts` | Open: OANDA and Alpaca offer them (`PROD`); add as research-only first |

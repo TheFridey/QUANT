@@ -2,6 +2,30 @@
 
 Operation HORIZON (multi-asset expansion). Evidence labels as in [`docs/genesis/EXECUTION_LEDGER.md`](../genesis/EXECUTION_LEDGER.md). Diagnosis: [`DIAGNOSIS.md`](DIAGNOSIS.md). Nothing here enables new trading.
 
+## Checkpoint 10: 17 Nov 2026 (HORIZON Phase II reconnaissance; branch `horizon/phase-ii-breakout`, not merged, not deployed)
+
+The operator's brief asked for read-only production inspection where access exists. Only read-only queries and probes were run. The record is in [`phase-ii/EXECUTION-LEDGER.md`](phase-ii/EXECUTION-LEDGER.md); the findings are in [`phase-ii/CURRENT-STATE.md`](phase-ii/CURRENT-STATE.md).
+
+**Production:**
+
+- `bed2f36`, healthy.
+- Observations are still 100% DexScreener/Solana.
+- Account `primary` equity is 7,061.31 against an HWM of 10,106.00. That is a 30.13% drawdown, at the 30% limit, so new BUYs are refused.
+- 0 open positions.
+- The database is 13 GB, growing about 0.75 GB a day, with no retention; 49 GB of disk is free.
+
+**OANDA practice:**
+
+- Configured and answering. One probe out of two failed with a transient `fetch failed`.
+- All 13 checked instruments are available and tradeable, including XAG, AUD/USD, USD/CAD, Brent and four index CFDs.
+
+**Alpaca IEX:**
+
+- Answering.
+- DIA and IWM are quotable.
+
+**Branch:** pure, unwired prerequisites and docs only. No protected path changed and no flag changed.
+
 ## Checkpoint 9: 12 Nov 2026 (`bed2f36` deployed; OPERATION INTEGRITY Phase II)
 Operator: "merge to main and push live"; on the restore-drill gate: "Deploy, drill later". [#79](https://github.com/TheFridey/QUANT/pull/79) merged as `bed2f36`. PR CI on head `93d428e`, run [43255721368](https://github.com/TheFridey/QUANT/actions/runs/43255721368), all green:
 - test: 232 files, 1,569 passed, 1 skipped, on Postgres 16 and Redis 7. `process-isolation` passed 14/14 on Linux.

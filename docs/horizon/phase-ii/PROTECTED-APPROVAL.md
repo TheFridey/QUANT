@@ -9,7 +9,14 @@
 
 Approval of one item does not approve another. No item changes `EXECUTION_MODE`, `LIVE_MONEY_*`, `execution-gate.ts`, `DEFAULT_STRATEGY` values or any risk limit. No item submits orders to a real or practice venue.
 
-Every item ships **inert**: behaviour is unchanged until a per-instrument flag is on. The flag is `paperEntryInstruments: string[]` in engine config. It defaults to `[]`, and adding it is a schema addition, not a limit change. Solana is excluded from all of these paths by asset class.
+Every item ships **inert**: behaviour is unchanged until a per-instrument flag is on. The flag is `paperEntryInstruments: string[]` in engine config and defaults to `[]`. Solana is excluded from all of these paths by asset class.
+
+**Honest labelling.** The safety review (17 Nov 2026) classifies A1 and A4 as **gate loosenings**, not neutral schema additions:
+
+- A1 opens new risk on practice-dealer and single-venue quotes, which today can never open risk.
+- A4 replaces DEX liquidity participation with a different sizing cap.
+
+Approve them as loosenings or not at all.
 
 ## A1. Risk admission for qualified non-crypto quotes (C1)
 
@@ -18,7 +25,10 @@ Every item ships **inert**: behaviour is unchanged until a per-instrument flag i
   - A new input field `quoteAdmission?: QuoteAdmission` on the risk input.
 - **Existing behaviour:** DEMO BUY is refused (`DATA_DEMO`) unless `allowDemoPaperEntries`. DELAYED BUY is always refused.
 - **Proposed behaviour:**
-  - For an instrument whose id starts `fx:`, `etf:` or `commodity:`, is listed in `paperEntryInstruments`, and carries `quoteAdmission.admissible === true` (from `assessQuoteAdmission`), the BUY passes the freshness rung.
+  - For an instrument whose id starts `fx:`, `etf:` or `commodity:`, is listed in `paperEntryInstruments`, and carries `quoteAdmission.admissible === true` (from `assessQuoteAdmission`), the BUY passes the freshness rung. All of these must also hold:
+    - the stored `dataState` is DEMO or LIVE. The classifier enforces this with `DATA_STATE_NOT_ADMISSIBLE`, so DELAYED, STALE and REPLAY never pass;
+    - a per-class `maxSpreadBps` is supplied. A1 makes the spread cap mandatory, not optional;
+    - the bid and ask passed in are the stored observation's. The spread is computed from them, not from the descriptor.
   - In every other case the existing rules apply unchanged.
   - The observation keeps its stored `dataState`; nothing is relabelled.
 - **Invariants:**
@@ -46,8 +56,8 @@ Every item ships **inert**: behaviour is unchanged until a per-instrument flag i
   - Admission at risk and admission at fill are evaluated independently. Both must pass.
   - The DEMO rule outside demo mode is unchanged.
 - **Invariants:**
-  - risk PASS ⇒ settle does not refuse on freshness for the same observation;
-  - settle never fills on an observation risk would refuse;
+  - settle never fills on an observation that `assessQuoteAdmission` refuses at fill time;
+  - settle never reuses the risk-time verdict. The fill observation may have aged, so a settle refusal after a risk PASS is expected and safe;
   - the lock and transaction boundaries are unchanged;
   - no network I/O is added inside the transaction.
 - **Tests:**
@@ -71,7 +81,8 @@ Every item ships **inert**: behaviour is unchanged until a per-instrument flag i
   - For registry instruments, BUY prices round **up** to the tick and SELL prices **down**.
   - BUY quantity rounds **down** to the lot, and a quantity below one lot is refused (`BELOW_MINIMUM_QTY`).
   - Notional is `qty × price × multiplier`. Multiplier is 1 for every current instrument, because these are spot proxies and CFDs, never futures.
-  - Non-crypto sizing ignores DEX participation and is capped by the existing equity and exposure limits, never by invented liquidity.
+  - Non-crypto sizing does not use DEX participation, because there is no DEX liquidity and none is invented. **This removes a sizing constraint and is a loosening.**
+  - The proposed replacement is a new per-class notional cap (FX 2% of equity, metals and energy 1%, ETF 2% per order). It applies on top of the existing `maxPositionPctEquity` and exposure limits, not instead of them.
 - **Invariants:**
   - Solana fills are byte-identical (golden replay).
   - The PCR-1 invariant `exit ≤ held − bought-since-booking` holds with lot-rounded quantities (property test on `exitFence`).
@@ -89,6 +100,10 @@ Every item ships **inert**: behaviour is unchanged until a per-instrument flag i
   - The valuation of a held JPY position with no rate is a missing mark, never zero P&L.
 - **Failure scenario:** a weekend without a rate blocks account-wide BUYs through `MARK_UNAVAILABLE`. This is intended (fail closed). USD/JPY entries stay off until the operator decides weekend handling.
 - **Tests:** USD/JPY round-trip golden; stale, missing or future rate; EUR/USD unchanged; ledger identity; replay determinism.
+- **Boundary:**
+  - The rate is read from observations already loaded in the cycle. No I/O is added inside the transaction.
+  - The migration is additive and nullable.
+  - This item does change the ledger write path, so the `lifecycle-fence` and exit-policy DB suites must pass unchanged.
 
 ## A6. Observed-spread costs and spread cap (C6)
 
@@ -110,6 +125,9 @@ Every item ships **inert**: behaviour is unchanged until a per-instrument flag i
 - **Change:** take `lockAccount` inside the caller's transaction.
 - **Test:** concurrent external fills are serialised.
 - **Note:** SANDBOX only, never PAPER live. Recommended before A5 touches the same function.
+- **Boundary change:** this **adds a lock acquisition**, which changes lock ordering relative to the PCR-1 executor transaction. Required tests:
+  - lock-order and deadlock tests: executor transaction concurrent with external fill, both orders;
+  - a timeout test.
 
 ## A8 (optional, from F11-X). Preserve the booked quantity
 
