@@ -61,7 +61,7 @@ export type QuoteAdmissionInput = {
   session: SessionStatus;
   /** Operator-controlled, per-instrument paper-entry flag. Default off. */
   instrumentEnabled: boolean;
-  /** Optional per-instrument spread cap in basis points. When set, a missing spread is a rejection. */
+  /** Mandatory per-instrument spread cap in basis points (safety re-review of PR #81). Missing is `INVALID_LIMIT`. */
   maxSpreadBps?: number | null;
   /** Clock tolerance for event times slightly ahead of `now`. Defaults to 0; never more than 1000 ms. */
   clockSkewToleranceMs?: number;
@@ -118,7 +118,7 @@ export function assessQuoteAdmission(input: QuoteAdmissionInput): QuoteAdmission
     else if (maxAge !== null && eventAgeMs > maxAge) reasons.push("QUOTE_STALE");
   }
 
-  const receivedMs = input.receivedAt.getTime();
+  const receivedMs = input.receivedAt instanceof Date ? input.receivedAt.getTime() : Number.NaN;
   let receiveAgeMs: number | null = null;
   if (!Number.isFinite(receivedMs)) {
     reasons.push("RECEIVE_STALE");
@@ -133,13 +133,12 @@ export function assessQuoteAdmission(input: QuoteAdmissionInput): QuoteAdmission
   if (input.session !== "OPEN") reasons.push("SESSION_NOT_OPEN");
 
   // The spread is computed from the bid/ask passed in, not the descriptor's own figure, so the two cannot disagree.
+  // The cap is mandatory: a caller that omits it must not admit a quote with any spread.
   const cap = input.maxSpreadBps;
-  if (cap !== null && cap !== undefined) {
-    const spreadBps = bid !== null && ask !== null && ask > bid && bid > 0 ? ((ask - bid) / ((ask + bid) / 2)) * 10_000 : null;
-    if (!Number.isFinite(cap) || cap <= 0) reasons.push("INVALID_LIMIT");
-    else if (spreadBps === null) reasons.push("SPREAD_UNKNOWN");
-    else if (spreadBps > cap) reasons.push("SPREAD_ABOVE_CAP");
-  }
+  const spreadBps = bid !== null && ask !== null && ask > bid && bid > 0 ? ((ask - bid) / ((ask + bid) / 2)) * 10_000 : null;
+  if (cap === null || cap === undefined || typeof cap !== "number" || !Number.isFinite(cap) || cap <= 0) reasons.push("INVALID_LIMIT");
+  else if (spreadBps === null) reasons.push("SPREAD_UNKNOWN");
+  else if (spreadBps > cap) reasons.push("SPREAD_ABOVE_CAP");
 
   if (input.instrumentEnabled !== true) reasons.push("INSTRUMENT_NOT_ENABLED");
 

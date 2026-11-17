@@ -59,4 +59,10 @@ describe("instrument registry", () => {
     expect(mixed.ok).toBe(false);
     expect(mixed.reason).toMatch(/Incompatible/);
   });
+
+  it("keeps XAU on metals/energy CFD hours and WTI on extended index hours (PR #81 re-review L6 regression)", () => {
+    const byId = new Map(SEED_INSTRUMENTS.map((item) => [item.id, item]));
+    expect(byId.get("commodity:XAUUSD")?.session).toBe("METALS_ENERGY_CFD");
+    expect(byId.get("commodity:WTI")?.session).toBe("INDEX_EXTENDED");
+  });
 });

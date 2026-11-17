@@ -28,3 +28,6 @@ export * from "./quote-admission.js";
 export * from "./fx-conversion.js";
 export * from "./precision.js";
 export * from "./position-lot.js";
+export * from "./spread-bet.js";
+export * from "./spread-bet-lifecycle.js";
+export * from "./aurum-scope.js";

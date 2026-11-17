@@ -1,5 +1,7 @@
 # HORIZON Phase II: incremental rollout
 
+> **Superseded (17 Nov 2026)** by OPERATION AURUM (gold-only spread-bet simulation): see [`docs/aurum/README.md`](../../aurum/README.md). Kept as history; the multi-market execution roadmap is not being pursued.
+
 Each step needs its own operator approval and is reversible by a flag. No step deploys, activates or changes limits without that approval. PAPER throughout.
 
 ## 0. Before anything (operator decisions)

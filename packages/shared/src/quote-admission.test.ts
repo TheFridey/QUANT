@@ -29,7 +29,7 @@ function input(overrides: Partial<QuoteAdmissionInput> & { feed?: QuoteFeed; eve
     maxAgeMs: overrides.maxAgeMs ?? 45_000,
     session: overrides.session ?? "OPEN",
     instrumentEnabled: overrides.instrumentEnabled ?? true,
-    maxSpreadBps: overrides.maxSpreadBps,
+    maxSpreadBps: "maxSpreadBps" in overrides ? overrides.maxSpreadBps : 25,
     clockSkewToleranceMs: overrides.clockSkewToleranceMs,
   };
 }
@@ -131,6 +131,11 @@ describe("assessQuoteAdmission (PCR-2 C1/C5, unwired)", () => {
     expect(assessQuoteAdmission(input({ quality: oneSided, ask: null, maxSpreadBps: 5 })).reasons).toEqual(["ONE_SIDED_QUOTE", "SPREAD_UNKNOWN"]);
     expect(assessQuoteAdmission(input({ maxSpreadBps: Number.NaN })).reasons).toEqual(["INVALID_LIMIT"]);
     expect(assessQuoteAdmission(input({ maxSpreadBps: 0 })).reasons).toEqual(["INVALID_LIMIT"]);
+    // Post-fix re-review of PR #81: the cap is mandatory, so omitting it refuses.
+    expect(assessQuoteAdmission(input({ maxSpreadBps: undefined })).reasons).toEqual(["INVALID_LIMIT"]);
+    expect(assessQuoteAdmission(input({ maxSpreadBps: null })).reasons).toEqual(["INVALID_LIMIT"]);
+    // A non-Date receivedAt is a refusal, not a throw.
+    expect(assessQuoteAdmission({ ...input(), receivedAt: "2026-11-17" as unknown as Date }).reasons).toContain("RECEIVE_STALE");
   });
 
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])("treats maxAgeMs=%s as invalid and refuses", (maxAgeMs) => {

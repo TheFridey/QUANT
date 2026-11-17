@@ -137,7 +137,8 @@ export function admitRequest(
     }
     return { admission: { allowed: false, state: "OPEN", reason: "OPEN_UNTIL_RETRY", retryAt: record.retryAt }, record };
   }
-  if (record.halfOpenInFlight && record.halfOpenSince !== null && now - record.halfOpenSince >= p.probeTimeoutMs) {
+  // A probe with no recorded start (legacy record) is treated as timed out rather than stuck in HALF_OPEN.
+  if (record.halfOpenInFlight && (record.halfOpenSince === null || now - record.halfOpenSince >= p.probeTimeoutMs)) {
     // The probe never reported: treat it as a failure and reopen with a longer backoff.
     const reopened = recordFailure(record, { kind: "TIMEOUT", error: "HALF_OPEN_PROBE_TIMEOUT" }, now, p);
     return { admission: { allowed: false, state: "OPEN", reason: "OPEN_UNTIL_RETRY", retryAt: reopened.retryAt }, record: reopened };

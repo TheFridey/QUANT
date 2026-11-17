@@ -4,6 +4,8 @@ The living status of ODIN // QUANT. One file, kept current. Superseded plans, ma
 
 Live money is disabled (`packages/shared/src/execution-gate.ts`), and `EXECUTION_MODE` stays `PAPER`. Nothing on this page changes that.
 
+**Current programme (17 Nov 2026):** OPERATION AURUM, gold-only simulated spread betting. Status and operator decisions are in [`aurum/STATUS.md`](aurum/STATUS.md). HORIZON Phase II / BREAKOUT is superseded.
+
 ## Evidence labels
 
 | Label | Meaning |

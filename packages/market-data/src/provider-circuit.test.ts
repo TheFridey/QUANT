@@ -88,6 +88,14 @@ describe("provider circuit breaker (HORIZON Phase II, unwired)", () => {
     expect(stuck.record).toMatchObject({ state: "OPEN", openings: 2, lastError: "HALF_OPEN_PROBE_TIMEOUT" });
   });
 
+  it("reopens a legacy HALF_OPEN record whose probe has no recorded start (PR #81 re-review)", () => {
+    const open = recordFailure(initialCircuit("k"), { kind: "AUTH_FAILED" }, T0, NO_JITTER);
+    const legacy = { ...admitRequest(open, T0 + 5_000, NO_JITTER).record, halfOpenSince: null };
+    const result = admitRequest(legacy, T0 + 5_001, NO_JITTER);
+    expect(result.admission).toMatchObject({ allowed: false, state: "OPEN" });
+    expect(result.record).toMatchObject({ state: "OPEN", lastError: "HALF_OPEN_PROBE_TIMEOUT" });
+  });
+
   it("refuses an invalid policy instead of running unbounded", () => {
     expect(() => backoffMs("k", 1, { ...NO_JITTER, failureThreshold: 0 })).toThrow("INVALID_CIRCUIT_POLICY");
     expect(() => backoffMs("k", 1, { ...NO_JITTER, maxBackoffMs: 1 })).toThrow("INVALID_CIRCUIT_POLICY");
