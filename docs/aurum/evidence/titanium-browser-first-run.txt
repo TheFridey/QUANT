@@ -13,20 +13,20 @@ At C:\nvm4w\nodejs\pnpm.ps1:16 char:5
     + FullyQualifiedErrorId : NativeCommandError
 
 (Use `node --trace-warnings ...` to show where the warning was created)
-  ok  1 e2e\a11y.spec.ts:16:7 â€º no serious or critical axe violations (desktop) (2.0m)
-  ok  2 e2e\a11y.spec.ts:16:7 â€º no serious or critical axe violations (mobile) (1.4m)
-  x   3 e2e\command-centre.spec.ts:3:5 â€º command centre loads live snapshot equity and agent drawer (5.0s)
+  ok  1 e2e\a11y.spec.ts:16:7 › no serious or critical axe violations (desktop) (2.0m)
+  ok  2 e2e\a11y.spec.ts:16:7 › no serious or critical axe violations (mobile) (1.4m)
+  x   3 e2e\command-centre.spec.ts:3:5 › command centre loads live snapshot equity and agent drawer (5.0s)
 (node:11152) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
 (Use `node --trace-warnings ...` to show where the warning was created)
-  ok  4 e2e\login.spec.ts:4:5 â€º login gate states that trading is paper only (3.1s)
-  ok  5 e2e\login.spec.ts:12:5 â€º sign out revokes the session server-side so the old token gets 401 (audit M5) (4.3s)
-  ok  6 e2e\operator-desk.spec.ts:8:5 â€º operator desk surfaces paper-only login constraints (1.7s)
-  ok  7 e2e\opportunity-scanner.spec.ts:9:5 â€º market scanner shows honest gold/FX readiness and an abstaining leaderboard (5.1s)
-  ok  8 e2e\paper-mvp.spec.ts:16:7 â€º Gate 1 local paper browser workflows â€º login, start local paper, pause/resume, and logout (7.0s)
-  x   9 e2e\paper-mvp.spec.ts:48:7 â€º Gate 1 local paper browser workflows â€º markets select, strategy budget/config, dirty draft survives polling (34.6s)
-  -  10 e2e\paper-mvp.spec.ts:118:7 â€º Gate 1 local paper browser workflows â€º signal/rejection reasons surface on overview and risk
-  -  11 e2e\paper-mvp.spec.ts:141:7 â€º Gate 1 local paper browser workflows â€º preview/submit manual paper order; assert pending then fill; protection + close
-  -  12 e2e\paper-mvp.spec.ts:231:7 â€º Gate 1 local paper browser workflows â€º history filters, alert ack API + safety honesty, disconnect/reconnect, mobile nav, keyboard
+  ok  4 e2e\login.spec.ts:4:5 › login gate states that trading is paper only (3.1s)
+  ok  5 e2e\login.spec.ts:12:5 › sign out revokes the session server-side so the old token gets 401 (audit M5) (4.3s)
+  ok  6 e2e\operator-desk.spec.ts:8:5 › operator desk surfaces paper-only login constraints (1.7s)
+  ok  7 e2e\opportunity-scanner.spec.ts:9:5 › market scanner shows honest gold/FX readiness and an abstaining leaderboard (5.1s)
+  ok  8 e2e\paper-mvp.spec.ts:16:7 › Gate 1 local paper browser workflows › login, start local paper, pause/resume, and logout (7.0s)
+  x   9 e2e\paper-mvp.spec.ts:48:7 › Gate 1 local paper browser workflows › markets select, strategy budget/config, dirty draft survives polling (34.6s)
+  -  10 e2e\paper-mvp.spec.ts:118:7 › Gate 1 local paper browser workflows › signal/rejection reasons surface on overview and risk
+  -  11 e2e\paper-mvp.spec.ts:141:7 › Gate 1 local paper browser workflows › preview/submit manual paper order; assert pending then fill; protection + close
+  -  12 e2e\paper-mvp.spec.ts:231:7 › Gate 1 local paper browser workflows › history filters, alert ack API + safety honesty, disconnect/reconnect, mobile nav, keyboard
 (node:20992) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
 (Use `node --trace-warnings ...` to show where the warning was created)
 (node:12416) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
@@ -40,7 +40,7 @@ D:\Projects\QUANT\packages\evolution\dist\campaign\store.js:60:52
   57 /** Registers a declaration. The same canonical specification always returns the same campaign. */
   58 async function createCampaign(prisma, raw, createdBy) {
   59     const plan = (0, spec_js_1.planCampaign)(raw);
-â†’ 60     const existing = await prisma.researchCampaign.findUnique(
+→ 60     const existing = await prisma.researchCampaign.findUnique(
 error: Environment variable not found: DATABASE_URL.
   -->  schema.prisma:7
    |
@@ -49,13 +49,13 @@ error: Environment variable not found: DATABASE_URL.
    |
 
 Validation Error Count: 1
-  x  13 e2e\research-campaigns.spec.ts:23:5 â€º operator follows a research campaign from declaration to an evaluated holdout (4.1s)
+  x  13 e2e\research-campaigns.spec.ts:23:5 › operator follows a research campaign from declaration to an evaluated holdout (4.1s)
 (node:5624) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
 (Use `node --trace-warnings ...` to show where the warning was created)
-  ok 14 e2e\risk-limits.spec.ts:8:5 â€º operator edits PAPER risk limits from Settings through the audited config path (6.3s)
+  ok 14 e2e\risk-limits.spec.ts:8:5 › operator edits PAPER risk limits from Settings through the audited config path (6.3s)
 
 
-  1) e2e\command-centre.spec.ts:3:5 â€º command centre loads live snapshot equity and agent drawer â”€â”€â”€
+  1) e2e\command-centre.spec.ts:3:5 › command centre loads live snapshot equity and agent drawer ───
 
     Error: page.evaluate: TypeError: Failed to fetch
         at eval (eval at evaluate (:370:30), <anonymous>:4:28)
@@ -66,25 +66,25 @@ Validation Error Count: 1
         at UtilityScript.<anonymous> (<anonymous>:1:44)
         at D:\Projects\QUANT\apps\web\e2e\command-centre.spec.ts:10:31
 
-    attachment #1: screenshot (image/png) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
     test-results\command-centre-command-cen-7f96f-hot-equity-and-agent-drawer\test-failed-1.png
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
-    attachment #2: video (video/webm) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
     test-results\command-centre-command-cen-7f96f-hot-equity-and-agent-drawer\video.webm
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
     Error Context: test-results\command-centre-command-cen-7f96f-hot-equity-and-agent-drawer\error-context.md
 
-    attachment #4: trace (application/zip) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
     test-results\command-centre-command-cen-7f96f-hot-equity-and-agent-drawer\trace.zip
     Usage:
 
         pnpm exec playwright show-trace test-results\command-centre-command-cen-7f96f-hot-equity-and-agent-drawer\trace.zip
 
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
-  2) e2e\paper-mvp.spec.ts:48:7 â€º Gate 1 local paper browser workflows â€º markets select, strategy budget/config, dirty draft survives polling
+  2) e2e\paper-mvp.spec.ts:48:7 › Gate 1 local paper browser workflows › markets select, strategy budget/config, dirty draft survives polling
 
     Error: expect(received).toBe(expected) // Object.is equality
 
@@ -103,25 +103,25 @@ Validation Error Count: 1
       118 |   test("signal/rejection reasons surface on overview and risk", async ({ page }) => {
         at D:\Projects\QUANT\apps\web\e2e\paper-mvp.spec.ts:115:8
 
-    attachment #1: screenshot (image/png) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
     test-results\paper-mvp-Gate-1-local-pap-45649-irty-draft-survives-polling\test-failed-1.png
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
-    attachment #2: video (video/webm) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
     test-results\paper-mvp-Gate-1-local-pap-45649-irty-draft-survives-polling\video.webm
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
     Error Context: test-results\paper-mvp-Gate-1-local-pap-45649-irty-draft-survives-polling\error-context.md
 
-    attachment #4: trace (application/zip) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
     test-results\paper-mvp-Gate-1-local-pap-45649-irty-draft-survives-polling\trace.zip
     Usage:
 
         pnpm exec playwright show-trace test-results\paper-mvp-Gate-1-local-pap-45649-irty-draft-survives-polling\trace.zip
 
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
-  3) e2e\research-campaigns.spec.ts:23:5 â€º operator follows a research campaign from declaration to an evaluated holdout
+  3) e2e\research-campaigns.spec.ts:23:5 › operator follows a research campaign from declaration to an evaluated holdout
 
     Error: Command failed: C:\nvm4w\nodejs\node.exe D:\Projects\QUANT\apps\worker\dist\src\research\campaign-cli.js create campaign.json --by e2e
 
@@ -131,7 +131,7 @@ Validation Error Count: 1
       57 /** Registers a declaration. The same canonical specification always returns the same campaign. */
       58 async function createCampaign(prisma, raw, createdBy) {
       59     const plan = (0, spec_js_1.planCampaign)(raw);
-    â†’ 60     const existing = await prisma.researchCampaign.findUnique(
+    → 60     const existing = await prisma.researchCampaign.findUnique(
     error: Environment variable not found: DATABASE_URL.
       -->  schema.prisma:7
        |
@@ -155,30 +155,30 @@ Validation Error Count: 1
         at cli (D:\Projects\QUANT\apps\web\e2e\research-campaigns.spec.ts:17:27)
         at D:\Projects\QUANT\apps\web\e2e\research-campaigns.spec.ts:45:19
 
-    attachment #1: screenshot (image/png) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
     test-results\research-campaigns-operato-4ef77-ion-to-an-evaluated-holdout\test-failed-1.png
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
-    attachment #2: video (video/webm) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
     test-results\research-campaigns-operato-4ef77-ion-to-an-evaluated-holdout\video.webm
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
     Error Context: test-results\research-campaigns-operato-4ef77-ion-to-an-evaluated-holdout\error-context.md
 
-    attachment #4: trace (application/zip) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
     test-results\research-campaigns-operato-4ef77-ion-to-an-evaluated-holdout\trace.zip
     Usage:
 
         pnpm exec playwright show-trace test-results\research-campaigns-operato-4ef77-ion-to-an-evaluated-holdout\trace.zip
 
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
   3 failed
-    e2e\command-centre.spec.ts:3:5 â€º command centre loads live snapshot equity and agent drawer â”€â”€â”€â”€
-    e2e\paper-mvp.spec.ts:48:7 â€º Gate 1 local paper browser workflows â€º markets select, strategy budget/config, dirty draft survives polling
-    e2e\research-campaigns.spec.ts:23:5 â€º operator follows a research campaign from declaration to an evaluated holdout
+    e2e\command-centre.spec.ts:3:5 › command centre loads live snapshot equity and agent drawer ────
+    e2e\paper-mvp.spec.ts:48:7 › Gate 1 local paper browser workflows › markets select, strategy budget/config, dirty draft survives polling
+    e2e\research-campaigns.spec.ts:23:5 › operator follows a research campaign from declaration to an evaluated holdout
   3 did not run
   8 passed (4.9m)
 D:\Projects\QUANT\apps\web:
-â€‰ERR_PNPM_RECURSIVE_RUN_FIRST_FAILâ€‰ @odin/web@0.1.0 test:e2e: `playwright test`
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @odin/web@0.1.0 test:e2e: `playwright test`
 Exit status 1

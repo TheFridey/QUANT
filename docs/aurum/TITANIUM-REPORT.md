@@ -59,6 +59,9 @@ Environment: Windows x64 Node 22.19.0, pnpm 10.33.4; existing disk-backed Postgr
 | `pnpm audit --prod --json` after exact Next patch | 0 known advisories in every severity |
 | Combined production-path retention CLI | plan 0, verify 0, unapproved execute 2, restore existing fixture 0 (skipped/verifies one); evidence/titanium-combined-cli.json |
 | `pnpm build:portable` | pass: packages, portable API, portable worker and Next 16.4.5 production build, exit 0 |
+| Public account-config export follow-up | package build and 53 product tests pass after 1270759 |
+| `pnpm --filter @odin/web build` after accessibility fix | pass, including frontend TypeScript; explicit local API URL compiled into fixture bundle |
+| `pnpm --filter @odin/web test:e2e` at 3b79f71 | **14 passed (3.5m)**, zero failure/skip; evidence/titanium-browser-complete.txt |
 
 The 25 skips include unavailable Linux sandbox capabilities and existing optional/provider tests; they are not a Linux security acceptance claim. Historical green CI does not substitute for new-branch Linux CI. Full normal-concurrency attempts were interrupted under memory pressure; fixture SQL on the old Docker volume repeatedly waited on DataFileImmediateSync without ungranted locks. Both databases kept fsync and synchronous_commit on. Tmpfs tests establish SQL/functional behaviour, not physical crash durability. No timeout was increased. Historical GENESIS timeout classification remains UNRESOLVED; local environmental I/O pressure is VERIFIED separately and is not proof of its original cause.
 
@@ -74,4 +77,8 @@ Operator decisions D1–D13, exact requested scope, risks, reversibility and exc
 
 ## Final build/browser completion
 
-Pending at report preparation; final observed results will be appended before delivery. The report does not yet claim those checks passed.
+Full portable build passed at the compiled code checkpoint; the frontend production build passed again after e01c35c. Browser acceptance at `3b79f71` passed all 14 tests in one run: desktop/mobile axe across 23 sections, authentication/session revocation, scanner, controls, synthetic paper order/fill/protection/close, fixture alert acknowledgement, synthetic six-unit research campaign with its expressly authorised fixture holdout, and risk audit history. Real historical campaigns and sealed holdouts were not used.
+
+Earlier browser attempts remain recorded, including 13-pass runs with audit-locator or mobile accessibility failures. Repeated histories exposed a genuine non-focusable scroll region, corrected with a named keyboard-focusable native list. The test now identifies that list and verifies the newest change, actor and timestamp. A later positions-page contrast failure was consistent with the existing 220ms opacity entrance animation; bounded finite-animation settlement now precedes axe without suppressing rules, infinite status pulses or section coverage. The exact historical cause of that transient contrast sample is not proven. Final 14/14 is observed evidence, not an erasure of the failed attempts. Independent reviewer approved both narrow changes.
+
+Final source checkpoint: `3b79f71` on `aurum/05-titanium-integration`; subsequent commit records documentation/evidence only. Original branch refs and stash are preserved. No protected path changed. The native SWC default build remains host-blocked by ancestor ACL validation; the tested portable production artifacts do not establish Linux CI, physical crash durability, provider connectivity or production readiness.

@@ -13,18 +13,18 @@ At C:\nvm4w\nodejs\pnpm.ps1:16 char:5
     + FullyQualifiedErrorId : NativeCommandError
 
 (Use `node --trace-warnings ...` to show where the warning was created)
-  ok  1 e2e\a11y.spec.ts:16:7 â€º no serious or critical axe violations (desktop) (1.1m)
-  ok  2 e2e\a11y.spec.ts:16:7 â€º no serious or critical axe violations (mobile) (1.2m)
-  ok  3 e2e\command-centre.spec.ts:4:5 â€º command centre loads live snapshot equity and agent drawer (6.7s)
-  ok  4 e2e\login.spec.ts:4:5 â€º login gate states that trading is paper only (642ms)
-  ok  5 e2e\login.spec.ts:12:5 â€º sign out revokes the session server-side so the old token gets 401 (audit M5) (2.3s)
-  ok  6 e2e\operator-desk.spec.ts:8:5 â€º operator desk surfaces paper-only login constraints (667ms)
-  ok  7 e2e\opportunity-scanner.spec.ts:9:5 â€º market scanner shows honest gold/FX readiness and an abstaining leaderboard (3.4s)
-  ok  8 e2e\paper-mvp.spec.ts:16:7 â€º Gate 1 local paper browser workflows â€º login, start local paper, pause/resume, and logout (3.9s)
-  ok  9 e2e\paper-mvp.spec.ts:48:7 â€º Gate 1 local paper browser workflows â€º markets select, strategy budget/config, dirty draft survives polling (11.6s)
-  ok 10 e2e\paper-mvp.spec.ts:121:7 â€º Gate 1 local paper browser workflows â€º signal/rejection reasons surface on overview and risk (3.4s)
-  ok 11 e2e\paper-mvp.spec.ts:144:7 â€º Gate 1 local paper browser workflows â€º preview/submit manual paper order; assert pending then fill; protection + close (22.1s)
-  x  12 e2e\paper-mvp.spec.ts:234:7 â€º Gate 1 local paper browser workflows â€º history filters, alert ack API + safety honesty, disconnect/reconnect, mobile nav, keyboard (5.2s)
+  ok  1 e2e\a11y.spec.ts:16:7 › no serious or critical axe violations (desktop) (1.1m)
+  ok  2 e2e\a11y.spec.ts:16:7 › no serious or critical axe violations (mobile) (1.2m)
+  ok  3 e2e\command-centre.spec.ts:4:5 › command centre loads live snapshot equity and agent drawer (6.7s)
+  ok  4 e2e\login.spec.ts:4:5 › login gate states that trading is paper only (642ms)
+  ok  5 e2e\login.spec.ts:12:5 › sign out revokes the session server-side so the old token gets 401 (audit M5) (2.3s)
+  ok  6 e2e\operator-desk.spec.ts:8:5 › operator desk surfaces paper-only login constraints (667ms)
+  ok  7 e2e\opportunity-scanner.spec.ts:9:5 › market scanner shows honest gold/FX readiness and an abstaining leaderboard (3.4s)
+  ok  8 e2e\paper-mvp.spec.ts:16:7 › Gate 1 local paper browser workflows › login, start local paper, pause/resume, and logout (3.9s)
+  ok  9 e2e\paper-mvp.spec.ts:48:7 › Gate 1 local paper browser workflows › markets select, strategy budget/config, dirty draft survives polling (11.6s)
+  ok 10 e2e\paper-mvp.spec.ts:121:7 › Gate 1 local paper browser workflows › signal/rejection reasons surface on overview and risk (3.4s)
+  ok 11 e2e\paper-mvp.spec.ts:144:7 › Gate 1 local paper browser workflows › preview/submit manual paper order; assert pending then fill; protection + close (22.1s)
+  x  12 e2e\paper-mvp.spec.ts:234:7 › Gate 1 local paper browser workflows › history filters, alert ack API + safety honesty, disconnect/reconnect, mobile nav, keyboard (5.2s)
 (node:15144) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
 (Use `node --trace-warnings ...` to show where the warning was created)
 (node:9904) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
@@ -35,17 +35,17 @@ At C:\nvm4w\nodejs\pnpm.ps1:16 char:5
 (Use `node --trace-warnings ...` to show where the warning was created)
 CODE_VERSION_REQUIRED: the working tree has uncommitted changes or is not a git checkout; commit first or set
 GIT_COMMIT
-  x  13 e2e\research-campaigns.spec.ts:23:5 â€º operator follows a research campaign from declaration to an evaluated holdout (10.7s)
+  x  13 e2e\research-campaigns.spec.ts:23:5 › operator follows a research campaign from declaration to an evaluated holdout (10.7s)
 (node:10336) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
 (Use `node --trace-warnings ...` to show where the warning was created)
-  ok 14 e2e\risk-limits.spec.ts:8:5 â€º operator edits PAPER risk limits from Settings through the audited config path (17.1s)
+  ok 14 e2e\risk-limits.spec.ts:8:5 › operator edits PAPER risk limits from Settings through the audited config path (17.1s)
 
 
-  1) e2e\paper-mvp.spec.ts:234:7 â€º Gate 1 local paper browser workflows â€º history filters, alert ack API + safety honesty, disconnect/reconnect, mobile nav, keyboard
+  1) e2e\paper-mvp.spec.ts:234:7 › Gate 1 local paper browser workflows › history filters, alert ack API + safety honesty, disconnect/reconnect, mobile nav, keyboard
 
     Error: spawnSync psql ENOENT
 
-      240 |     // Seed durable alert via isolated e2e DB (UI has no ACK button â€” API ack + honesty copy).
+      240 |     // Seed durable alert via isolated e2e DB (UI has no ACK button — API ack + honesty copy).
       241 |     const { execFileSync } = await import("node:child_process");
     > 242 |     execFileSync(
           |     ^
@@ -54,25 +54,25 @@ GIT_COMMIT
       245 |         "-h",
         at D:\Projects\QUANT\apps\web\e2e\paper-mvp.spec.ts:242:5
 
-    attachment #1: screenshot (image/png) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
     test-results\paper-mvp-Gate-1-local-pap-7f452-connect-mobile-nav-keyboard\test-failed-1.png
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
-    attachment #2: video (video/webm) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
     test-results\paper-mvp-Gate-1-local-pap-7f452-connect-mobile-nav-keyboard\video.webm
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
     Error Context: test-results\paper-mvp-Gate-1-local-pap-7f452-connect-mobile-nav-keyboard\error-context.md
 
-    attachment #4: trace (application/zip) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
     test-results\paper-mvp-Gate-1-local-pap-7f452-connect-mobile-nav-keyboard\trace.zip
     Usage:
 
         pnpm exec playwright show-trace test-results\paper-mvp-Gate-1-local-pap-7f452-connect-mobile-nav-keyboard\trace.zip
 
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
-  2) e2e\research-campaigns.spec.ts:23:5 â€º operator follows a research campaign from declaration to an evaluated holdout
+  2) e2e\research-campaigns.spec.ts:23:5 › operator follows a research campaign from declaration to an evaluated holdout
 
     Error: Command failed: C:\nvm4w\nodejs\node.exe D:\Projects\QUANT\apps\worker\dist\src\research\campaign-cli.js start cmwkvkkdk0000ueokb5ugokqk --by e2e
     CODE_VERSION_REQUIRED: the working tree has uncommitted changes or is not a git checkout; commit first or set GIT_COMMIT
@@ -88,28 +88,28 @@ GIT_COMMIT
         at cli (D:\Projects\QUANT\apps\web\e2e\research-campaigns.spec.ts:17:27)
         at D:\Projects\QUANT\apps\web\e2e\research-campaigns.spec.ts:46:19
 
-    attachment #1: screenshot (image/png) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
     test-results\research-campaigns-operato-4ef77-ion-to-an-evaluated-holdout\test-failed-1.png
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
-    attachment #2: video (video/webm) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
     test-results\research-campaigns-operato-4ef77-ion-to-an-evaluated-holdout\video.webm
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
     Error Context: test-results\research-campaigns-operato-4ef77-ion-to-an-evaluated-holdout\error-context.md
 
-    attachment #4: trace (application/zip) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
     test-results\research-campaigns-operato-4ef77-ion-to-an-evaluated-holdout\trace.zip
     Usage:
 
         pnpm exec playwright show-trace test-results\research-campaigns-operato-4ef77-ion-to-an-evaluated-holdout\trace.zip
 
-    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    ────────────────────────────────────────────────────────────────────────────────────────────────
 
   2 failed
-    e2e\paper-mvp.spec.ts:234:7 â€º Gate 1 local paper browser workflows â€º history filters, alert ack API + safety honesty, disconnect/reconnect, mobile nav, keyboard
-    e2e\research-campaigns.spec.ts:23:5 â€º operator follows a research campaign from declaration to an evaluated holdout
+    e2e\paper-mvp.spec.ts:234:7 › Gate 1 local paper browser workflows › history filters, alert ack API + safety honesty, disconnect/reconnect, mobile nav, keyboard
+    e2e\research-campaigns.spec.ts:23:5 › operator follows a research campaign from declaration to an evaluated holdout
   12 passed (3.9m)
 D:\Projects\QUANT\apps\web:
-â€‰ERR_PNPM_RECURSIVE_RUN_FIRST_FAILâ€‰ @odin/web@0.1.0 test:e2e: `playwright test`
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @odin/web@0.1.0 test:e2e: `playwright test`
 Exit status 1

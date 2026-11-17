@@ -32,9 +32,9 @@ Notes: process-local circuit state is not durable; first completion consumes sha
 
 ## Independent API/design review
 
-Separate reviewer inspected readiness controller and global JWT guard registration: no critical/high runtime finding, no DB/provider/write calls. Live HTTP behaviour not yet tested. C3/C10 design review findings corrected: exact existing action/state enums, nullable prefill price, explicit membership FKs, precise legacy/global stop migration semantics and immutable simulation-quote FK. Retirement function is a structural proposal validator, not fresh account-scoped proof.
+Separate reviewer inspected readiness controller and global JWT guard registration: no critical/high runtime finding, no DB/provider/write calls. Actual local HTTP behaviour is verified below. C3/C10 design review findings corrected: exact existing action/state enums, nullable prefill price, explicit membership FKs, precise legacy/global stop migration semantics and immutable simulation-quote FK. Retirement function is a structural proposal validator, not fresh account-scoped proof.
 
-## Still required
+## Earlier review checkpoint (superseded below)
 
 ## Root independent storage quarantine re-review
 
@@ -44,7 +44,7 @@ This is not acceptance of archive/delete operation or production restore. Underl
 
 Build finding resolved operationally by additive `build:tsc` scripts for API/worker and root `build:portable`; default Linux/CI build unchanged. Both installed CLI and core exist. A safe new cache leaf cannot repair insecure ancestor ACLs on this host, and supported temporary native-cache mode also refuses. No global ACL or native-loader security weakened; no dependency/lockfile upgrade. Next uses a separate binding that loads; actual Next build still required.
 
-## Outstanding verification
+## Earlier outstanding verification (completed below where authorised)
 
 Post-fix storage review, integration in dependency order, combined targeted/full tests, repeat GENESIS, sequential comparison, lint/typecheck/build and actual worker/browser evidence where the local environment supports it. Record commands and outcomes before closing this checkpoint. No incomplete check is a pass.
 
@@ -72,4 +72,18 @@ Portable compiler initially emitted dist/main.js while startup used stale dist/s
 
 Combined compiled CLI rerun: plan0, verify0, unapproved execute2, idempotent restore0 with skippedExisting1/verified1; evidence/titanium-combined-cli.json. The executable is apps/worker/dist/src/ops/retention-cli.js, not the review checkout's targeted compile.
 
-Browser attempts are preserved in evidence/titanium-browser-first-run.txt and titanium-browser-second-run.txt. First run8pass/3fail/3notrun: hardcoded API4318, UI toggle raced rendered acknowledgement, and root omitted the campaign CLI's explicit DB URL. Second run12pass/2fail: host psql missing (also hardcoded DB), and research start correctly refused the dirty tree. No research codeVersion override was used. Fixes keep every assertion: shared API_BASE, wait rendered state, explicit guarded Prisma fixture seeding replacing psql, exact alert-ID matching. Independent reviewer APPROVE. Synthetic campaign consumes only its generated fixture holdout after its test authorisation, never real historical data. Final rerun is pending a clean commit and complete explicit fixture environment.
+Browser attempts are preserved in evidence/titanium-browser-first-run.txt and titanium-browser-second-run.txt. First run8pass/3fail/3notrun: hardcoded API4318, UI toggle raced rendered acknowledgement, and root omitted the campaign CLI's explicit DB URL. Second run12pass/2fail: host psql missing (also hardcoded DB), and research start correctly refused the dirty tree. No research codeVersion override was used. Fixes keep every assertion: shared API_BASE, wait rendered state, explicit guarded Prisma fixture seeding replacing psql, exact alert-ID matching. Independent reviewer APPROVE. Synthetic campaign consumes only its generated fixture holdout after its test authorisation, never real historical data. Final rerun results follow.
+
+## Final browser acceptance and source checkpoints
+
+Third run: 13 pass / one fail (duplicate valid history text). Fourth at dad8954: 12 pass / two fail (first listitem was an explanatory warning; populated mobile history lacked focus support). Fifth at e01c35c: 13 pass / one fail (positions color-contrast during a possible entrance animation). Exact logs: evidence/titanium-browser-{third,fourth,fifth}-run.txt. No failed run is presented as passing.
+
+e01c35c adds only an accessible name and tabIndex=0 to the native risk-history ul, and scopes the test to that named list. Latest audit values, actor and timestamp are asserted; RUNNING refusal, invalid input, paused save, no automatic resume and restoration remain checked. 3b79f71 waits, with bounded expect.poll, until finite animations stop running before axe; infinite status pulses and every axe rule remain enabled. All failing node summaries are reported. Existing positions animation fades opacity from zero to one in 220ms. This supports a transient rendering hypothesis, not a proven historical diagnosis. Independent reviewer approved both narrow changes.
+
+Frontend rebuild: `pnpm --filter @odin/web build`, exit0, including TypeScript; evidence/titanium-frontend-final-build.txt. Final browser command: `pnpm --filter @odin/web test:e2e` at clean source checkpoint **3b79f71: 14 passed (3.5m), exit0**, no skip. Evidence/titanium-browser-complete.txt. All 23 sections are checked on desktop/mobile. Synthetic paper order lifecycle and synthetic six-unit research/fixture-holdout path passed; no real campaign or sealed historical holdout used.
+
+Final browser environment: explicit DATABASE_URL and DATABASE_URL_TEST point only to 127.0.0.1:55435/odin_test_titanium_e2e_final; Redis 127.0.0.1:56379/1; E2E_WEB_URL=http://127.0.0.1:44317; E2E_API_URL=http://127.0.0.1:44318; EXECUTION_MODE=PAPER. NODE_OPTIONS requires a temporary preload disabling dotenv autoload and external fetches. API/worker use deterministic market fixtures with research scheduling disabled. Frontend build pins that same local public API URL. These are production-shaped artifacts with fixture configuration, not production configuration certification.
+
+Full unit/integration checkpoint precedes final test-only/public-export/accessibility follow-ups: 1,707 pass / 25 skip at 1dfb0ef. Later public-export change passed 53 product tests and package build. Full typecheck/scoped lint passed at the prior compiled checkpoint; changed browser/component files passed targeted eslint and final frontend build typecheck. The complete 1,707-test suite was not rerun after these narrow follow-ups.
+
+Cleanup: own API, worker and web foreground sessions stopped; loopback ports 44317/44318 closed. Only newly created quant-titanium-pg-control and quant-titanium-redis stopped; tmpfs fixtures are disposable. Existing quant-aurum-odin-test and unrelated containers untouched. Root is committed clean after the documentation checkpoint; original ten worktrees stay clean. Storage review checkout retains generated untracked CLI fixture artifacts for review.

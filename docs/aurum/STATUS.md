@@ -7,12 +7,13 @@ Earlier records below are preserved. Current starting SHAs and classifications: 
 - IMPLEMENTED, INACTIVE: bounded financial domains and configured-margin correction; feed generation/reset fencing, provenance/state isolation and cancellable transport; authenticated read-only readiness contract. No account created.
 - Storage independent review found high-severity defects. Deletion remains disabled, real allowlist empty; restore confined to disposable local databases. Production archive/delete/restore acceptance is not established.
 - VERIFIED_TEST: historical PR #82 CI independently confirmed: 1,663 pass, one skip, 238 files, 177 integration tests and 14 browser tests. These do not prove the new combined branch.
+- VERIFIED_TEST, combined local branch: 1,707 pass / 25 skip, 241 files pass / four skip; integration project 35 files / 179 tests (two no-resource quarantine tests). Portable packages/API/worker/web build, typecheck, scoped lint and zero-advisory production audit pass. Final browser run at 3b79f71: 14/14 pass (3.5m). Exact checkpoint and limits: [TITANIUM-REPORT.md](TITANIUM-REPORT.md).
 - BLOCKED_APPROVAL: durable retention audit/transaction protocol, quote persistence, C3 and C10. Exact scopes: [TITANIUM-APPROVAL-PACKAGE.md](TITANIUM-APPROVAL-PACKAGE.md), [FEED.md](FEED.md), [TITANIUM-STORAGE-REVIEW.md](TITANIUM-STORAGE-REVIEW.md).
 - BLOCKED_RESEARCH: historical reconciliation and holdout authority. Exact operator read-only SQL and counting semantics: [TITANIUM-TRIALS-AND-DATA.md](TITANIUM-TRIALS-AND-DATA.md). No subtraction-based declaration accepted.
 - UNVERIFIED production: reported deployment, current obligations/balances, provider entitlement, storage growth, dataset coverage/hashes. No production inspection authorised or performed.
 - NOT ACTIVATED: feed, campaigns, account, retirement flags, execution, retention or deletion. No push, PR, main merge or deployment authorised.
 
-Existing unlock is unused. Original branches, legacy history and losses preserved. Full combined acceptance remains open pending the final verification ledger and protected blockers.
+Existing unlock is unused. Original branches, legacy history and losses preserved. Authorised local verification is complete; full platform acceptance remains blocked by protected implementation and operator evidence. Windows skips, tmpfs durability limits and native SWC ACL refusal remain explicit.
 
 This document also serves as EXECUTION-LEDGER.
 

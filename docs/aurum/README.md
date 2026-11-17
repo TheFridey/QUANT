@@ -6,7 +6,7 @@ If the research finds no defensible edge, the deliverable is a correct research 
 
 This programme supersedes OPERATION HORIZON Phase II / BREAKOUT (`docs/horizon/phase-ii/`, kept as history).
 
-TITANIUM's current local checkpoint is on `aurum/05-titanium-integration`. Independent review corrected inactive product/feed code and quarantined unsafe retention deletion. Production and gold execution remain untouched. Start with TAKEOVER-TITANIUM.md and TITANIUM-REGRESSION.md; approval scope is in TITANIUM-APPROVAL-PACKAGE.md. Historical M0 records below remain evidence of their original checkpoint.
+TITANIUM's current local checkpoint is on `aurum/05-titanium-integration`. Independent review corrected inactive product/feed code and quarantined unsafe retention deletion. Production and gold execution remain untouched. Start with [TITANIUM-REPORT.md](TITANIUM-REPORT.md) for the final results, TAKEOVER-TITANIUM.md for the baseline and TITANIUM-REGRESSION.md for attempts; approval scope is in TITANIUM-APPROVAL-PACKAGE.md. Historical M0 records below remain evidence of their original checkpoint.
 
 | Document | Purpose |
 | --- | --- |
