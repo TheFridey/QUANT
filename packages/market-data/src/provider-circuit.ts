@@ -11,6 +11,11 @@
  * - HALF_OPEN: after `retryAt`, exactly one probe request is allowed; success closes, failure reopens with
  *   a doubled backoff.
  *
+ * N3 (generation fence): every state change increments `epoch`, and each admission returns it as `token`.
+ * A result reported with a token from an earlier epoch is stale and changes nothing material. In HALF_OPEN the
+ * token is mandatory, so only the current probe can close or reopen the breaker; an out-of-order success from
+ * an expired probe cannot close a newer probe's generation.
+ *
  * Backoff is exponential from `baseBackoffMs`, capped at `maxBackoffMs`, and never shorter than a
  * provider `Retry-After` (itself capped at `maxBackoffMs`). Jitter is deterministic from the key, so many
  * breakers opened together do not retry together.
@@ -59,7 +64,27 @@ export type CircuitRecord = {
   lastFailure: ProviderFailureKind | null;
   lastError: string | null;
   lastSuccessAt: number | null;
+  /** Generation: incremented on every state change. Records without it (legacy) read as 0. */
+  epoch?: number;
+  /** Results ignored as stale (out-of-order or from an earlier generation). Diagnostic only. */
+  staleResults?: number;
 };
+
+const epochOf = (r: CircuitRecord): number => (Number.isInteger(r.epoch) ? (r.epoch as number) : 0);
+
+/**
+ * True when a result carrying `token` belongs to the record's current generation. A token from another
+ * generation is always stale. Without a token, a HALF_OPEN success is refused (closing needs proof that it
+ * came from the current probe), while a failure is accepted, because reopening is the conservative direction.
+ */
+function isCurrent(record: CircuitRecord, token: number | undefined, outcome: "SUCCESS" | "FAILURE"): boolean {
+  if (token !== undefined) return token === epochOf(record);
+  return !(record.state === "HALF_OPEN" && outcome === "SUCCESS");
+}
+
+function stale(record: CircuitRecord): CircuitRecord {
+  return { ...record, staleResults: (record.staleResults ?? 0) + 1 };
+}
 
 export function circuitKey(providerId: string, instrument: string): string {
   return `${providerId}:${instrument}`;
@@ -77,6 +102,8 @@ export function initialCircuit(key: string): CircuitRecord {
     lastFailure: null,
     lastError: null,
     lastSuccessAt: null,
+    epoch: 0,
+    staleResults: 0,
   };
 }
 
@@ -115,7 +142,14 @@ export function backoffMs(key: string, openings: number, policy: CircuitPolicy, 
   return Math.max(jittered, floor);
 }
 
-export type CircuitAdmission = { allowed: boolean; state: CircuitState; reason: "CLOSED" | "OPEN_UNTIL_RETRY" | "HALF_OPEN_PROBE" | "HALF_OPEN_PROBE_IN_FLIGHT"; retryAt: number | null };
+export type CircuitAdmission = {
+  allowed: boolean;
+  state: CircuitState;
+  reason: "CLOSED" | "OPEN_UNTIL_RETRY" | "HALF_OPEN_PROBE" | "HALF_OPEN_PROBE_IN_FLIGHT";
+  retryAt: number | null;
+  /** Generation token to pass back with this request's result. */
+  token: number;
+};
 
 /**
  * Ask whether a request may be sent now. Returns the record to store: when an OPEN breaker's retry time
@@ -127,57 +161,65 @@ export function admitRequest(
   policy: CircuitPolicy = DEFAULT_CIRCUIT_POLICY,
 ): { admission: CircuitAdmission; record: CircuitRecord } {
   const p = validPolicy(policy);
+  const epoch = epochOf(record);
   if (record.state === "CLOSED") {
-    return { admission: { allowed: true, state: "CLOSED", reason: "CLOSED", retryAt: null }, record };
+    return { admission: { allowed: true, state: "CLOSED", reason: "CLOSED", retryAt: null, token: epoch }, record };
   }
   if (record.state === "OPEN") {
     if (record.retryAt !== null && now >= record.retryAt) {
-      const next = { ...record, state: "HALF_OPEN" as const, halfOpenInFlight: true, halfOpenSince: now };
-      return { admission: { allowed: true, state: "HALF_OPEN", reason: "HALF_OPEN_PROBE", retryAt: record.retryAt }, record: next };
+      const next = { ...record, state: "HALF_OPEN" as const, halfOpenInFlight: true, halfOpenSince: now, epoch: epoch + 1 };
+      return { admission: { allowed: true, state: "HALF_OPEN", reason: "HALF_OPEN_PROBE", retryAt: record.retryAt, token: epoch + 1 }, record: next };
     }
-    return { admission: { allowed: false, state: "OPEN", reason: "OPEN_UNTIL_RETRY", retryAt: record.retryAt }, record };
+    return { admission: { allowed: false, state: "OPEN", reason: "OPEN_UNTIL_RETRY", retryAt: record.retryAt, token: epoch }, record };
   }
   // A probe with no recorded start (legacy record) is treated as timed out rather than stuck in HALF_OPEN.
   if (record.halfOpenInFlight && (record.halfOpenSince === null || now - record.halfOpenSince >= p.probeTimeoutMs)) {
     // The probe never reported: treat it as a failure and reopen with a longer backoff.
-    const reopened = recordFailure(record, { kind: "TIMEOUT", error: "HALF_OPEN_PROBE_TIMEOUT" }, now, p);
-    return { admission: { allowed: false, state: "OPEN", reason: "OPEN_UNTIL_RETRY", retryAt: reopened.retryAt }, record: reopened };
+    const reopened = recordFailure(record, { kind: "TIMEOUT", error: "HALF_OPEN_PROBE_TIMEOUT", token: epoch }, now, p);
+    return { admission: { allowed: false, state: "OPEN", reason: "OPEN_UNTIL_RETRY", retryAt: reopened.retryAt, token: epochOf(reopened) }, record: reopened };
   }
   if (record.halfOpenInFlight) {
-    return { admission: { allowed: false, state: "HALF_OPEN", reason: "HALF_OPEN_PROBE_IN_FLIGHT", retryAt: record.retryAt }, record };
+    return { admission: { allowed: false, state: "HALF_OPEN", reason: "HALF_OPEN_PROBE_IN_FLIGHT", retryAt: record.retryAt, token: epoch }, record };
   }
+  // A new probe in HALF_OPEN is a new generation, so a result from any earlier probe is stale.
   return {
-    admission: { allowed: true, state: "HALF_OPEN", reason: "HALF_OPEN_PROBE", retryAt: record.retryAt },
-    record: { ...record, halfOpenInFlight: true, halfOpenSince: now },
+    admission: { allowed: true, state: "HALF_OPEN", reason: "HALF_OPEN_PROBE", retryAt: record.retryAt, token: epoch + 1 },
+    record: { ...record, halfOpenInFlight: true, halfOpenSince: now, epoch: epoch + 1 },
   };
 }
 
 /**
- * A success closes the breaker only from CLOSED or HALF_OPEN. A late success from a request admitted before
- * the breaker opened is ignored while OPEN, so it cannot cut a backoff short.
+ * A success closes the breaker only from CLOSED, or from HALF_OPEN with the current probe's token. A late
+ * success is ignored while OPEN, so it cannot cut a backoff short, and a stale token cannot close a newer
+ * HALF_OPEN generation (N3).
  */
-export function recordSuccess(record: CircuitRecord, now: number): CircuitRecord {
+export function recordSuccess(record: CircuitRecord, now: number, token?: number): CircuitRecord {
   if (record.state === "OPEN") return { ...record, lastSuccessAt: now };
-  return { ...initialCircuit(record.key), lastSuccessAt: now };
+  if (!isCurrent(record, token, "SUCCESS")) return stale(record);
+  // Closing from HALF_OPEN is a state change; a success while CLOSED keeps the generation.
+  const epoch = record.state === "HALF_OPEN" ? epochOf(record) + 1 : epochOf(record);
+  return { ...initialCircuit(record.key), lastSuccessAt: now, epoch, staleResults: record.staleResults ?? 0 };
 }
 
 const OPEN_IMMEDIATELY: ReadonlySet<ProviderFailureKind> = new Set(["AUTH_FAILED", "INVALID_CONFIGURATION", "RATE_LIMITED"]);
 
 export function recordFailure(
   record: CircuitRecord,
-  failure: { kind: ProviderFailureKind; error?: string; retryAfterMs?: number | null },
+  failure: { kind: ProviderFailureKind; error?: string; retryAfterMs?: number | null; token?: number },
   now: number,
   policy: CircuitPolicy = DEFAULT_CIRCUIT_POLICY,
 ): CircuitRecord {
   const p = validPolicy(policy);
   // A late failure while already OPEN is recorded but does not extend the backoff or count as a new opening.
   if (record.state === "OPEN") return { ...record, lastFailure: failure.kind, lastError: failure.error ?? null };
+  // A failure from an earlier generation must not reopen a newer probe or count against a later CLOSED period.
+  if (!isCurrent(record, failure.token, "FAILURE")) return stale(record);
   const consecutiveFailures = record.consecutiveFailures + 1;
   const opens = record.state === "HALF_OPEN" || OPEN_IMMEDIATELY.has(failure.kind) || consecutiveFailures >= p.failureThreshold;
   const base = { ...record, consecutiveFailures, lastFailure: failure.kind, lastError: failure.error ?? null, halfOpenInFlight: false, halfOpenSince: null };
   if (!opens) return { ...base, state: "CLOSED" };
   const openings = record.openings + 1;
-  return { ...base, state: "OPEN", openings, retryAt: now + backoffMs(record.key, openings, p, failure.retryAfterMs) };
+  return { ...base, state: "OPEN", openings, epoch: epochOf(record) + 1, retryAt: now + backoffMs(record.key, openings, p, failure.retryAfterMs) };
 }
 
 /** Explicit provider state for display: never "ok" while any instrument breaker is not CLOSED. */
