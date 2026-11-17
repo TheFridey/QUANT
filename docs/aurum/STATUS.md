@@ -95,3 +95,21 @@ This document also serves as EXECUTION-LEDGER.
 | D6 | Remove the pre-existing `.claude/protected-edits.unlock` now, and recreate it per PCR item | BASELINE: it is present and was not created in this session | remove it | protected edits are blocked again until a scoped unlock |
 | D7 | Answer the legacy-trial questionnaire (3 questions) | F03-F06 doc §45 | answer before M4 | unblocks FORGE |
 | D8 | Authorise the read-only production dry run over ssh | STORAGE-PLAN §5 | yes, after this branch is deployed | real candidate counts |
+
+## Deploy: `aec2a80` to production (17 Nov 2026, 12:42 UTC)
+
+Operator instruction: "merge everything and push live". PR #82 was merged as `aec2a80` after green CI (run 44083988025: test, build-packages, browser-e2e 14 passed). The release also carries the previously undeployed #81 (`2bed7cd`).
+
+| Step | Result |
+| --- | --- |
+| Preflight (read-only) | production `bed2f36`, clean checkout; api, worker, web, postgresql and redis active; `/api/health` ok; 0 open positions, 0 pending orders, 0 running research; `primary` cash 7,061.30912073, realised P&L −2,939.04876537; 48 GB free |
+| Release content vs `bed2f36` | no migration, no dependency or lockfile change, no protected-path diff |
+| PAPER-only env check | **not run by the agent.** The repo hook refuses any command naming those keys. Operator to confirm |
+| Restore drill | **not run.** No password role on the VPS; operator chose "deploy, drill later" on 12 Nov |
+| Backup | `quant-20261117T123713Z.dump`, 1.95 GB |
+| Deploy | fast-forward to `aec2a80`; `pnpm install --frozen-lockfile`; env-sourced `pnpm build`; `db:deploy` reported "No pending migrations"; snapshot `/srv/quant/releases/aec2a80-20261117T124248Z` (68 MB); restarted worker, then api, then web |
+| Smoke | `/api/health` degraded immediately after restart, ok within 75 s; `/login` 200; 0 worker error lines; 7 cycles COMPLETE, 1 running |
+| Accounting | cash and realised P&L unchanged; 0 orders and 0 promotions since deploy; engine RUNNING, no flatten |
+| Live behaviour change | from #81: XAU now uses the narrower `METALS_ENERGY_CFD` session; equity sessions are UNKNOWN outside 2025–2027 (fail-closed). Every AURUM module is unwired |
+
+**Rollback:** there is no `bed2f36` snapshot. Check out `bed2f36`, rebuild, and restart worker, api and web. No database action is needed, because the schema is identical.
