@@ -38,7 +38,16 @@ This document also serves as EXECUTION-LEDGER.
 | --- | --- |
 | `quant-safety-reviewer`, PR #81 post-fix (`dcb5ae3..7696aeb`) | **APPROVE WITH NOTES.** H1, M2, L6, L8, L9 fixed in code; M3, M4, L-M5 fixed in docs; L7 documented. No protected path changed; nothing wired. New findings and their disposition are below |
 | `quant-safety-reviewer`, this branch (pre-fix) | **APPROVE WITH NOTES.** Nothing wired; no protected path changed; 75 tests observed passing. Findings and their disposition are below |
-| `quant-safety-reviewer`, this branch (post-fix) | **not run.** Required before this branch merges |
+| `quant-safety-reviewer`, this branch (post-fix, `ec1888b..4fbf4ab`) | **APPROVE WITH NOTES.** A1–A7 fixed correctly; no new loosening; no import cycle; still unwired; no protected path touched; 43/43 targeted tests passing. Four new LOW findings, all for the future executor or cosmetic (below) |
+
+**Findings from the post-fix re-review** (all open; for `aurum/01-storage` unless noted):
+
+| # | Finding | Severity |
+| --- | --- | --- |
+| P1 | `verifyManifest`: `expectedPolicyHash` is optional. The executor must require it | LOW |
+| P2 | Duplicate detection is by table:seq only. It misses the same file under another seq and overlapping key ranges | LOW |
+| P3 | `validatePolicy` does not force MarketObservation to stay `executorBlocked`. Make the block a hard rule | LOW |
+| P4 | `cappedAtMaxStake` is set before the rounding loop and can be true after the loop has already reduced the stake. Cosmetic; fix at PCR C5 | LOW |
 
 **Findings from this branch's review:**
 
