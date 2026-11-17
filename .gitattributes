@@ -1,0 +1,2 @@
+# Vitest's transformed import of a hashbang script requires LF on Windows too.
+scripts/restore-verify.mjs text eol=lf
