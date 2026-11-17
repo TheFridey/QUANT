@@ -36,7 +36,14 @@ export const EXECUTION_CAPABILITIES = [
 ] as const;
 export type ExecutionCapability = (typeof EXECUTION_CAPABILITIES)[number];
 
-export const SESSION_KINDS = ["CRYPTO_24x7", "INDEX_RTH", "INDEX_EXTENDED", "FX_WEEKDAY"] as const;
+export const SESSION_KINDS = [
+  "CRYPTO_24x7",
+  "INDEX_RTH",
+  "INDEX_EXTENDED",
+  "FX_WEEKDAY",
+  /** Dealer CFD hours for metals and energy (OANDA practice): Sun 18:00 ET to Fri 17:00 ET, daily 17:00-18:00 ET break. */
+  "METALS_ENERGY_CFD",
+] as const;
 export type SessionKind = (typeof SESSION_KINDS)[number];
 
 export const instrumentSchema = z
@@ -252,7 +259,7 @@ export const SEED_INSTRUMENTS: Instrument[] = [
     quote: "USD",
     tickSize: "0.01",
     lotSize: "0.001",
-    session: "FX_WEEKDAY",
+    session: "METALS_ENERGY_CFD",
     providerId: "commodity_stub",
     providerSymbol: "XAUUSD",
     executionCapabilities: ["PAPER_SPOT"],
@@ -269,7 +276,7 @@ export const SEED_INSTRUMENTS: Instrument[] = [
     quote: "USD",
     tickSize: "0.01",
     lotSize: "0.001",
-    session: "INDEX_EXTENDED",
+    session: "METALS_ENERGY_CFD",
     providerId: "commodity_stub",
     providerSymbol: "CL",
     executionCapabilities: ["PAPER_SPOT"],
