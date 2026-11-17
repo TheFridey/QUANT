@@ -197,6 +197,30 @@ describe("stake sizing", () => {
     expect(r.ok && r.value).toMatchObject({ stakeGbp: "5", cappedAtMaxStake: true });
   });
 
+  it("P4: cappedAtMaxStake reflects the final stake when penny rounding takes it below the maximum", () => {
+    // Permitted 50.004 (booked 50.00); loss per £ 10.0005 points: raw stake 5.00015 > max 5, but 5 × 10.0005 =
+    // 50.0025 books to 50.01 > 50.00, so the rounding loop reduces the stake to 4.99.
+    const r = sizeStake({ ...base, equityGbp: "10000.8", slippageAllowancePoints: "0.0005" });
+    expect(r.ok && r.value).toMatchObject({ stakeGbp: "4.99", cappedAtMaxStake: false, permittedRiskGbp: "50.00" });
+    if (r.ok) expect(Number(r.value.estimatedLossAtStopGbp)).toBeLessThanOrEqual(50);
+  });
+
+  it("edge cases: invalid prices, negative inputs, extreme volatility and exhausted margin are refusals", () => {
+    for (const bad of ["NaN", "Infinity", "-1", "0", "", "abc"]) {
+      expect(sizeStake({ ...base, entry: bad }).ok).toBe(false);
+      expect(sizeStake({ ...base, equityGbp: bad }).ok).toBe(false);
+      expect(sizeStake({ ...base, stop: bad }).ok).toBe(false);
+    }
+    expect(sizeStake({ ...base, availableMarginGbp: "-1" })).toEqual({ ok: false, reason: "INVALID_INPUT" });
+    expect(sizeStake({ ...base, usedMarginGbp: "-5" })).toEqual({ ok: false, reason: "INVALID_INPUT" });
+    expect(sizeStake({ ...base, slippageAllowancePoints: "-0.1" })).toEqual({ ok: false, reason: "INVALID_INPUT" });
+    // Extreme volatility: a 500-point stop leaves less than the minimum stake: refused, never rounded up.
+    expect(sizeStake({ ...base, stop: "2150.55" })).toEqual({ ok: false, reason: "MIN_STAKE_EXCEEDS_RISK" });
+    // Exhausted margin.
+    expect(sizeStake({ ...base, availableMarginGbp: "0" })).toEqual({ ok: false, reason: "INSUFFICIENT_MARGIN" });
+    expect(sizeStake({ ...base, usedMarginGbp: "2999", maxMarginUtilisation: "0.3" })).toEqual({ ok: false, reason: "MARGIN_UTILISATION_LIMIT" });
+  });
+
   it("refuses insufficient margin and margin utilisation above the ceiling", () => {
     expect(sizeStake({ ...base, availableMarginGbp: "100" })).toEqual({ ok: false, reason: "INSUFFICIENT_MARGIN" });
     expect(sizeStake({ ...base, usedMarginGbp: "2800" })).toEqual({ ok: false, reason: "MARGIN_UTILISATION_LIMIT" });

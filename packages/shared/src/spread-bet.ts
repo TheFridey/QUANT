@@ -303,7 +303,9 @@ export function sizeStake(input: {
     estimatedLossAtStopGbp: stake.times(lossPerStakeUnit).toDecimalPlaces(2, Decimal.ROUND_CEIL).toFixed(2),
     marginGbp: margin.toFixed(2),
     permittedRiskGbp: permittedBooked.toFixed(2),
-    cappedAtMaxStake: capped,
+    // P4: true only when the final stake is the product maximum because risk would have allowed more. The
+    // rounding loop below the cap can reduce the stake further, and then it is no longer "capped".
+    cappedAtMaxStake: capped && stake.eq(max),
     disclosure: "Estimated loss at stop is not a maximum loss: ordinary stops can gap.",
   });
 }
