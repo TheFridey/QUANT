@@ -51,7 +51,7 @@ test("operator edits PAPER risk limits from Settings through the audited config 
     expect(latest?.changes).toEqual([{ key: "maxDailyLossPct", from: original, to: next }]);
     expect(latest?.actor).toBeTruthy();
     // The same valid change may appear repeatedly in append-only history.
-    const renderedLatest = panel.getByRole("listitem").first();
+    const renderedLatest = panel.getByRole("list", { name: "Recent risk-limit changes" }).getByRole("listitem").first();
     await expect(renderedLatest).toContainText(`maxDailyLossPct ${original} → ${next}`);
     await expect(renderedLatest).toContainText(`${latest!.createdAt.slice(0, 19).replace("T", " ")} UTC`);
     await expect(renderedLatest).toContainText(latest!.actor!);
