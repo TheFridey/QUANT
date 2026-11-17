@@ -1,0 +1,79 @@
+[
+  {
+    "command": "node apps/worker/.titanium-cli/retention-cli.js plan --archive-dir D:\\Projects\\QUANT-titanium-storage\\apps\\worker\\.titanium-archive",
+    "expected": 0,
+    "exitCode": 0,
+    "stdout": "{\n  \"mode\": \"PLAN_READ_ONLY\",\n  \"now\": \"2026-11-17T14:10:40.099Z\",\n  \"policyHash\": \"9ebe319ae5a48f00b1dd485233537e1a751548201e3e6deb23ceda1ee5ac2f48\",\n  \"policyCandidateTables\": [\n    \"AgentDecision\",\n    \"CyclePlan\",\n    \"OpportunityFunnelEvent\"\n  ],\n  \"deletionEnabled\": false,\n  \"deletionBlockers\": [\n    \"POLICY_NOT_APPROVED\",\n    \"DURABLE_AUDIT_REQUIRED\"\n  ],\n  \"blockedTables\": [\n    {\n      \"table\": \"MarketObservation\",\n      \"reason\": \"RESEARCH_DATASET_WINDOWS_UNMAPPED\"\n    }\n  ],\n  \"estimate\": {\n    \"tables\": {\n      \"AgentDecision\": {\n        \"candidateRows\": 0,\n        \"estimatedBytes\": 0\n      },\n      \"CyclePlan\": {\n        \"candidateRows\": 0,\n        \"estimatedBytes\": 0\n      },\n      \"OpportunityFunnelEvent\": {\n        \"candidateRows\": 0,\n        \"estimatedBytes\": 0\n      }\n    },\n    \"totalBytes\": 0\n  },\n  \"requiredFreeBytes\": 2147483648,\n  \"disk\": {\n    \"freeBytes\": 699010088960,\n    \"totalBytes\": 1000202039296,\n    \"pressure\": {\n      \"level\": \"OK\",\n      \"daysToFull\": 868.0051676432291\n    }\n  }\n}\n",
+    "stderr": ""
+  },
+  {
+    "command": "node apps/worker/.titanium-cli/retention-cli.js verify --archive-dir D:\\Projects\\QUANT-titanium-storage\\apps\\worker\\.titanium-archive --run fixture-restore --policy-hash 9ebe319ae5a48f00b1dd485233537e1a751548201e3e6deb23ceda1ee5ac2f48",
+    "expected": 0,
+    "exitCode": 0,
+    "stdout": "{\n  \"mode\": \"VERIFY\",\n  \"state\": \"COMPLETE\",\n  \"ok\": true,\n  \"rows\": 1\n}\n",
+    "stderr": ""
+  },
+  {
+    "command": "node apps/worker/.titanium-cli/retention-cli.js execute --archive-dir D:\\Projects\\QUANT-titanium-storage\\apps\\worker\\.titanium-archive --policy-hash 9ebe319ae5a48f00b1dd485233537e1a751548201e3e6deb23ceda1ee5ac2f48 --backup unapproved",
+    "expected": 2,
+    "exitCode": 2,
+    "stdout": "{\n  \"ok\": false,\n  \"reason\": \"POLICY_NOT_APPROVED\",\n  \"detail\": {\n    \"hash\": \"9ebe319ae5a48f00b1dd485233537e1a751548201e3e6deb23ceda1ee5ac2f48\"\n  }\n}\n",
+    "stderr": ""
+  },
+  {
+    "command": "node apps/worker/.titanium-cli/retention-cli.js restore --archive-dir D:\\Projects\\QUANT-titanium-storage\\apps\\worker\\.titanium-archive --run fixture-restore --policy-hash 9ebe319ae5a48f00b1dd485233537e1a751548201e3e6deb23ceda1ee5ac2f48",
+    "expected": 0,
+    "exitCode": 0,
+    "stdout": "{\n  \"ok\": true,\n  \"runId\": \"fixture-restore\",\n  \"inserted\": 1,\n  \"skippedExisting\": 0,\n  \"verified\": 1\n}\n",
+    "stderr": ""
+  },
+  {
+    "command": "node apps/worker/.titanium-cli/retention-cli.js restore --archive-dir D:\\Projects\\QUANT-titanium-storage\\apps\\worker\\.titanium-archive --run fixture-restore --policy-hash 9ebe319ae5a48f00b1dd485233537e1a751548201e3e6deb23ceda1ee5ac2f48",
+    "expected": 0,
+    "exitCode": 0,
+    "stdout": "{\n  \"ok\": true,\n  \"runId\": \"fixture-restore\",\n  \"inserted\": 0,\n  \"skippedExisting\": 1,\n  \"verified\": 1\n}\n",
+    "stderr": ""
+  },
+  {
+    "command": "node apps/worker/.titanium-cli/retention-cli.js plan --unknown value",
+    "expected": 1,
+    "exitCode": 1,
+    "stdout": "",
+    "stderr": "INVALID_RETENTION_ARGUMENTS\n"
+  },
+  {
+    "command": "node apps/worker/.titanium-cli/retention-cli.js plan --archive-dir",
+    "expected": 1,
+    "exitCode": 1,
+    "stdout": "",
+    "stderr": "INVALID_RETENTION_ARGUMENTS\n"
+  },
+  {
+    "command": "node apps/worker/.titanium-cli/retention-cli.js plan --growth-gb-day 0 --growth-gb-day 1",
+    "expected": 1,
+    "exitCode": 1,
+    "stdout": "",
+    "stderr": "INVALID_RETENTION_ARGUMENTS\n"
+  },
+  {
+    "command": "node apps/worker/.titanium-cli/retention-cli.js plan",
+    "expected": 1,
+    "exitCode": 1,
+    "stdout": "",
+    "stderr": "RETENTION_REQUIRES_LOCAL_DISPOSABLE_DATABASE\n"
+  },
+  {
+    "command": "node apps/worker/.titanium-cli/retention-cli.js verify --archive-dir D:\\Projects\\QUANT-titanium-storage\\apps\\worker\\.titanium-archive --run ../escape --policy-hash 9ebe319ae5a48f00b1dd485233537e1a751548201e3e6deb23ceda1ee5ac2f48",
+    "expected": 1,
+    "exitCode": 1,
+    "stdout": "",
+    "stderr": "UNSAFE_ARCHIVE_COMPONENT\n"
+  },
+  {
+    "command": "node apps/worker/.titanium-cli/retention-cli.js verify --archive-dir D:\\Projects\\QUANT-titanium-storage\\apps\\worker\\.titanium-archive --run fixture-restore --policy-hash 9ebe319ae5a48f00b1dd485233537e1a751548201e3e6deb23ceda1ee5ac2f48",
+    "expected": 2,
+    "exitCode": 2,
+    "stdout": "{\n  \"mode\": \"VERIFY\",\n  \"state\": \"COMPLETE\",\n  \"ok\": false,\n  \"failures\": [\n    {\n      \"file\": \"AgentDecision-000001.jsonl.gz\",\n      \"reason\": \"SIZE_MISMATCH\"\n    }\n  ]\n}\n",
+    "stderr": ""
+  }
+]

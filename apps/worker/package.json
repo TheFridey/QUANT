@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "nest start --watch --builder swc",
     "build": "nest build",
+    "build:tsc": "nest build --builder tsc",
     "start": "node dist/src/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

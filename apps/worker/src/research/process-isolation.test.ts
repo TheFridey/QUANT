@@ -202,7 +202,7 @@ console.log(JSON.stringify({ status: "IDLE" }));
 
   it("the real evaluator, CLI and tick install the guards (wiring)", () => {
     const src = (f: string) => readFileSync(join(__dirname, f), "utf8");
-    expect(src("campaign-evaluator.ts")).toMatch(/installSupervisorLiveness\(\);\n\s+installRssWatchdog\(Number\(rssArg\)\);/);
+    expect(src("campaign-evaluator.ts")).toMatch(/installSupervisorLiveness\(\);\r?\n\s+installRssWatchdog\(Number\(rssArg\)\);/);
     expect(src("campaign-cli.ts")).toMatch(/async function main\(\): Promise<void> \{[\s\S]{0,400}installSupervisorLiveness\(\);/);
     expect(src("campaign-runner.ts")).toContain('stdio: ["pipe", "ignore", "pipe"], env: { NODE_ENV: process.env.NODE_ENV ?? "production", PATH: process.env.PATH ?? "", [SUPERVISOR_PIPE_ENV]: "1" }');
     expect(src("../campaign-job.ts")).toContain('stdio: ["pipe", "pipe", "pipe"]');

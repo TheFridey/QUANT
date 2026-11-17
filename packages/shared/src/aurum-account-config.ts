@@ -1,6 +1,7 @@
 import type Decimal from "decimal.js";
 import { d } from "./money.js";
-import { AURUM_GENERIC_GOLD_DFB_V1, sizeStake, type SizingReason, type SpreadBetProductSpec, type StakeSizing } from "./spread-bet.js";
+import { spreadDecimal } from "./spread-bet-domain.js";
+import { AURUM_GENERIC_GOLD_DFB_V1, sizeStake, validateProductSpec, type SizingReason, type SpreadBetProductSpec, type StakeSizing } from "./spread-bet.js";
 
 /**
  * OPERATION AURUM: proposed simulation account parameters (docs/aurum/SCOPE.md §3). **Pure, unwired, proposed.**
@@ -58,16 +59,12 @@ export type AurumConfigReason =
   | "WEEKEND_NOT_SUPPORTED";
 
 function pos(v: unknown): Decimal | null {
-  if (typeof v !== "string" || v.trim() === "") return null;
-  try {
-    const x = d(v);
-    return x.isFinite() && x.gt(0) ? x : null;
-  } catch {
-    return null;
-  }
+  const x = spreadDecimal(v);
+  return x && x.gt(0) ? x : null;
 }
 
 export function validateAurumAccountConfig(c: AurumAccountConfig, spec: SpreadBetProductSpec = AURUM_GENERIC_GOLD_DFB_V1): { ok: true } | { ok: false; reason: AurumConfigReason } {
+  if (!validateProductSpec(spec).ok) return { ok: false, reason: "INVALID_CONFIG" };
   const balance = pos(c?.initialBalanceGbp);
   const risk = pos(c?.riskPerTrade);
   const daily = pos(c?.dailyLossLimit);
@@ -82,10 +79,11 @@ export function validateAurumAccountConfig(c: AurumAccountConfig, spec: SpreadBe
   if (c.productId !== spec.id) return { ok: false, reason: "PRODUCT_MISMATCH" };
   if (minStake.lt(spec.minStakeGbp)) return { ok: false, reason: "MIN_STAKE_BELOW_PRODUCT" };
   if (margin.lt(spec.marginRate)) return { ok: false, reason: "MARGIN_BELOW_PRODUCT" };
+  if (margin.gt(1) || minStake.gt(spec.maxStakeGbp) || !minStake.mod(spec.stakeIncrementGbp).isZero()) return { ok: false, reason: "INVALID_CONFIG" };
   // Funding and weekend gaps are not modelled, so exposure across them cannot be simulated honestly.
   if (c.overnightExposure !== false) return { ok: false, reason: "OVERNIGHT_NOT_SUPPORTED" };
   if (c.weekendExposure !== false) return { ok: false, reason: "WEEKEND_NOT_SUPPORTED" };
-  if (!Array.isArray(c.directions) || c.directions.some((x) => x !== "LONG" && x !== "SHORT")) return { ok: false, reason: "INVALID_CONFIG" };
+  if (c.status !== "PROPOSED_PENDING_APPROVAL" || !Array.isArray(c.directions) || c.directions.length === 0 || c.directions.some((x) => x !== "LONG" && x !== "SHORT")) return { ok: false, reason: "INVALID_CONFIG" };
   return { ok: true };
 }
 
@@ -113,7 +111,7 @@ export function sizeStakeWithinAccountRisk(
     if (req.gt(configured)) return { ok: false, reason: "RISK_ABOVE_CONFIGURED" };
     fraction = req;
   }
-  const spec: SpreadBetProductSpec = d(config.minStakeGbp).gt(rest.spec.minStakeGbp) ? { ...rest.spec, minStakeGbp: config.minStakeGbp } : rest.spec;
+  const spec: SpreadBetProductSpec = { ...rest.spec, minStakeGbp: config.minStakeGbp, marginRate: config.marginRate };
   const sized = sizeStake({ ...rest, spec, riskFraction: fraction.toFixed() });
   if (!sized.ok) return sized;
   return { ok: true, value: { ...sized.value, riskFractionUsed: fraction.toFixed() } };

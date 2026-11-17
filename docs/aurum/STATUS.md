@@ -1,5 +1,19 @@
 # AURUM status and execution ledger
 
+## TITANIUM — 17 November 2026 (current checkpoint)
+
+Earlier records below are preserved. Current starting SHAs and classifications: [TAKEOVER-TITANIUM.md](TAKEOVER-TITANIUM.md). Command evidence: [TITANIUM-REGRESSION.md](TITANIUM-REGRESSION.md) and [EXECUTION-LEDGER.md](EXECUTION-LEDGER.md).
+
+- IMPLEMENTED, INACTIVE: bounded financial domains and configured-margin correction; feed generation/reset fencing, provenance/state isolation and cancellable transport; authenticated read-only readiness contract. No account created.
+- Storage independent review found high-severity defects. Deletion remains disabled, real allowlist empty; restore confined to disposable local databases. Production archive/delete/restore acceptance is not established.
+- VERIFIED_TEST: historical PR #82 CI independently confirmed: 1,663 pass, one skip, 238 files, 177 integration tests and 14 browser tests. These do not prove the new combined branch.
+- BLOCKED_APPROVAL: durable retention audit/transaction protocol, quote persistence, C3 and C10. Exact scopes: [TITANIUM-APPROVAL-PACKAGE.md](TITANIUM-APPROVAL-PACKAGE.md), [FEED.md](FEED.md), [TITANIUM-STORAGE-REVIEW.md](TITANIUM-STORAGE-REVIEW.md).
+- BLOCKED_RESEARCH: historical reconciliation and holdout authority. Exact operator read-only SQL and counting semantics: [TITANIUM-TRIALS-AND-DATA.md](TITANIUM-TRIALS-AND-DATA.md). No subtraction-based declaration accepted.
+- UNVERIFIED production: reported deployment, current obligations/balances, provider entitlement, storage growth, dataset coverage/hashes. No production inspection authorised or performed.
+- NOT ACTIVATED: feed, campaigns, account, retirement flags, execution, retention or deletion. No push, PR, main merge or deployment authorised.
+
+Existing unlock is unused. Original branches, legacy history and losses preserved. Full combined acceptance remains open pending the final verification ledger and protected blockers.
+
 This document also serves as EXECUTION-LEDGER.
 
 | | |

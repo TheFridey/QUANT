@@ -1,5 +1,7 @@
 # AURUM Workstream Zero: storage plan
 
+> TITANIUM supersedes executor readiness claims: independent review found high-severity lock, audit, dependency and archive replacement defects. Deletion remains disabled even after any future hash approval; real allowlist empty. Restore is local-disposable only. See TITANIUM-STORAGE-REVIEW.md for evidence, quarantine and additive audit approval scope. Same-disk archives do not establish off-host recovery or immediate OS capacity reclamation. No production deletion or restoration authorised.
+
 **Status:** policy and dry-run tooling are implemented and unit-tested. The archive/delete executor is **not built**. It needs a disposable-database proof, which is BLOCKED on this host because it has no Docker or PostgreSQL. It also needs operator approval of the policy. No production data has been touched.
 
 ## 1. Problem (recorded 17 Nov 2026, not re-read)
