@@ -1,10 +1,9 @@
-import "../load-env.js";
 import { PrismaClient } from "@odin/shared/db";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { PROPOSED_RETENTION, cutoffFor, diskPressure, executablePolicies, policyHash, verifyManifest, type ArchiveManifest } from "./retention-policy.js";
-import { defaultStatfs, estimate, executeRetention, restoreRetentionRun } from "./retention-executor.js";
+import { existsSync } from "node:fs";
+import { PROPOSED_RETENTION, cutoffFor, diskPressure, executablePolicies, policyHash, verifyManifest } from "./retention-policy.js";
+import { defaultStatfs, estimate, executeRetention, restoreRetentionRun, readArchiveManifest, readArchiveFiles } from "./retention-executor.js";
 import { prismaRetentionDb, prismaRetentionLock } from "./retention-prisma.js";
+import { assertDisposableRetentionTarget, confinedArchivePath } from "./retention-boundary.js";
 
 /**
  * AURUM retention executor CLI (docs/aurum/STORAGE-PLAN.md §3).
@@ -43,21 +42,33 @@ const replacer = (_k: string, v: unknown) => (typeof v === "bigint" ? v.toString
 
 async function main() {
   const [cmd = "plan", ...args] = process.argv.slice(2);
+  const allowed: Record<string, string[]> = {
+    plan: ['--archive-dir', '--growth-gb-day', '--wal-headroom-gb'],
+    verify: ['--archive-dir', '--run', '--policy-hash'],
+    execute: ['--archive-dir', '--policy-hash', '--backup', '--resume', '--max-batches', '--batch-rows', '--max-wal-gb', '--wal-headroom-gb', '--growth-gb-day', '--backup-max-age-h', '--throttle-ms'],
+    restore: ['--archive-dir', '--run', '--policy-hash'],
+  };
+  if (!Object.hasOwn(allowed, cmd)) throw new Error('UNKNOWN_RETENTION_COMMAND');
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i += 2) {
+    const flag = args[i]!;
+    if (!allowed[cmd]!.includes(flag) || seen.has(flag) || !args[i + 1] || args[i + 1]!.startsWith('--')) throw new Error('INVALID_RETENTION_ARGUMENTS');
+    seen.add(flag);
+  }
   const now = new Date();
   const hash = policyHash(PROPOSED_RETENTION);
 
   if (cmd === "verify") {
-    const runDir = join(required(args, "--archive-dir"), required(args, "--run"));
-    const m = JSON.parse(readFileSync(join(runDir, "manifest.json"), "utf8")) as ArchiveManifest;
-    const r = verifyManifest(m, (f) => (existsSync(join(runDir, f)) ? readFileSync(join(runDir, f)) : null), required(args, "--policy-hash"));
+    const runDir = confinedArchivePath(required(args, "--archive-dir"), required(args, "--run"));
+    const m = readArchiveManifest(runDir, required(args, '--run'));
+    const r = verifyManifest(m, readArchiveFiles(runDir), required(args, "--policy-hash"));
     console.log(JSON.stringify({ mode: "VERIFY", state: m.state, ...r }, null, 2));
     process.exitCode = r.ok ? 0 : 2;
     return;
   }
 
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error("DATABASE_URL is not set");
-  const prisma = new PrismaClient();
+  const url = assertDisposableRetentionTarget(process.env.DATABASE_URL);
+  const prisma = new PrismaClient({ datasources: { db: { url } } });
   try {
     const db = prismaRetentionDb(prisma);
     if (cmd === "plan") {
@@ -80,7 +91,9 @@ async function main() {
             mode: "PLAN_READ_ONLY",
             now: now.toISOString(),
             policyHash: hash,
-            executableTables: policies.map((p) => p.table),
+            policyCandidateTables: policies.map((p) => p.table),
+            deletionEnabled: false,
+            deletionBlockers: ['POLICY_NOT_APPROVED', 'DURABLE_AUDIT_REQUIRED'],
             blockedTables: PROPOSED_RETENTION.filter((p) => p.executorBlocked).map((p) => ({ table: p.table, reason: p.executorBlocked })),
             estimate: est,
             requiredFreeBytes: 2 * est.totalBytes + headroom,
@@ -116,6 +129,7 @@ async function main() {
     if (cmd === "restore") {
       const result = await restoreRetentionRun({
         db,
+        disposableDatabaseUrl: url,
         archiveDir: required(args, "--archive-dir"),
         runId: required(args, "--run"),
         expectedPolicyHash: required(args, "--policy-hash"),

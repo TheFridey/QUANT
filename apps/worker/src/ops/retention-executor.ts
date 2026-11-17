@@ -1,16 +1,11 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, statfsSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readdirSync, renameSync, statSync, statfsSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { gunzipSync } from "node:zlib";
+import { assertDisposableRetentionTarget, confinedArchivePath } from "./retention-boundary.js";
 import {
   APPROVED_RETENTION_POLICY_HASHES,
-  batchDeleteSql,
-  batchExportSql,
-  clampBatch,
-  cutoffFor,
-  diskPressure,
   dryRunSql,
-  executablePolicies,
   policyHash,
   sha256,
   validatePolicy,
@@ -23,16 +18,9 @@ import {
 /**
  * OPERATION AURUM Workstream Zero: archive-then-delete executor and restore (docs/aurum/STORAGE-PLAN.md §3).
  *
- * Safety properties, each covered by `retention-executor.integration.test.ts` on a disposable database:
- * - acts only on a policy whose hash the caller states AND which is listed as approved (empty by default);
- * - never touches MarketObservation or any evidence table (`executablePolicies`, `validatePolicy`);
- * - one runner at a time (session advisory lock), fenced before every delete;
- * - each batch is exported by one statement, written to a temp file, fsynced, read back, hash-checked and only
- *   then renamed into place and recorded in the manifest, before any row is deleted;
- * - the delete re-checks age, every evidence dependency and the row's content hash at delete time;
- * - restart-safe: an interrupted batch is reconciled from its archive file on resume;
- * - refuses on disk pressure, a missing or stale backup, or WAL growth beyond the run's budget.
- * Space is not returned to the OS by DELETE; see STORAGE-PLAN §3.5.
+ * TITANIUM: deletion is disabled pending durable auditing and concurrency correction.
+ * No caller-supplied allowlist can enable it. Restore remains local-disposable CLI only.
+ * See docs/aurum/TITANIUM-STORAGE-REVIEW.md; the original executor is preserved in git.
  */
 
 export interface RetentionDb {
@@ -59,9 +47,8 @@ export type ExecuteOptions = {
   db: RetentionDb;
   lock: RetentionLock;
   policy: readonly TableRetention[];
-  /** P1: mandatory. Must equal `policyHash(policy)` and appear in `approvedPolicyHashes`. */
+  /** Mandatory: must equal policyHash(policy); real approvals remain empty. */
   expectedPolicyHash: string;
-  approvedPolicyHashes?: readonly string[];
   archiveDir: string;
   now: Date;
   batchRows: number;
@@ -119,17 +106,24 @@ export function atomicWrite(path: string, data: Buffer | string): void {
   }
 }
 
-function readManifest(runDir: string): ArchiveManifest {
-  return JSON.parse(readFileSync(join(runDir, MANIFEST), "utf8")) as ArchiveManifest;
+export function readArchiveManifest(runDir: string, expectedRunId: string): ArchiveManifest {
+  const path = confinedArchivePath(runDir, MANIFEST);
+  if (statSync(path).size > 2 * 1024 * 1024) throw new Error('MANIFEST_SIZE_LIMIT');
+  const manifest = JSON.parse(readFileSync(path, "utf8")) as ArchiveManifest;
+  if (manifest.runId !== expectedRunId || !Array.isArray(manifest.batches) || manifest.batches.length > 256) throw new Error('MANIFEST_IDENTITY_OR_BATCH_LIMIT');
+  let total = 0;
+  for (const batch of manifest.batches) {
+    if (!Number.isSafeInteger(batch.bytes) || batch.bytes < 0 || batch.bytes > 8 * 1024 * 1024) throw new Error('ARCHIVE_COMPRESSED_LIMIT');
+    total += batch.bytes;
+    if (total > 32 * 1024 * 1024) throw new Error('ARCHIVE_TOTAL_COMPRESSED_LIMIT');
+  }
+  return manifest;
 }
 
-function writeManifest(runDir: string, m: ArchiveManifest): void {
-  atomicWrite(join(runDir, MANIFEST), JSON.stringify(m, null, 2));
-}
-
-function readFileOrNull(runDir: string) {
+export function readArchiveFiles(runDir: string) {
   return (f: string): Buffer | null => {
-    const p = join(runDir, f);
+    const p = confinedArchivePath(runDir, f);
+    if (existsSync(p) && statSync(p).size > 8 * 1024 * 1024) throw new Error('ARCHIVE_COMPRESSED_LIMIT');
     return existsSync(p) ? readFileSync(p) : null;
   };
 }
@@ -162,24 +156,6 @@ export function incompleteRuns(archiveDir: string): string[] {
   });
 }
 
-function checkBackup(backup: ExecuteOptions["backup"], now: Date): string | null {
-  if (!backup?.path || !existsSync(backup.path)) return "BACKUP_MISSING";
-  const st = statSync(backup.path);
-  if (st.size <= 0) return "BACKUP_EMPTY";
-  if (now.getTime() - st.mtimeMs > backup.maxAgeHours * 3_600_000) return "BACKUP_STALE";
-  return null;
-}
-
-async function walLsn(db: RetentionDb): Promise<string> {
-  const [r] = await db.query<{ lsn: string }>("SELECT pg_current_wal_lsn()::text AS lsn");
-  return r!.lsn;
-}
-
-async function walSince(db: RetentionDb, start: string): Promise<number> {
-  const [r] = await db.query<{ bytes: string }>("SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), $1::pg_lsn)::text AS bytes", start);
-  return Number(r!.bytes);
-}
-
 /** Estimated archive bytes (candidate rows × average stored row size) and candidate counts. Read-only. */
 export async function estimate(db: RetentionDb, policies: readonly TableRetention[], cutoffs: Record<string, Date>) {
   const out: Record<string, { candidateRows: number; estimatedBytes: number }> = {};
@@ -195,195 +171,16 @@ export async function estimate(db: RetentionDb, policies: readonly TableRetentio
   return { tables: out, totalBytes };
 }
 
-async function deleteBatch(db: RetentionDb, p: TableRetention, cutoff: Date, keys: string[], hashes: string[]): Promise<number> {
-  if (keys.length === 0) return 0;
-  const rows = await db.query<{ key: string }>(batchDeleteSql(p), cutoff, keys, hashes);
-  return rows.length;
-}
-
-/** Resolves a batch whose archive was published but whose delete was not recorded (crash or interruption). */
-async function reconcilePending(db: RetentionDb, runDir: string, p: TableRetention, cutoff: Date, b: ArchiveBatchEntry) {
-  const lines = archiveLines(readFileSync(join(runDir, b.file)));
-  const keys = lines.map((l) => keyOf(l, p.keyColumn));
-  const present = await db.query<{ key: string }>(`SELECT t."${p.keyColumn}"::text AS key FROM "${p.table}" t WHERE t."${p.keyColumn}" = ANY($1::text[])`, keys);
-  const presentSet = new Set(present.map((r) => r.key));
-  // Rows already gone were deleted by the interrupted run (nothing else deletes these tables). Retry the rest
-  // with full revalidation, so a row that changed or gained evidence meanwhile is kept.
-  const retryKeys: string[] = [];
-  const retryHashes: string[] = [];
-  lines.forEach((l, i) => {
-    if (presentSet.has(keys[i]!)) {
-      retryKeys.push(keys[i]!);
-      retryHashes.push(md5(l));
-    }
-  });
-  const deletedNow = await deleteBatch(db, p, cutoff, retryKeys, retryHashes);
-  b.deletedRows = keys.length - presentSet.size + deletedNow;
-  b.retainedRows = keys.length - b.deletedRows;
-  b.status = "DELETED";
-}
-
 export async function executeRetention(o: ExecuteOptions): Promise<ExecuteResult> {
-  const approved = o.approvedPolicyHashes ?? APPROVED_RETENTION_POLICY_HASHES;
   if (typeof o.expectedPolicyHash !== "string" || o.expectedPolicyHash.length === 0) return { ok: false, reason: "POLICY_HASH_REQUIRED" };
   const valid = validatePolicy(o.policy);
   if (!valid.ok) return { ok: false, reason: valid.reason };
   const hash = policyHash(o.policy);
   if (hash !== o.expectedPolicyHash) return { ok: false, reason: "POLICY_HASH_MISMATCH", detail: { actual: hash } };
-  if (!approved.includes(hash)) return { ok: false, reason: "POLICY_NOT_APPROVED", detail: { hash } };
-  const policies = executablePolicies(o.policy);
-  if (policies.length === 0) return { ok: false, reason: "NOTHING_EXECUTABLE" };
-  if (policies.some((p) => p.table === "MarketObservation")) throw new Error("INVARIANT_MARKET_OBSERVATION_EXECUTABLE");
-  if (!Number.isFinite(o.now.getTime())) return { ok: false, reason: "INVALID_NOW" };
-  const batchRows = clampBatch(o.batchRows);
-  if (!Number.isInteger(o.maxBatches) || o.maxBatches <= 0) return { ok: false, reason: "INVALID_MAX_BATCHES" };
-  if (!(o.maxWalBytes > 0) || !(o.walHeadroomBytes >= 0)) return { ok: false, reason: "INVALID_WAL_LIMITS" };
-
-  const held = await o.lock.acquire();
-  if (!held) return { ok: false, reason: "LOCKED" };
-  let runDir = "";
-  let manifest: ArchiveManifest | null = null;
-  try {
-    mkdirSync(o.archiveDir, { recursive: true });
-    if (o.resumeRunId) {
-      runDir = join(o.archiveDir, o.resumeRunId);
-      if (!existsSync(join(runDir, MANIFEST))) return { ok: false, reason: "RUN_NOT_FOUND", runId: o.resumeRunId };
-      manifest = readManifest(runDir);
-      if (manifest.policyHash !== hash) return { ok: false, reason: "POLICY_MISMATCH", runId: o.resumeRunId };
-      if (manifest.state === "COMPLETE") return { ok: false, reason: "RUN_ALREADY_COMPLETE", runId: o.resumeRunId };
-    } else {
-      const open = incompleteRuns(o.archiveDir);
-      if (open.length > 0) return { ok: false, reason: "INCOMPLETE_RUN_EXISTS", detail: open };
-      const runId = `ret-${o.now.toISOString().replace(/[:.]/g, "")}`;
-      runDir = join(o.archiveDir, runId);
-      if (existsSync(runDir)) return { ok: false, reason: "DUPLICATE_RUN", runId };
-      const cutoffs: Record<string, string> = {};
-      for (const p of policies) cutoffs[p.table] = cutoffFor(p, o.now).toISOString();
-      manifest = { version: "aurum-retention-1", createdAt: o.now.toISOString(), policyHash: hash, cutoffs, batches: [], runId, state: "RUNNING", cursor: {} };
-    }
-    const m = manifest;
-    const runId = m.runId!;
-    // An existing archive must verify before anything else happens (corruption, duplicates, overlaps).
-    if (m.batches.length > 0) {
-      const v = verifyManifest(m, readFileOrNull(runDir), o.expectedPolicyHash);
-      if (!v.ok) return { ok: false, reason: "ARCHIVE_INVALID", runId, detail: v.failures };
-    }
-    const cutoffs: Record<string, Date> = {};
-    for (const p of policies) {
-      const c = m.cutoffs[p.table];
-      if (!c) return { ok: false, reason: "CUTOFF_MISSING", runId };
-      cutoffs[p.table] = new Date(c);
-    }
-
-    // Pre-flight: backup, disk and estimate. Nothing has been written to the database yet.
-    const backupProblem = checkBackup(o.backup, o.now);
-    if (backupProblem) return { ok: false, reason: backupProblem, runId };
-    const est = await estimate(o.db, policies, cutoffs);
-    const disk = (o.statfs ?? defaultStatfs)(o.archiveDir);
-    const required = 2 * est.totalBytes + o.walHeadroomBytes;
-    const pressure = diskPressure({ freeBytes: disk.freeBytes, totalBytes: disk.totalBytes, dailyGrowthBytes: o.dailyGrowthBytes });
-    m.estimate = { ...est, requiredFreeBytes: required, freeBytes: disk.freeBytes, pressure: pressure.level };
-    if (pressure.level === "CRITICAL") return { ok: false, reason: "DISK_CRITICAL", runId, detail: m.estimate };
-    if (disk.freeBytes < required) return { ok: false, reason: "INSUFFICIENT_DISK", runId, detail: m.estimate };
-    if (!existsSync(runDir)) mkdirSync(runDir);
-    writeManifest(runDir, m);
-
-    // Resolve batches an earlier attempt left between publication and delete.
-    for (const b of m.batches.filter((x) => x.status !== "DELETED")) {
-      const p = policies.find((x) => x.table === b.table);
-      if (!p) return { ok: false, reason: "ARCHIVE_TABLE_NOT_EXECUTABLE", runId };
-      if (!(await o.lock.heldBy(held.pid))) return { ok: false, reason: "LOCK_LOST", runId };
-      await reconcilePending(o.db, runDir, p, cutoffs[p.table]!, b);
-      m.cursor![b.table] = b.lastKey > (m.cursor![b.table] ?? "") ? b.lastKey : m.cursor![b.table]!;
-      writeManifest(runDir, m);
-    }
-
-    const walStart = await walLsn(o.db);
-    let batches = 0;
-    let stopReason: string | undefined;
-    outer: for (const p of policies) {
-      const cutoff = cutoffs[p.table]!;
-      for (;;) {
-        if (batches >= o.maxBatches) {
-          stopReason = "MAX_BATCHES";
-          break outer;
-        }
-        const wal = await walSince(o.db, walStart);
-        if (wal > o.maxWalBytes) {
-          stopReason = "WAL_BUDGET_EXCEEDED";
-          break outer;
-        }
-        const after = m.cursor![p.table] ?? "";
-        const rows = await o.db.query<{ key: string; doc: string }>(batchExportSql(p), cutoff, after, batchRows);
-        if (rows.length === 0) break;
-        let prev = after;
-        for (const r of rows) {
-          // Keyset pagination relies on the database order matching JS string order. Refuse if it ever does not.
-          if (!(r.key > prev)) return { ok: false, reason: "KEY_ORDER_MISMATCH", runId, detail: { table: p.table, key: r.key, prev } };
-          prev = r.key;
-        }
-        const seq = m.batches.filter((b) => b.table === p.table).reduce((n, b) => Math.max(n, b.seq), 0) + 1;
-        const file = `${p.table}-${String(seq).padStart(6, "0")}.jsonl.gz`;
-        const gz = gzipSync(Buffer.from(rows.map((r) => r.doc).join("\n") + "\n", "utf8"));
-        const digest = sha256(gz);
-        const finalPath = join(runDir, file);
-        if (existsSync(finalPath)) return { ok: false, reason: "ARCHIVE_FILE_EXISTS", runId, detail: file };
-        atomicWrite(finalPath, gz);
-        // Read back what is on disk and check it before recording it, and before any delete.
-        const back = readFileSync(finalPath);
-        if (back.byteLength !== gz.byteLength || sha256(back) !== digest || archiveLines(back).length !== rows.length) {
-          return { ok: false, reason: "ARCHIVE_READBACK_FAILED", runId, detail: file };
-        }
-        const entry: ArchiveBatchEntry = {
-          table: p.table,
-          seq,
-          firstKey: rows[0]!.key,
-          lastKey: rows[rows.length - 1]!.key,
-          rows: rows.length,
-          file,
-          sha256: digest,
-          bytes: gz.byteLength,
-          status: "PENDING_DELETE",
-        };
-        m.batches.push(entry);
-        const v = verifyManifest(m, readFileOrNull(runDir), o.expectedPolicyHash);
-        if (!v.ok) {
-          m.batches.pop();
-          return { ok: false, reason: "ARCHIVE_INVALID", runId, detail: v.failures };
-        }
-        writeManifest(runDir, m);
-        await o.hooks?.beforeDelete?.(entry);
-        if (!(await o.lock.heldBy(held.pid))) return { ok: false, reason: "LOCK_LOST", runId };
-        const deleted = await deleteBatch(o.db, p, cutoff, rows.map((r) => r.key), rows.map((r) => md5(r.doc)));
-        await o.hooks?.afterDelete?.(entry);
-        entry.status = "DELETED";
-        entry.deletedRows = deleted;
-        entry.retainedRows = rows.length - deleted;
-        m.cursor![p.table] = entry.lastKey;
-        writeManifest(runDir, m);
-        batches++;
-        if (o.throttleMs) await new Promise((r) => setTimeout(r, o.throttleMs));
-      }
-    }
-    const walBytes = await walSince(o.db, walStart);
-    if (!stopReason) m.state = "COMPLETE";
-    delete m.lastError;
-    writeManifest(runDir, m);
-    return { ok: true, runId, manifestPath: join(runDir, MANIFEST), complete: !stopReason, tables: summarise(m), walBytes, ...(stopReason ? { stopReason } : {}) };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (manifest && runDir && existsSync(runDir)) {
-      manifest.lastError = message;
-      writeManifest(runDir, manifest);
-    }
-    return { ok: false, reason: "INTERRUPTED", runId: manifest?.runId, detail: message };
-  } finally {
-    try {
-      await o.lock.release();
-    } catch {
-      // A lost session already released the lock; nothing to undo.
-    }
-  }
+  // The real approval list is authoritative. Caller-provided lists cannot authorise deletion.
+  if (!APPROVED_RETENTION_POLICY_HASHES.includes(hash)) return { ok: false, reason: "POLICY_NOT_APPROVED", detail: { hash } };
+  // TS01/02/03/05/06 require an independently reviewed durable transaction protocol.
+  return { ok: false, reason: "DELETION_BLOCKED_PENDING_DURABLE_AUDIT" };
 }
 
 export function summarise(m: ArchiveManifest): Record<string, TableOutcome> {
@@ -409,37 +206,66 @@ export type RestoreResult =
  */
 export async function restoreRetentionRun(o: {
   db: RetentionDb;
+  /** Explicit local test target; actual current_database() must also match before any write. */
+  disposableDatabaseUrl: string;
   archiveDir: string;
   runId: string;
   expectedPolicyHash: string;
   policy: readonly TableRetention[];
   chunkRows?: number;
 }): Promise<RestoreResult> {
-  const runDir = join(o.archiveDir, o.runId);
+  const target = assertDisposableRetentionTarget(o.disposableDatabaseUrl);
+  const valid = validatePolicy(o.policy);
+  if (!valid.ok) return { ok: false, reason: valid.reason };
+  if (policyHash(o.policy) !== o.expectedPolicyHash) return { ok: false, reason: "POLICY_HASH_MISMATCH" };
+  const runDir = confinedArchivePath(o.archiveDir, o.runId);
   if (!existsSync(join(runDir, MANIFEST))) return { ok: false, reason: "RUN_NOT_FOUND" };
   let m: ArchiveManifest;
   try {
-    m = readManifest(runDir);
+    m = readArchiveManifest(runDir, o.runId);
   } catch {
     return { ok: false, reason: "MANIFEST_UNREADABLE" };
   }
-  const v = verifyManifest(m, readFileOrNull(runDir), o.expectedPolicyHash);
+  const read = readArchiveFiles(runDir);
+  const v = verifyManifest(m, read, o.expectedPolicyHash);
   if (!v.ok) return { ok: false, reason: "ARCHIVE_INVALID", detail: v.failures };
   const byTable = new Map(o.policy.map((p) => [p.table, p]));
   const parsed: { p: TableRetention; lines: string[] }[] = [];
+  const seen = new Set<string>();
+  let totalInflatedBytes = 0;
   for (const b of m.batches) {
     const p = byTable.get(b.table);
     if (!p) return { ok: false, reason: "UNKNOWN_TABLE", detail: b.table };
     let lines: string[];
     try {
-      lines = archiveLines(readFileSync(join(runDir, b.file)));
+      const bytes = read(b.file);
+      if (!bytes || bytes.length !== b.bytes || sha256(bytes) !== b.sha256) return { ok: false, reason: "ARCHIVE_CHANGED_AFTER_VERIFICATION" };
+      // Memory-safety envelope for disposable restoration, not a production retention policy.
+      const inflated = gunzipSync(bytes, { maxOutputLength: Math.min(16 * 1024 * 1024, 64 * 1024 * 1024 - totalInflatedBytes) });
+      totalInflatedBytes += inflated.byteLength;
+      if (totalInflatedBytes >= 64 * 1024 * 1024) return { ok: false, reason: "ARCHIVE_TOTAL_INFLATED_LIMIT" };
+      const text = inflated.toString('utf8');
+      if (!text.endsWith('\n')) return { ok: false, reason: "ARCHIVE_TRUNCATED" };
+      lines = text.slice(0, -1).split('\n');
     } catch (err) {
       return { ok: false, reason: "ARCHIVE_UNREADABLE", detail: { file: b.file, error: err instanceof Error ? err.message : String(err) } };
     }
     if (lines.length !== b.rows) return { ok: false, reason: "ROW_COUNT_MISMATCH", detail: b.file };
+    let previous = '';
+    for (const line of lines) {
+      const key = keyOf(line, p.keyColumn);
+      const identity = `${p.table}:${key}`;
+      if (key <= previous || seen.has(identity)) return { ok: false, reason: "ARCHIVE_KEY_INVALID" };
+      seen.add(identity);
+      previous = key;
+    }
+    if (keyOf(lines[0]!, p.keyColumn) !== b.firstKey || previous !== b.lastKey) return { ok: false, reason: "ARCHIVE_KEY_RANGE_MISMATCH" };
     parsed.push({ p, lines });
   }
-  const chunk = Math.max(1, Math.min(o.chunkRows ?? 1000, 5000));
+  if (o.chunkRows !== undefined && (!Number.isSafeInteger(o.chunkRows) || o.chunkRows < 1 || o.chunkRows > 5000)) return { ok: false, reason: "INVALID_RESTORE_CHUNK" };
+  const chunk = o.chunkRows ?? 1000;
+  const [identity] = await o.db.query<{ name: string }>('SELECT current_database() AS name');
+  if (identity?.name !== new URL(target).pathname.slice(1)) return { ok: false, reason: "RESTORE_DATABASE_IDENTITY_MISMATCH" };
   let inserted = 0;
   let total = 0;
   let verified = 0;
