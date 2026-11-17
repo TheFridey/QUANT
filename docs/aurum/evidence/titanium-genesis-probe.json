@@ -1,0 +1,148 @@
+{
+  "target": "local disposable PostgreSQL 16; unchanged Prisma timeout",
+  "rows": [
+    {
+      "status": "REGISTERED",
+      "wallMs": 2079,
+      "queries": [
+        {
+          "operation": "SELECT",
+          "durationMs": 10
+        },
+        {
+          "operation": "BEGIN",
+          "durationMs": 6
+        },
+        {
+          "operation": "INSERT",
+          "durationMs": 4
+        },
+        {
+          "operation": "INSERT",
+          "durationMs": 3
+        },
+        {
+          "operation": "COMMIT",
+          "durationMs": 481
+        }
+      ]
+    },
+    {
+      "status": "REGISTERED",
+      "wallMs": 420,
+      "queries": [
+        {
+          "operation": "SELECT",
+          "durationMs": 1
+        },
+        {
+          "operation": "BEGIN",
+          "durationMs": 0
+        },
+        {
+          "operation": "INSERT",
+          "durationMs": 2
+        },
+        {
+          "operation": "INSERT",
+          "durationMs": 1
+        },
+        {
+          "operation": "COMMIT",
+          "durationMs": 394
+        }
+      ]
+    },
+    {
+      "status": "REGISTERED",
+      "wallMs": 482,
+      "queries": [
+        {
+          "operation": "SELECT",
+          "durationMs": 6
+        },
+        {
+          "operation": "BEGIN",
+          "durationMs": 2
+        },
+        {
+          "operation": "INSERT",
+          "durationMs": 9
+        },
+        {
+          "operation": "INSERT",
+          "durationMs": 5
+        },
+        {
+          "operation": "COMMIT",
+          "durationMs": 434
+        }
+      ]
+    },
+    {
+      "status": "REGISTERED",
+      "wallMs": 429,
+      "queries": [
+        {
+          "operation": "SELECT",
+          "durationMs": 1
+        },
+        {
+          "operation": "BEGIN",
+          "durationMs": 0
+        },
+        {
+          "operation": "INSERT",
+          "durationMs": 2
+        },
+        {
+          "operation": "INSERT",
+          "durationMs": 1
+        },
+        {
+          "operation": "COMMIT",
+          "durationMs": 412
+        }
+      ]
+    },
+    {
+      "status": "REGISTERED",
+      "wallMs": 292,
+      "queries": [
+        {
+          "operation": "SELECT",
+          "durationMs": 1
+        },
+        {
+          "operation": "BEGIN",
+          "durationMs": 0
+        },
+        {
+          "operation": "INSERT",
+          "durationMs": 1
+        },
+        {
+          "operation": "INSERT",
+          "durationMs": 1
+        },
+        {
+          "operation": "COMMIT",
+          "durationMs": 276
+        }
+      ]
+    }
+  ],
+  "plan": [
+    {
+      "QUERY PLAN": "Index Scan using \"ModelVersion_family_version_key\" on \"ModelVersion\"  (cost=0.14..8.16 rows=1 width=32)"
+    },
+    {
+      "QUERY PLAN": "  Index Cond: ((family = 'titanium-probe-1794925696405'::text) AND (version = '0'::text))"
+    }
+  ],
+  "waits": [
+    {
+      "waiting": 0
+    }
+  ]
+}
