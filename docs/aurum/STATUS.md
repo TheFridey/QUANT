@@ -109,7 +109,7 @@ This document also serves as EXECUTION-LEDGER.
 | D5 | Approve the proposed AURUM account parameters | SCOPE §3 | approve for design; create only after C3 and C10 | none until creation |
 | D6 | Remove the pre-existing `.claude/protected-edits.unlock` now, and recreate it per PCR item | BASELINE: it is present and was not created in this session | remove it | protected edits are blocked again until a scoped unlock |
 | D7 | Answer the legacy-trial questionnaire (3 questions) | F03-F06 doc §45 | answer before M4 | unblocks FORGE |
-| D8 | Authorise the read-only production dry run over ssh | STORAGE-PLAN §5 | yes, after this branch is deployed | real candidate counts |
+| D8 | Authorise the read-only production dry run over ssh | STORAGE-PLAN §5 | yes, after this branch is deployed | real candidate counts. **Approved 18 Nov; metadata inspection done, see [D8-PRODUCTION-READONLY.md](D8-PRODUCTION-READONLY.md). Retention candidate dry run not run** |
 
 ## Deploy: `aec2a80` to production (17 Nov 2026, 12:42 UTC)
 

@@ -34,7 +34,7 @@ SELECT "id","kind","unitId","trials","priorTrials","actor","note"
 FROM "ResearchTrialLedger" ORDER BY "id";
 SELECT count(*) AS campaigns FROM "ResearchCampaign";
 SELECT count(*) AS runs FROM "ResearchCampaignRun";
-SELECT "status",count(*) FROM "ResearchCampaignUnit" GROUP BY 1 ORDER BY 1;
+SELECT "state",count(*) FROM "ResearchCampaignUnit" GROUP BY 1 ORDER BY 1; -- column is "state" (corrected 18 Nov)
 SELECT d."id",d."sourceId",d."instrumentKey",d."interval",d."versionHash",
        d."barCount",d."firstOpenTime",d."lastOpenTime",d."updatedAt"
 FROM "HistoricalDataset" d WHERE d."instrumentKey" IN ('XAU_USD','XAUUSD','commodity:XAUUSD')
