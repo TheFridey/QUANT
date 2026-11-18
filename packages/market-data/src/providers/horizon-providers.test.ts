@@ -39,6 +39,22 @@ function recorder(respond: (url: URL) => Response) {
 }
 
 describe("OANDA practice: parsing", () => {
+  it("passes pricing cancellation to the read-only GET transport", async () => {
+    const controller = new AbortController();
+    let observed: AbortSignal | null | undefined;
+    const fetchImpl = (async (_input: unknown, init: RequestInit) => {
+      observed = init.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    }) as typeof fetch;
+    const client = new OandaPracticeMarketData(OANDA_CREDS, { fetchImpl, token: () => "test-only" });
+    const pending = client.pricing(["XAU_USD"], controller.signal);
+    expect(observed).toBe(controller.signal);
+    controller.abort();
+    expect(await pending).toMatchObject({ ok: false, code: "HTTP_ERROR", error: "oanda:error:aborted" });
+  });
+
   it("trims nanosecond timestamps to ms and rejects junk", () => {
     expect(normaliseOandaTime("2026-11-04T14:59:58.912345678Z")).toBe("2026-11-04T14:59:58.912Z");
     expect(normaliseOandaTime("2026-11-04T14:59:58Z")).toBe("2026-11-04T14:59:58.000Z");

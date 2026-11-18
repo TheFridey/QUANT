@@ -1,0 +1,30 @@
+
+> @odin/web@0.1.0 build D:\Projects\QUANT\apps\web
+> next build
+
+▲ Next.js 16.4.5 (Turbopack)
+✓ Running next.config.ts took 1009ms
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 58s
+  Running TypeScript ...
+  Finished TypeScript in 36.9s ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/5) ...
+  Generating static pages using 7 workers (1/5)
+  Generating static pages using 7 workers (2/5)
+  Generating static pages using 7 workers (3/5)
+✓ Generating static pages using 7 workers (5/5) in 1757ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ○ /login
+├ ○ /terminal
+└ ƒ /terminal/[section]
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

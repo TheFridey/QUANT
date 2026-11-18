@@ -1,0 +1,57 @@
+{
+    "unauthenticated":  401,
+    "readiness":  {
+                      "contractVersion":  1,
+                      "executionEligible":  false,
+                      "researchEligible":  false,
+                      "account":  null,
+                      "balanceGbp":  null,
+                      "goldMarketData":  {
+                                             "state":  "IMPLEMENTED_INACTIVE",
+                                             "providerConnectivity":  null,
+                                             "bid":  null,
+                                             "ask":  null,
+                                             "spread":  null,
+                                             "eventTime":  null,
+                                             "receivedAt":  null,
+                                             "quoteAgeMs":  null,
+                                             "quality":  null,
+                                             "session":  null,
+                                             "circuitBreaker":  null
+                                         },
+                      "shadowIngestion":  {
+                                              "state":  "BLOCKED_APPROVAL",
+                                              "active":  false
+                                          },
+                      "product":  {
+                                      "state":  "IMPLEMENTED_INACTIVE"
+                                  },
+                      "accountArchitecture":  {
+                                                  "state":  "BLOCKED_APPROVAL"
+                                              },
+                      "research":  {
+                                       "state":  "BLOCKED_RESEARCH"
+                                   },
+                      "execution":  {
+                                        "state":  "BLOCKED_APPROVAL"
+                                    },
+                      "storage":  {
+                                      "state":  "BLOCKED_APPROVAL",
+                                      "health":  null
+                                  },
+                      "legacyHistory":  {
+                                            "state":  "NOT_CONFIGURED",
+                                            "snapshot":  null
+                                        },
+                      "blockers":  [
+                                       "C3_DATABASE_FOUNDATION",
+                                       "C10_ACCOUNT_ISOLATION",
+                                       "LEGACY_TRIAL_RECONCILIATION",
+                                       "QUOTE_POLICY_APPROVAL",
+                                       "SHADOW_PERSISTENCE_APPROVAL",
+                                       "STORAGE_SAFETY_REVIEW"
+                                   ]
+                  },
+    "authenticatedPost":  404,
+    "authenticatedGet":  200
+}

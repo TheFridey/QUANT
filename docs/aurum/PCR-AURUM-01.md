@@ -1,5 +1,7 @@
 # PCR-AURUM-01: gold spread-bet execution (protected change request)
 
+TITANIUM revision: C3/C10 details below are historical draft scope. The current exact approval package is [TITANIUM-APPROVAL-PACKAGE.md](TITANIUM-APPROVAL-PACKAGE.md): registered composite ownership replaces the insufficient `accountId <> primary` check; rollback after financial records is forward-only; global emergency stop is separate from account commands; no partial-entry lifecycle is implied. No protected implementation approved or performed.
+
 - **Status:** DRAFT, not approved.
 - **This is not an unlock request yet.** Each item below is approved separately.
 - **Activation:** every new capability ships inactive and default-deny. Activation is a separate operator act, after review.

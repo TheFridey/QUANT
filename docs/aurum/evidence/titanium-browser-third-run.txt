@@ -1,0 +1,99 @@
+
+> @odin/web@0.1.0 test:e2e D:\Projects\QUANT\apps\web
+> playwright test
+
+
+Running 14 tests using 1 worker
+
+node.exe : (node:20644) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+At C:\nvm4w\nodejs\pnpm.ps1:16 char:5
++     & "$basedir/node$exe"  "$basedir/node_modules/corepack/dist/pnpm. ...
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ((node:20644) Wa... env being set.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ok  1 e2e\a11y.spec.ts:16:7 › no serious or critical axe violations (desktop) (1.3m)
+  ok  2 e2e\a11y.spec.ts:16:7 › no serious or critical axe violations (mobile) (52.8s)
+  ok  3 e2e\command-centre.spec.ts:4:5 › command centre loads live snapshot equity and agent drawer (2.6s)
+  ok  4 e2e\login.spec.ts:4:5 › login gate states that trading is paper only (495ms)
+  ok  5 e2e\login.spec.ts:12:5 › sign out revokes the session server-side so the old token gets 401 (audit M5) (2.3s)
+  ok  6 e2e\operator-desk.spec.ts:8:5 › operator desk surfaces paper-only login constraints (436ms)
+  ok  7 e2e\opportunity-scanner.spec.ts:9:5 › market scanner shows honest gold/FX readiness and an abstaining leaderboard (2.5s)
+  ok  8 e2e\paper-mvp.spec.ts:17:7 › Gate 1 local paper browser workflows › login, start local paper, pause/resume, and logout (4.7s)
+  ok  9 e2e\paper-mvp.spec.ts:49:7 › Gate 1 local paper browser workflows › markets select, strategy budget/config, dirty draft survives polling (11.9s)
+  ok 10 e2e\paper-mvp.spec.ts:122:7 › Gate 1 local paper browser workflows › signal/rejection reasons surface on overview and risk (2.2s)
+  ok 11 e2e\paper-mvp.spec.ts:145:7 › Gate 1 local paper browser workflows › preview/submit manual paper order; assert pending then fill; protection + close (13.0s)
+  ok 12 e2e\paper-mvp.spec.ts:235:7 › Gate 1 local paper browser workflows › history filters, alert ack API + safety honesty, disconnect/reconnect, mobile nav, keyboard (9.9s)
+(node:25160) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:19996) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:9936) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5576) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+unit 0 synthetic-fx/hz_atr_breakout: SUCCEEDED
+(node:8188) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+unit 1 synthetic-fx/hz_vol_expansion: SUCCEEDED
+unit 2 synthetic-fx/hz_mtf_trend: SUCCEEDED
+unit 3 synthetic-fx/hz_vol_mean_reversion: SUCCEEDED
+unit 4 synthetic-fx/hz_regime_breakout: SUCCEEDED
+unit 5 synthetic-fx/hz_session_breakout: SUCCEEDED
+(node:16060) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:12904) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ok 13 e2e\research-campaigns.spec.ts:23:5 › operator follows a research campaign from declaration to an evaluated holdout (36.3s)
+  x  14 e2e\risk-limits.spec.ts:8:5 › operator edits PAPER risk limits from Settings through the audited config path (8.2s)
+
+
+  1) e2e\risk-limits.spec.ts:8:5 › operator edits PAPER risk limits from Settings through the audited config path
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByRole('form', { name: 'Risk limits' }).getByText('maxDailyLossPct 3 → 4')
+    Expected: visible
+    Error: strict mode violation: getByRole('form', { name: 'Risk limits' }).getByText('maxDailyLossPct 3 → 4') resolved to 2 elements:
+        1) <li class="py-1.5">…</li> aka getByText('2026-11-17 16:16:24 UTC ·')
+        2) <li class="py-1.5">…</li> aka getByText('-11-17 15:56:55 UTC · admin@odin.local · maxDailyLossPct 3 → 4')
+
+    Call log:
+      - Expect "toBeVisible" getByRole('form', { name: 'Risk limits' }).getByText('maxDailyLossPct 3 → 4') with timeout 20000ms
+      - waiting for getByRole('form', { name: 'Risk limits' }).getByText('maxDailyLossPct 3 → 4')
+
+
+      51 |     expect(latest?.changes).toEqual([{ key: "maxDailyLossPct", from: original, to: next }]);
+      52 |     expect(latest?.actor).toBeTruthy();
+    > 53 |     await expect(panel.getByText(`maxDailyLossPct ${original} → ${next}`)).toBeVisible();
+         |                                                                            ^
+      54 |   } finally {
+      55 |     // Restore the throwaway e2e account for later specs, even if a status change fails.
+      56 |     try {
+        at D:\Projects\QUANT\apps\web\e2e\risk-limits.spec.ts:53:76
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results\risk-limits-operator-edits-5e4bf-ugh-the-audited-config-path\test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    test-results\risk-limits-operator-edits-5e4bf-ugh-the-audited-config-path\video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results\risk-limits-operator-edits-5e4bf-ugh-the-audited-config-path\error-context.md
+
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results\risk-limits-operator-edits-5e4bf-ugh-the-audited-config-path\trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results\risk-limits-operator-edits-5e4bf-ugh-the-audited-config-path\trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    e2e\risk-limits.spec.ts:8:5 › operator edits PAPER risk limits from Settings through the audited config path
+  13 passed (4.0m)
+D:\Projects\QUANT\apps\web:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @odin/web@0.1.0 test:e2e: `playwright test`
+Exit status 1

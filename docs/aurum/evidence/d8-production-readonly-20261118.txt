@@ -1,0 +1,219 @@
+BEGIN
+SET
+SET
+== snapshot
+current_database | current_timestamp | read_only
+quant | 2026-11-18 09:56:57.257143+00 | on
+== trial counts
+raw_rows | counted_registry_rows
+2454 | 2170
+== trials by window
+window | rows
+FULL_GRID | 434
+TEST | 284
+TRAIN | 1736
+== run inventory
+id | createdAt | datasetId | datasetVersion | codeVersion | strategyId | strategyVersion | rows | counted
+cmvy5zxsn00002mh1yzbl41v7 | 2026-11-01 18:29:47.352 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | tsmom | 1.0.0 | 0 | 0
+cmvy5zxss00012mh1r9nqz7nq | 2026-11-01 18:29:47.356 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | ma_trend | 1.0.0 | 0 | 0
+cmvy5zxxy00022mh1u2uj1fi2 | 2026-11-01 18:29:47.542 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | donchian_breakout | 1.0.0 | 34 | 30
+cmvy5zxyg00112mh1apks0xz2 | 2026-11-01 18:29:47.56 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | vol_normalised_trend | 1.0.0 | 0 | 0
+cmvy5zy9h00122mh199ludsul | 2026-11-01 18:29:47.957 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | zscore_reversion | 1.0.0 | 94 | 90
+cmvy5zyfd003p2mh156jse9np | 2026-11-01 18:29:48.169 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | bollinger_reversion | 1.0.0 | 24 | 20
+cmvy5zyfv004e2mh1w80bwmub | 2026-11-01 18:29:48.188 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | vol_compression_breakout | 1.0.0 | 0 | 0
+cmvy5zyfz004f2mh10q4mjbhi | 2026-11-01 18:29:48.191 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | regime_trend_or_cash | 1.0.0 | 0 | 0
+cmvy5zyg4004g2mh1iq5e0xtk | 2026-11-01 18:29:48.196 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | control_cash | 1.0.0 | 9 | 5
+cmvy5zygc004q2mh13hkbpgop | 2026-11-01 18:29:48.205 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | control_buy_and_hold | 1.0.0 | 9 | 5
+cmvy5zyi700502mh1gxllqart | 2026-11-01 18:29:48.272 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | control_random | 1.0.0 | 24 | 20
+cmvy5zyie005p2mh12o182r9c | 2026-11-01 18:29:48.279 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | cross_sectional_momentum | 0.0.0 | 0 | 0
+cmvy5zyii005q2mh184a6hzon | 2026-11-01 18:29:48.282 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | flow_imbalance | 0.0.0 | 0 | 0
+cmvy5zyik005r2mh1ccj9jgpt | 2026-11-01 18:29:48.285 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | pairs_cointegration | 0.0.0 | 0 | 0
+cmvy5zyin005s2mh1ogphk0ls | 2026-11-01 18:29:48.288 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | d78c21d | token_age_exhaustion | 0.0.0 | 0 | 0
+cmvy5zyqv00002mhuooyib0zt | 2026-11-01 18:29:48.583 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | tsmom | 1.0.0 | 0 | 0
+cmvy5zyr100012mhu8prp95tz | 2026-11-01 18:29:48.59 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | ma_trend | 1.0.0 | 0 | 0
+cmvy5zyvh00022mhu5c23p50z | 2026-11-01 18:29:48.75 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | donchian_breakout | 1.0.0 | 34 | 30
+cmvy5zyvr00112mhug3z09la5 | 2026-11-01 18:29:48.76 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | vol_normalised_trend | 1.0.0 | 0 | 0
+cmvy5zz5d00122mhux4me8ikd | 2026-11-01 18:29:49.106 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | zscore_reversion | 1.0.0 | 94 | 90
+cmvy5zzae003p2mhufx3asycu | 2026-11-01 18:29:49.286 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | bollinger_reversion | 1.0.0 | 24 | 20
+cmvy5zzan004e2mhuogbtl64r | 2026-11-01 18:29:49.295 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | vol_compression_breakout | 1.0.0 | 0 | 0
+cmvy5zzaq004f2mhuj3qw1a2m | 2026-11-01 18:29:49.298 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | regime_trend_or_cash | 1.0.0 | 0 | 0
+cmvy5zzav004g2mhumnqamd5i | 2026-11-01 18:29:49.303 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | control_cash | 1.0.0 | 9 | 5
+cmvy5zzb3004q2mhutgzfajgn | 2026-11-01 18:29:49.312 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | control_buy_and_hold | 1.0.0 | 9 | 5
+cmvy5zzcs00502mhug01bn3sd | 2026-11-01 18:29:49.372 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | control_random | 1.0.0 | 24 | 20
+cmvy5zzd0005p2mhu5hpmt728 | 2026-11-01 18:29:49.381 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | cross_sectional_momentum | 0.0.0 | 0 | 0
+cmvy5zzd3005q2mhu4mcpmpmq | 2026-11-01 18:29:49.384 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | flow_imbalance | 0.0.0 | 0 | 0
+cmvy5zzd6005r2mhufdt05klx | 2026-11-01 18:29:49.387 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | pairs_cointegration | 0.0.0 | 0 | 0
+cmvy5zzd9005s2mhu50ts3wxa | 2026-11-01 18:29:49.39 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d78c21d | token_age_exhaustion | 0.0.0 | 0 | 0
+cmvy5zzli00002minjkw13s33 | 2026-11-01 18:29:49.686 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | tsmom | 1.0.0 | 0 | 0
+cmvy5zzlm00012mink4gvd486 | 2026-11-01 18:29:49.69 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | ma_trend | 1.0.0 | 0 | 0
+cmvy5zzlp00022minhj2q1h2d | 2026-11-01 18:29:49.694 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | donchian_breakout | 1.0.0 | 0 | 0
+cmvy5zzls00032min2plp3v46 | 2026-11-01 18:29:49.697 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | vol_normalised_trend | 1.0.0 | 0 | 0
+cmvy5zzlv00042minm1cwxilv | 2026-11-01 18:29:49.7 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | zscore_reversion | 1.0.0 | 0 | 0
+cmvy5zzly00052min6gbdbnuu | 2026-11-01 18:29:49.703 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | bollinger_reversion | 1.0.0 | 0 | 0
+cmvy5zzm100062minabdqnlex | 2026-11-01 18:29:49.706 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | vol_compression_breakout | 1.0.0 | 0 | 0
+cmvy5zzm400072minfi2tsugn | 2026-11-01 18:29:49.708 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | regime_trend_or_cash | 1.0.0 | 0 | 0
+cmvy5zzmb00082mintps0itaa | 2026-11-01 18:29:49.715 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | control_cash | 1.0.0 | 9 | 5
+cmvy5zzmo000i2minwtbwabxu | 2026-11-01 18:29:49.729 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | control_buy_and_hold | 1.0.0 | 9 | 5
+cmvy5zzno000s2minr35x4ucw | 2026-11-01 18:29:49.764 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | control_random | 1.0.0 | 24 | 20
+cmvy5zznv001h2minwycveq56 | 2026-11-01 18:29:49.771 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | cross_sectional_momentum | 0.0.0 | 0 | 0
+cmvy5zzny001i2minuhc6820l | 2026-11-01 18:29:49.774 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | flow_imbalance | 0.0.0 | 0 | 0
+cmvy5zzo0001j2minltkkpwfa | 2026-11-01 18:29:49.777 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | pairs_cointegration | 0.0.0 | 0 | 0
+cmvy5zzo3001k2minf27fpcrd | 2026-11-01 18:29:49.779 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | d78c21d | token_age_exhaustion | 0.0.0 | 0 | 0
+cmvy5zzvx00002mjg2ml79re3 | 2026-11-01 18:29:50.062 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | tsmom | 1.0.0 | 0 | 0
+cmvy5zzw200012mjg72fw9t5v | 2026-11-01 18:29:50.066 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | ma_trend | 1.0.0 | 0 | 0
+cmvy5zzw500022mjgcbamm9gp | 2026-11-01 18:29:50.069 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | donchian_breakout | 1.0.0 | 0 | 0
+cmvy5zzw800032mjgb8xm92s8 | 2026-11-01 18:29:50.072 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | vol_normalised_trend | 1.0.0 | 0 | 0
+cmvy5zzwa00042mjgy85hyezm | 2026-11-01 18:29:50.075 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | zscore_reversion | 1.0.0 | 0 | 0
+cmvy5zzwd00052mjg6s1jadfr | 2026-11-01 18:29:50.078 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | bollinger_reversion | 1.0.0 | 0 | 0
+cmvy5zzwf00062mjgyjlw7vdy | 2026-11-01 18:29:50.08 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | vol_compression_breakout | 1.0.0 | 0 | 0
+cmvy5zzwi00072mjg8z232j9z | 2026-11-01 18:29:50.083 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | regime_trend_or_cash | 1.0.0 | 0 | 0
+cmvy5zzwl00082mjgs7hi0ogw | 2026-11-01 18:29:50.085 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | control_cash | 1.0.0 | 0 | 0
+cmvy5zzwn00092mjgacv3t0t9 | 2026-11-01 18:29:50.088 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | control_buy_and_hold | 1.0.0 | 0 | 0
+cmvy5zzwq000a2mjg0x7x3qae | 2026-11-01 18:29:50.09 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | control_random | 1.0.0 | 0 | 0
+cmvy5zzws000b2mjg95xlgx60 | 2026-11-01 18:29:50.092 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | cross_sectional_momentum | 0.0.0 | 0 | 0
+cmvy5zzwu000c2mjgfxvioqup | 2026-11-01 18:29:50.095 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | flow_imbalance | 0.0.0 | 0 | 0
+cmvy5zzwx000d2mjg9o52z3un | 2026-11-01 18:29:50.097 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | pairs_cointegration | 0.0.0 | 0 | 0
+cmvy5zzwz000e2mjg7e8inomx | 2026-11-01 18:29:50.1 | cmvy3psf600002m94t2new184 | 80e21c9e157c6595e09f5ef2 | d78c21d | token_age_exhaustion | 0.0.0 | 0 | 0
+cmvy6004r00002mk9j5u1mebe | 2026-11-01 18:29:50.38 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | tsmom | 1.0.0 | 0 | 0
+cmvy6004v00012mk9iyq29z2r | 2026-11-01 18:29:50.384 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | ma_trend | 1.0.0 | 0 | 0
+cmvy6004x00022mk9es1sipum | 2026-11-01 18:29:50.386 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | donchian_breakout | 1.0.0 | 0 | 0
+cmvy6005000032mk9ee5uiuhc | 2026-11-01 18:29:50.388 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | vol_normalised_trend | 1.0.0 | 0 | 0
+cmvy6005700042mk9ke1yl1va | 2026-11-01 18:29:50.395 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | zscore_reversion | 1.0.0 | 0 | 0
+cmvy6005a00052mk9orwppagj | 2026-11-01 18:29:50.398 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | bollinger_reversion | 1.0.0 | 0 | 0
+cmvy6005d00062mk9n6vomu2h | 2026-11-01 18:29:50.401 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | vol_compression_breakout | 1.0.0 | 0 | 0
+cmvy6005f00072mk9lbn82xso | 2026-11-01 18:29:50.404 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | regime_trend_or_cash | 1.0.0 | 0 | 0
+cmvy6005i00082mk9btvem2i5 | 2026-11-01 18:29:50.406 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | control_cash | 1.0.0 | 0 | 0
+cmvy6005k00092mk976cqivhw | 2026-11-01 18:29:50.409 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | control_buy_and_hold | 1.0.0 | 0 | 0
+cmvy6005n000a2mk9xk3dzqyh | 2026-11-01 18:29:50.411 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | control_random | 1.0.0 | 0 | 0
+cmvy6005p000b2mk9ktpa0wb8 | 2026-11-01 18:29:50.413 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | cross_sectional_momentum | 0.0.0 | 0 | 0
+cmvy6005r000c2mk9yjl0rb03 | 2026-11-01 18:29:50.416 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | flow_imbalance | 0.0.0 | 0 | 0
+cmvy6005u000d2mk9lf423jap | 2026-11-01 18:29:50.418 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | pairs_cointegration | 0.0.0 | 0 | 0
+cmvy6005w000e2mk9g0c7bc5q | 2026-11-01 18:29:50.42 | cmvy3pt3d00002m9qjvc1iok6 | 920ce305d9cee514d6eeecca | d78c21d | token_age_exhaustion | 0.0.0 | 0 | 0
+cmvy600df00002ml2z2vgq0d1 | 2026-11-01 18:29:50.692 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | tsmom | 1.0.0 | 0 | 0
+cmvy600dk00012ml2lm4ar8ur | 2026-11-01 18:29:50.696 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | ma_trend | 1.0.0 | 0 | 0
+cmvy600dp00022ml2oqp64bl3 | 2026-11-01 18:29:50.701 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | donchian_breakout | 1.0.0 | 0 | 0
+cmvy600dr00032ml2uhw4mle6 | 2026-11-01 18:29:50.704 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | vol_normalised_trend | 1.0.0 | 0 | 0
+cmvy600dt00042ml25o2y57t0 | 2026-11-01 18:29:50.706 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | zscore_reversion | 1.0.0 | 0 | 0
+cmvy600dw00052ml2wxe28tbq | 2026-11-01 18:29:50.708 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | bollinger_reversion | 1.0.0 | 0 | 0
+cmvy600dy00062ml26pwa925h | 2026-11-01 18:29:50.71 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | vol_compression_breakout | 1.0.0 | 0 | 0
+cmvy600e000072ml2mk4dtict | 2026-11-01 18:29:50.712 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | regime_trend_or_cash | 1.0.0 | 0 | 0
+cmvy600e200082ml2tytnuj9o | 2026-11-01 18:29:50.715 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | control_cash | 1.0.0 | 0 | 0
+cmvy600e400092ml2l7hib3xh | 2026-11-01 18:29:50.717 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | control_buy_and_hold | 1.0.0 | 0 | 0
+cmvy600e7000a2ml2mnjkrs2i | 2026-11-01 18:29:50.719 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | control_random | 1.0.0 | 0 | 0
+cmvy600e9000b2ml2gfw723wp | 2026-11-01 18:29:50.721 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | cross_sectional_momentum | 0.0.0 | 0 | 0
+cmvy600ea000c2ml2h5wbj5gj | 2026-11-01 18:29:50.723 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | flow_imbalance | 0.0.0 | 0 | 0
+cmvy600ec000d2ml2cdydjn4r | 2026-11-01 18:29:50.725 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | pairs_cointegration | 0.0.0 | 0 | 0
+cmvy600ee000e2ml29ju5n8g5 | 2026-11-01 18:29:50.727 | cmvy3prrc00002m8czfqqfw6c | 439584f5ef2bc6bc51ee1569 | d78c21d | token_age_exhaustion | 0.0.0 | 0 | 0
+cmvy8h5lo00002md8ckzdaemc | 2026-11-01 19:39:09.852 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | tsmom | 1.1.0 | 24 | 20
+cmvy8h68f000p2md8undgwrpo | 2026-11-01 19:39:10.672 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | ma_trend | 1.1.0 | 49 | 45
+cmvy8h6kw00232md825v1eopf | 2026-11-01 19:39:11.12 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | donchian_breakout | 1.1.0 | 34 | 30
+cmvy8h7ep00322md89dxobnac | 2026-11-01 19:39:12.193 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | vol_normalised_trend | 1.1.0 | 49 | 45
+cmvy8h8au004g2md81exb7uab | 2026-11-01 19:39:13.35 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | zscore_reversion | 1.1.0 | 94 | 90
+cmvy8h8s700732md88e11ejr7 | 2026-11-01 19:39:13.975 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | bollinger_reversion | 1.1.0 | 24 | 20
+cmvy8h9ui007s2md8bbanop2s | 2026-11-01 19:39:15.355 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | vol_compression_breakout | 1.1.0 | 44 | 40
+cmvy8ha5h00912md8lph4hw0d | 2026-11-01 19:39:15.749 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | regime_trend_or_cash | 1.1.0 | 14 | 10
+cmvy8ha5w009g2md8d3rxz4fl | 2026-11-01 19:39:15.764 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | control_cash | 1.0.0 | 9 | 5
+cmvy8ha6e009q2md8jfzovilc | 2026-11-01 19:39:15.783 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | control_buy_and_hold | 1.0.0 | 9 | 5
+cmvy8habc00a02md8hz3qk2ew | 2026-11-01 19:39:15.96 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | control_random | 1.0.0 | 24 | 20
+cmvy8habl00ap2md8co229nb2 | 2026-11-01 19:39:15.97 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | cross_sectional_momentum | 0.0.0 | 0 | 0
+cmvy8habr00aq2md8f81ujrmn | 2026-11-01 19:39:15.975 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | flow_imbalance | 0.0.0 | 0 | 0
+cmvy8habw00ar2md8lfuhimik | 2026-11-01 19:39:15.98 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | pairs_cointegration | 0.0.0 | 0 | 0
+cmvy8hac100as2md8v04qu4g1 | 2026-11-01 19:39:15.985 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | f56151f | token_age_exhaustion | 0.0.0 | 0 | 0
+cmvy8haoj00002me2t9vr1jau | 2026-11-01 19:39:16.436 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | tsmom | 1.1.0 | 24 | 20
+cmvy8hatz000p2me21p1vint2 | 2026-11-01 19:39:16.632 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | ma_trend | 1.1.0 | 49 | 45
+cmvy8hayz00232me2mya3hxts | 2026-11-01 19:39:16.811 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | donchian_breakout | 1.1.0 | 34 | 30
+cmvy8hb5p00322me22u1wouq9 | 2026-11-01 19:39:17.053 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | vol_normalised_trend | 1.1.0 | 49 | 45
+cmvy8hbgs004g2me2sgcyhiw1 | 2026-11-01 19:39:17.452 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | zscore_reversion | 1.1.0 | 94 | 90
+cmvy8hbm200732me25x6vwmrh | 2026-11-01 19:39:17.643 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | bollinger_reversion | 1.1.0 | 24 | 20
+cmvy8hbu1007s2me2y1lc2673 | 2026-11-01 19:39:17.93 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | vol_compression_breakout | 1.1.0 | 44 | 40
+cmvy8hbwr00912me2ipkgughs | 2026-11-01 19:39:18.028 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | regime_trend_or_cash | 1.1.0 | 14 | 10
+cmvy8hbx0009g2me2bkdhnwxz | 2026-11-01 19:39:18.037 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | control_cash | 1.0.0 | 9 | 5
+cmvy8hbx9009q2me29lx3v2ah | 2026-11-01 19:39:18.046 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | control_buy_and_hold | 1.0.0 | 9 | 5
+cmvy8hbz500a02me2tt9wyizt | 2026-11-01 19:39:18.114 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | control_random | 1.0.0 | 24 | 20
+cmvy8hbzd00ap2me2sxgcp9j5 | 2026-11-01 19:39:18.121 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | cross_sectional_momentum | 0.0.0 | 0 | 0
+cmvy8hbzg00aq2me284xr772k | 2026-11-01 19:39:18.124 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | flow_imbalance | 0.0.0 | 0 | 0
+cmvy8hbzj00ar2me2qw5lvmo5 | 2026-11-01 19:39:18.128 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | pairs_cointegration | 0.0.0 | 0 | 0
+cmvy8hbzm00as2me2xrh7h7e0 | 2026-11-01 19:39:18.13 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | f56151f | token_age_exhaustion | 0.0.0 | 0 | 0
+cmvy8hcbg00002mevnqs7o5sk | 2026-11-01 19:39:18.556 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | tsmom | 1.1.0 | 24 | 20
+cmvy8hcfy000p2mevu7b8q3d6 | 2026-11-01 19:39:18.718 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | ma_trend | 1.1.0 | 49 | 45
+cmvy8hcj700232mevgs3yg45p | 2026-11-01 19:39:18.836 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | donchian_breakout | 1.1.0 | 34 | 30
+cmvy8hcp500322mevqukvgnxx | 2026-11-01 19:39:19.05 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | vol_normalised_trend | 1.1.0 | 49 | 45
+cmvy8hcy8004g2mevw8szv702 | 2026-11-01 19:39:19.376 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | zscore_reversion | 1.1.0 | 94 | 90
+cmvy8hd2k00732mevj7j8ee6a | 2026-11-01 19:39:19.533 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | bollinger_reversion | 1.1.0 | 24 | 20
+cmvy8hd8q007s2mevdnnnafnj | 2026-11-01 19:39:19.754 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | vol_compression_breakout | 1.1.0 | 44 | 40
+cmvy8hdaw00912mevc3m0p9up | 2026-11-01 19:39:19.833 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | regime_trend_or_cash | 1.1.0 | 14 | 10
+cmvy8hdb6009g2meviyihylqf | 2026-11-01 19:39:19.842 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | control_cash | 1.0.0 | 9 | 5
+cmvy8hdbe009q2mevvckftd2i | 2026-11-01 19:39:19.851 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | control_buy_and_hold | 1.0.0 | 9 | 5
+cmvy8hdd600a02mevj4sjqa6s | 2026-11-01 19:39:19.914 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | control_random | 1.0.0 | 24 | 20
+cmvy8hddd00ap2mevy4frtdop | 2026-11-01 19:39:19.922 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | cross_sectional_momentum | 0.0.0 | 0 | 0
+cmvy8hddh00aq2mevx0wxc66m | 2026-11-01 19:39:19.925 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | flow_imbalance | 0.0.0 | 0 | 0
+cmvy8hddk00ar2mevxfmaoatr | 2026-11-01 19:39:19.929 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | pairs_cointegration | 0.0.0 | 0 | 0
+cmvy8hddn00as2mev2v0pqlg2 | 2026-11-01 19:39:19.932 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | f56151f | token_age_exhaustion | 0.0.0 | 0 | 0
+cmvy8hdm700002mfp3ucf9ge2 | 2026-11-01 19:39:20.24 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | tsmom | 1.1.0 | 0 | 0
+cmvy8hdmc00012mfpllmo2hyt | 2026-11-01 19:39:20.244 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | ma_trend | 1.1.0 | 0 | 0
+cmvy8hdmg00022mfpqhabsvzi | 2026-11-01 19:39:20.248 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | donchian_breakout | 1.1.0 | 0 | 0
+cmvy8hdmj00032mfp1c9ljm2o | 2026-11-01 19:39:20.252 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | vol_normalised_trend | 1.1.0 | 0 | 0
+cmvy8hdmm00042mfpyzqzn7rd | 2026-11-01 19:39:20.255 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | zscore_reversion | 1.1.0 | 0 | 0
+cmvy8hdmr00052mfplxe1kxk6 | 2026-11-01 19:39:20.259 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | bollinger_reversion | 1.1.0 | 0 | 0
+cmvy8hdmx00062mfp2sf3t18j | 2026-11-01 19:39:20.265 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | vol_compression_breakout | 1.1.0 | 0 | 0
+cmvy8hdn100072mfpsl2bgmp4 | 2026-11-01 19:39:20.269 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | regime_trend_or_cash | 1.1.0 | 0 | 0
+cmvy8hdna00082mfpt4r80cna | 2026-11-01 19:39:20.278 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | control_cash | 1.0.0 | 9 | 5
+cmvy8hdno000i2mfppbdfcgrq | 2026-11-01 19:39:20.292 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | control_buy_and_hold | 1.0.0 | 9 | 5
+cmvy8hdox000s2mfpifbom00e | 2026-11-01 19:39:20.337 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | control_random | 1.0.0 | 24 | 20
+cmvy8hdp4001h2mfplk01vexd | 2026-11-01 19:39:20.344 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | cross_sectional_momentum | 0.0.0 | 0 | 0
+cmvy8hdp9001i2mfpp04mlhqp | 2026-11-01 19:39:20.349 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | flow_imbalance | 0.0.0 | 0 | 0
+cmvy8hdpb001j2mfp94mtt40n | 2026-11-01 19:39:20.351 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | pairs_cointegration | 0.0.0 | 0 | 0
+cmvy8hdpd001k2mfprfoy2wn6 | 2026-11-01 19:39:20.353 | cmvy3pr2h00002m7laiyvm9ap | a394df7d0709749f1af4f880 | f56151f | token_age_exhaustion | 0.0.0 | 0 | 0
+cmvyaunwh00002mcmk0pfyk0s | 2026-11-01 20:45:39.33 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | 0e970a9 | tsmom__trend_only | 1.1.0+regime-1.0.0 | 24 | 20
+cmvyaunwn000p2mcm23wy4f88 | 2026-11-01 20:45:39.336 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | 0e970a9 | ma_trend__trend_only | 1.1.0+regime-1.0.0 | 49 | 45
+cmvyaunwu00232mcmeiye6acr | 2026-11-01 20:45:39.343 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | 0e970a9 | zscore_reversion__range_only | 1.1.0+regime-1.0.0 | 94 | 90
+cmvyaunx9004q2mcm4n8041af | 2026-11-01 20:45:39.357 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | 0e970a9 | bollinger_reversion__range_only | 1.1.0+regime-1.0.0 | 24 | 20
+cmvyaunxd005f2mcmmpx8xgxi | 2026-11-01 20:45:39.362 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | 0e970a9 | tsmom__not_unstable | 1.1.0+regime-1.0.0 | 24 | 20
+cmvyaunxj00642mcmvaxs7v8y | 2026-11-01 20:45:39.367 | cmvy3nrtq00002m5ki5wqkhss | ae800af20121c7f40119a13b | 0e970a9 | ml_netpos_h24 | ml-wf-1.0.0/b42b6eacc365281508daea41 | 0 | 0
+cmvyaupqb00002mdf6iedgngg | 2026-11-01 20:45:41.7 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | 0e970a9 | tsmom__trend_only | 1.1.0+regime-1.0.0 | 24 | 20
+cmvyaupqi000p2mdfaxtcr0am | 2026-11-01 20:45:41.706 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | 0e970a9 | ma_trend__trend_only | 1.1.0+regime-1.0.0 | 49 | 45
+cmvyaupqq00232mdfvga4s3k5 | 2026-11-01 20:45:41.714 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | 0e970a9 | zscore_reversion__range_only | 1.1.0+regime-1.0.0 | 94 | 90
+cmvyaupr1004q2mdf893o4o5i | 2026-11-01 20:45:41.725 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | 0e970a9 | bollinger_reversion__range_only | 1.1.0+regime-1.0.0 | 24 | 20
+cmvyaupr5005f2mdfjqbhl05e | 2026-11-01 20:45:41.73 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | 0e970a9 | tsmom__not_unstable | 1.1.0+regime-1.0.0 | 24 | 20
+cmvyaupra00642mdfhvjfqdjm | 2026-11-01 20:45:41.734 | cmvy3ob8a00002m6ci4oxrqo2 | 53d9c2c24994f56ce92783a0 | 0e970a9 | ml_netpos_h24 | ml-wf-1.0.0/b42b6eacc365281508daea41 | 0 | 0
+cmvyauraw00002me64pjflgoh | 2026-11-01 20:45:43.736 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | 0e970a9 | tsmom__trend_only | 1.1.0+regime-1.0.0 | 24 | 20
+cmvyaurbe000p2me6gh4li5gh | 2026-11-01 20:45:43.754 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | 0e970a9 | ma_trend__trend_only | 1.1.0+regime-1.0.0 | 49 | 45
+cmvyaurbm00232me6q3lggi47 | 2026-11-01 20:45:43.762 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | 0e970a9 | zscore_reversion__range_only | 1.1.0+regime-1.0.0 | 94 | 90
+cmvyaurbz004q2me6jtim9jyz | 2026-11-01 20:45:43.775 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | 0e970a9 | bollinger_reversion__range_only | 1.1.0+regime-1.0.0 | 24 | 20
+cmvyaurc4005f2me679ervpyh | 2026-11-01 20:45:43.78 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | 0e970a9 | tsmom__not_unstable | 1.1.0+regime-1.0.0 | 24 | 20
+cmvyaurc700642me69bw0pm1h | 2026-11-01 20:45:43.783 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | 0e970a9 | ml_netpos_h20 | ml-wf-1.0.0/b42b6eacc365281508daea41 | 0 | 0
+cmvybbguc00002m38ncw81g1d | 2026-11-01 20:58:43.333 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d2d1526 | tsmom__trend_only | 1.1.0+regime-det-1.1.0 | 24 | 20
+cmvybbguu000p2m388t0ied4d | 2026-11-01 20:58:43.35 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d2d1526 | ma_trend__trend_only | 1.1.0+regime-det-1.1.0 | 49 | 45
+cmvybbgv100232m38e75uiicr | 2026-11-01 20:58:43.358 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d2d1526 | zscore_reversion__range_only | 1.1.0+regime-det-1.1.0 | 94 | 90
+cmvybbgvf004q2m380g7iqp6z | 2026-11-01 20:58:43.371 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d2d1526 | bollinger_reversion__range_only | 1.1.0+regime-det-1.1.0 | 24 | 20
+cmvybbgvj005f2m38tnn4jwm9 | 2026-11-01 20:58:43.376 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d2d1526 | tsmom__not_unstable | 1.1.0+regime-det-1.1.0 | 24 | 20
+cmvybbgvm00642m38qialsozv | 2026-11-01 20:58:43.379 | cmvy3r41f00002marmgi59e4j | afbdc80d5d18115dc3fa36e7 | d2d1526 | ml_netpos_h20 | ml-wf-1.0.0/d2f8066d7e764a1a5b2f951c | 0 | 0
+== ledger by kind
+kind | rows | trials
+== ledger rows
+id | kind | unitId | trials | priorTrials | actor | note
+== campaigns
+campaigns
+0
+runs
+0
+== campaign units by state (doc said status; the column is state)
+state | count
+== gold datasets
+id | sourceId | instrumentKey | interval | versionHash | barCount | firstOpenTime | lastOpenTime | updatedAt
+cmw4ulh1500002mahgy7s4st1 | oanda_practice | XAU_USD | 1d | d4d3857d2f9e8aa8733487d128bb6a48 | 3112 | 2016-11-01 00:00:00 | 2026-11-05 00:00:00 | 2026-11-06 10:45:01.534
+cmw4ulcyn00002m9rejbfbkug | oanda_practice | XAU_USD | 1h | dce5bb74702eaf5354ac2e9c32317b9b | 11904 | 2024-11-01 00:00:00 | 2026-11-06 09:00:00 | 2026-11-06 10:44:59.652
+cmw4wprtd00002minepfxndmo | oanda_practice_ny17 | XAU_USD | 1d | ade7acf6c7754828dc42ab37bbb6d76b | 2602 | 2016-11-01 21:00:00 | 2026-11-04 22:00:00 | 2026-11-06 11:44:50.042
+== storage (catalogue only)
+db_size | db_bytes
+14 GB | 15272176987
+table_name | total | bytes | est_rows
+AgentDecision | 8081 MB | 8473632768 | 8496824
+MarketObservation | 3985 MB | 4178640896 | 1670188
+CyclePlan | 1188 MB | 1245749248 | 72762
+OpportunityFunnelEvent | 728 MB | 763617280 | 1868687
+TradeIntent | 300 MB | 314925056 | 210070
+CycleRun | 70 MB | 73826304 | 73915
+ObservabilityEvent | 57 MB | 59383808 | 144926
+EquitySnapshot | 56 MB | 59031552 | 70307
+COMMIT

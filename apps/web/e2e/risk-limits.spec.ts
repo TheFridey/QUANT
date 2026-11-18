@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { apiFromPage, ensureEngineStatus, login, snapshot } from "./helpers";
 
-type History = { revisions: Array<{ actor: string | null; changes: Array<{ key: string; from: unknown; to: unknown }> }> };
+type History = { revisions: Array<{ actor: string | null; createdAt: string; changes: Array<{ key: string; from: unknown; to: unknown }> }> };
 
 test.describe.configure({ mode: "serial" });
 
@@ -50,7 +50,11 @@ test("operator edits PAPER risk limits from Settings through the audited config 
     const latest = history.revisions[0];
     expect(latest?.changes).toEqual([{ key: "maxDailyLossPct", from: original, to: next }]);
     expect(latest?.actor).toBeTruthy();
-    await expect(panel.getByText(`maxDailyLossPct ${original} → ${next}`)).toBeVisible();
+    // The same valid change may appear repeatedly in append-only history.
+    const renderedLatest = panel.getByRole("list", { name: "Recent risk-limit changes" }).getByRole("listitem").first();
+    await expect(renderedLatest).toContainText(`maxDailyLossPct ${original} → ${next}`);
+    await expect(renderedLatest).toContainText(`${latest!.createdAt.slice(0, 19).replace("T", " ")} UTC`);
+    await expect(renderedLatest).toContainText(latest!.actor!);
   } finally {
     // Restore the throwaway e2e account for later specs, even if a status change fails.
     try {

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { API_BASE } from "./helpers";
 
 test("command centre loads live snapshot equity and agent drawer", async ({ page }) => {
   await page.goto("/login");
@@ -7,14 +8,13 @@ test("command centre loads live snapshot equity and agent drawer", async ({ page
   await expect(page.getByText("Portfolio equity")).toBeVisible({ timeout: 20_000 });
 
   const equityText = await page.locator("header .mono").first().innerText();
-  const snapshot = await page.evaluate(async () => {
+  const snapshot = await page.evaluate(async (base) => {
     const token = sessionStorage.getItem("odin_token");
-    const base = "http://127.0.0.1:4318";
     const response = await fetch(`${base}/api/terminal/snapshot`, {
       headers: { authorization: `Bearer ${token}` },
     });
     return response.json();
-  });
+  }, API_BASE);
 
   if (snapshot.portfolio.equityUsd != null) {
     const amount = Number(snapshot.portfolio.equityUsd);

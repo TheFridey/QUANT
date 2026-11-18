@@ -266,7 +266,7 @@ export function RiskLimitsPanel() {
           {history.length === 0 ? (
             <p className="text-[11px] text-muted">No risk-limit changes recorded yet.</p>
           ) : (
-            <ul className="max-h-48 divide-y divide-border/70 overflow-auto text-[11px]">
+            <ul aria-label="Recent risk-limit changes" tabIndex={0} className="max-h-48 divide-y divide-border/70 overflow-auto text-[11px]">
               {history.map((row) => (
                 <li key={row.id} className="py-1.5">
                   <span className="mono text-muted">{row.createdAt.slice(0, 19).replace("T", " ")} UTC</span> ·{" "}

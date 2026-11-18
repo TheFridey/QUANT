@@ -1,5 +1,7 @@
 # AURUM Workstream Zero: storage plan
 
+> TITANIUM supersedes executor readiness claims: independent review found high-severity lock, audit, dependency and archive replacement defects. Deletion remains disabled even after any future hash approval; real allowlist empty. Restore is local-disposable only. See TITANIUM-STORAGE-REVIEW.md for evidence, quarantine and additive audit approval scope. Same-disk archives do not establish off-host recovery or immediate OS capacity reclamation. No production deletion or restoration authorised.
+
 **Status:** policy and dry-run tooling are implemented and unit-tested. The archive/delete executor is **not built**. It needs a disposable-database proof, which is BLOCKED on this host because it has no Docker or PostgreSQL. It also needs operator approval of the policy. No production data has been touched.
 
 ## 1. Problem (recorded 17 Nov 2026, not re-read)
@@ -14,7 +16,7 @@
 - The database is 13 GB and grows about 0.75 GB a day.
 - Nightly dumps are 1.91 GB and grow about 120 MB a night.
 - The disk has 49 GB free.
-- About 8,640 `NO_INTENT` decisions are written every 2 hours.
+- ~~About 8,640 `NO_INTENT` decisions are written every 2 hours.~~ **Corrected 18 Nov (D14):** production has no NO_INTENT rows (HOLD 76.6%, REJECT 18.4%, PASS 5.0%, ACT 0.02%), so the AgentDecision rule below would archive almost nothing. See [D14-PRODUCTION-STORAGE.md](D14-PRODUCTION-STORAGE.md).
 
 ## 2. Proposed policy (`apps/worker/src/ops/retention-policy.ts`, pending approval)
 
