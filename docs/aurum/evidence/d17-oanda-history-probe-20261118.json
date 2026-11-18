@@ -1,0 +1,100 @@
+{
+  "probedAt": "2026-11-18T21:51:14.379Z",
+  "host": "https://api-fxpractice.oanda.com",
+  "instrument": "XAU_USD",
+  "requests": 9,
+  "earliest": [
+    {
+      "granularity": "M1",
+      "ok": true,
+      "firstOpen": "2006-03-19T20:29:00.000Z",
+      "complete": true,
+      "mid": true,
+      "bid": true,
+      "ask": true,
+      "tickVolume": 1
+    },
+    {
+      "granularity": "M5",
+      "ok": true,
+      "firstOpen": "2006-03-19T20:25:00.000Z",
+      "complete": true,
+      "mid": true,
+      "bid": true,
+      "ask": true,
+      "tickVolume": 1
+    },
+    {
+      "granularity": "M15",
+      "ok": true,
+      "firstOpen": "2006-03-19T20:15:00.000Z",
+      "complete": true,
+      "mid": true,
+      "bid": true,
+      "ask": true,
+      "tickVolume": 1
+    },
+    {
+      "granularity": "M30",
+      "ok": true,
+      "firstOpen": "2006-03-19T20:00:00.000Z",
+      "complete": true,
+      "mid": true,
+      "bid": true,
+      "ask": true,
+      "tickVolume": 1
+    },
+    {
+      "granularity": "H1",
+      "ok": true,
+      "firstOpen": "2006-03-19T20:00:00.000Z",
+      "complete": true,
+      "mid": true,
+      "bid": true,
+      "ask": true,
+      "tickVolume": 2
+    },
+    {
+      "granularity": "H4",
+      "ok": true,
+      "firstOpen": "2006-03-19T20:00:00.000Z",
+      "complete": true,
+      "mid": true,
+      "bid": true,
+      "ask": true,
+      "tickVolume": 5
+    },
+    {
+      "granularity": "D",
+      "ok": true,
+      "firstOpen": "2006-03-19T22:00:00.000Z",
+      "complete": true,
+      "mid": true,
+      "bid": true,
+      "ask": true,
+      "tickVolume": 3021
+    },
+    {
+      "granularity": "S5",
+      "ok": true,
+      "firstOpen": "2006-03-18T20:49:55.000000000Z",
+      "complete": true,
+      "mid": true,
+      "bid": true,
+      "ask": true,
+      "tickVolume": 1,
+      "via": "direct GET (adapter lacks S5)"
+    }
+  ],
+  "page": {
+    "ok": true,
+    "returned": 5000,
+    "first": "2026-11-09T00:00:00.000Z",
+    "last": "2026-11-12T14:31:00.000Z",
+    "incomplete": 0,
+    "missingBid": 0,
+    "missingAsk": 0,
+    "gapsOver1m": 3,
+    "maxGapMin": 65
+  }
+}

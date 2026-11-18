@@ -2,17 +2,21 @@ import "../load-env.js";
 import { AlpacaBarsSource, GeckoTerminalPoolSource, OANDA_NY17_SOURCE_ID, OandaCandlesSource, runBackfill, type HistoricalBarSource, type HistoryInterval } from "@odin/market-data";
 import { PrismaClient } from "@odin/shared/db";
 import { ensureBackfillJob, PrismaBackfillStore } from "./prisma-backfill-store.js";
+import { positionalArgs, storageQuotaFromArgs } from "./backfill-quota.js";
 
 /**
  * ASCEND-01 bounded backfill, run by hand (or a timer) outside the trading loop:
  *
- *   node dist/src/history/backfill-cli.js <geckoterminal|alpaca_iex|alpaca_delayed_sip|oanda_practice|oanda_practice_ny17> <instrumentKey> <interval> <cohort> <startISO> <endISO> [maxRequests]
+ *   node dist/src/history/backfill-cli.js <geckoterminal|alpaca_iex|alpaca_delayed_sip|oanda_practice|oanda_practice_ny17> <instrumentKey> <interval> <cohort> <startISO> <endISO> [maxRequests] [--max-bars-per-dataset=N] [--max-total-bars=N]
  *
  * Re-running the same arguments resumes the open job from its checkpoint. Read-only against providers.
  * OANDA daily candles: use `oanda_practice_ny17 <instrument> 1d` (17:00 New York roll); `oanda_practice` refuses 1d.
  */
 async function main() {
-  const [sourceId, instrumentKey, interval, cohort, start, end, maxRequestsText] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  // HELIOS: optional bounded quota flags (backfill-quota.ts); positional arguments are unchanged.
+  const quota = storageQuotaFromArgs(argv);
+  const [sourceId, instrumentKey, interval, cohort, start, end, maxRequestsText] = positionalArgs(argv);
   if (!sourceId || !instrumentKey || !interval || !cohort || !start || !end) {
     console.error("usage: backfill-cli <geckoterminal|alpaca_iex|alpaca_delayed_sip|oanda_practice|oanda_practice_ny17> <instrumentKey> <interval> <cohort> <startISO> <endISO> [maxRequests]");
     process.exit(2);
@@ -56,7 +60,7 @@ async function main() {
       windowEnd: new Date(end),
       maxWindowDays: 3660,
     });
-    const result = await runBackfill({ job, source, store: new PrismaBackfillStore(prisma), options: { maxRequests, shouldStop: () => stop } });
+    const result = await runBackfill({ job, source, store: new PrismaBackfillStore(prisma, quota), options: { maxRequests, shouldStop: () => stop } });
     console.log(JSON.stringify({ jobId: result.job.id, status: result.job.status, stoppedBy: result.stoppedBy, requests: result.requests, rowsImported: result.job.rowsImported, rowsRejected: result.job.rowsRejected, revisions: result.job.revisionsDetected, lastError: result.job.lastError }));
   } finally {
     await prisma.$disconnect();
