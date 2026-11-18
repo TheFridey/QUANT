@@ -105,16 +105,18 @@ test.describe("Gate 1 local paper browser workflows", () => {
     await page.getByRole("link", { name: "Strategy Laboratory" }).click();
     const pauseEntries = page.getByRole("button", { name: /Pause new entries|Resume new entries/ });
     const beforeOps = await snapshot(page);
-    const wasPaused = Boolean(beforeOps.opsControls?.pauseNewEntries);
+    // The toggle changes the operator's stored flag; the effective flag also includes legacy retirement.
+    const stored = (o: { storedPauseNewEntries?: boolean; pauseNewEntries?: boolean } | undefined) => Boolean(o?.storedPauseNewEntries ?? o?.pauseNewEntries);
+    const wasPaused = stored(beforeOps.opsControls);
     await pauseEntries.click();
     await expect
-      .poll(async () => Boolean((await snapshot(page)).opsControls?.pauseNewEntries))
+      .poll(async () => stored((await snapshot(page)).opsControls))
       .toBe(!wasPaused);
     // The direct API poll can observe the acknowledgement before the UI snapshot updates.
     await expect(pauseEntries).toHaveText(wasPaused ? /Pause new entries/ : /Resume new entries/);
     await pauseEntries.click();
     await expect
-      .poll(async () => Boolean((await snapshot(page)).opsControls?.pauseNewEntries))
+      .poll(async () => stored((await snapshot(page)).opsControls))
       .toBe(wasPaused);
     await expect(pauseEntries).toHaveText(wasPaused ? /Resume new entries/ : /Pause new entries/);
   });

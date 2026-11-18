@@ -249,14 +249,20 @@ export function StrategySection() {
               {ops?.note ?? "Alert ACK does not clear safety suspensions."} Operational flags apply while RUNNING;
               strategy parameters still require pause.
             </p>
+            {ops?.legacyCryptoMode === "RETIRED" ? (
+              <p className="text-muted" data-testid="legacy-retired-note">
+                Legacy crypto is retired: Solana discovery is off and new entries stay paused whatever this toggle says.
+                Exits and protection continue.
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
                 size="xs"
                 variant="outline"
-                onClick={() => void patchOpsFlag("pauseNewEntries", !(ops?.pauseNewEntries ?? false))}
+                onClick={() => void patchOpsFlag("pauseNewEntries", !(ops?.storedPauseNewEntries ?? ops?.pauseNewEntries ?? false))}
               >
-                {ops?.pauseNewEntries ? "Resume new entries" : "Pause new entries"}
+                {(ops?.storedPauseNewEntries ?? ops?.pauseNewEntries) ? "Resume new entries" : "Pause new entries"}
               </Button>
               <Button
                 type="button"

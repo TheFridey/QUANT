@@ -56,6 +56,7 @@ import {
   startOfLondonDay,
   stageJobId,
   parseStrategyConfig,
+  legacyRetirementFromEnv,
   isOperationalStrategyKey,
   strategyPatchHasNonOperationalKeys,
   strategyPatchOnlyOperational,
@@ -173,6 +174,9 @@ export class TerminalService {
       );
     }
     const config = configEarly;
+    // CATALYST: read once per snapshot so every field agrees. This is the API process's view of LEGACY_CRYPTO_MODE;
+    // the worker reads its own at start and logs it (authoritative).
+    const legacy = legacyRetirementFromEnv();
     // D21: exact tradingEnvironment match only — null env is never compatible.
     const latestBatch = await this.prisma.cycleRun.findFirst({
       where: {
@@ -494,7 +498,8 @@ export class TerminalService {
       circuitBreakerOpen: breaker.open,
       circuitBreakerReasons: breaker.reasonCodes,
       entriesSuspended: entriesSuspendedFlag,
-      pauseNewEntries: config?.pauseNewEntries === true,
+      // CATALYST: a retired legacy worker pauses entries at read time; the stored config is unchanged.
+      pauseNewEntries: config?.pauseNewEntries === true || !legacy.newEntriesEnabled,
       flattenIncomplete: engineRow.flattenRequested === true && positions.some((p) => d(p.baseQty.toString()).gt(0)),
     });
     const closedOrderIds = closed.map((entry) => entry.orderId).filter((id): id is string => Boolean(id));
@@ -597,7 +602,11 @@ export class TerminalService {
         executionGateOk: liveGate.ok,
         liveEnabled: false,
         refuseReason: liveGate.ok ? null : liveGate.reason,
-        pauseNewEntries: config?.pauseNewEntries === true,
+        pauseNewEntries: config?.pauseNewEntries === true || !legacy.newEntriesEnabled,
+        storedPauseNewEntries: config?.pauseNewEntries === true,
+        legacyCryptoMode: legacy.mode,
+        legacyCryptoModeSource: "API_PROCESS_ENV" as const,
+        legacyCryptoModeIssue: legacy.issue,
         allowDemoPaperEntries: config?.allowDemoPaperEntries === true,
         multiMarketPaperIngest: config?.multiMarketPaperIngest === true,
         tradingEnvironment: tradingEnvironment,
@@ -690,7 +699,11 @@ export class TerminalService {
         engineStatus: engineRow.status,
         allowedActions: allowedActions(engineRow.status as "STOPPED"),
         flattenRequested: engineRow.flattenRequested,
-        pauseNewEntries: config?.pauseNewEntries === true,
+        pauseNewEntries: config?.pauseNewEntries === true || !legacy.newEntriesEnabled,
+        storedPauseNewEntries: config?.pauseNewEntries === true,
+        legacyCryptoMode: legacy.mode,
+        legacyCryptoModeSource: "API_PROCESS_ENV" as const,
+        legacyCryptoModeIssue: legacy.issue,
         allowDemoPaperEntries: config?.allowDemoPaperEntries === true,
         multiMarketPaperIngest: config?.multiMarketPaperIngest === true,
         entriesSuspended: entriesSuspendedFlag,

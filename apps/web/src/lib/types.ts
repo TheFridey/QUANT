@@ -189,7 +189,15 @@ export type Snapshot = {
     /** Always false: live money is not wired in this build. */
     liveEnabled: false;
     refuseReason: string | null;
+    /** True when the stored config pauses entries OR legacy crypto is retired. */
     pauseNewEntries: boolean;
+    /** The operator's stored flag alone (what the pause toggle changes). */
+    storedPauseNewEntries?: boolean;
+    /** CATALYST: LEGACY_CRYPTO_MODE as the API reads it. */
+    legacyCryptoMode?: "ACTIVE" | "RETIRED";
+    /** Where legacyCryptoMode came from: the API process environment, not the worker. */
+    legacyCryptoModeSource?: "API_PROCESS_ENV";
+    legacyCryptoModeIssue?: string | null;
     allowDemoPaperEntries: boolean;
     multiMarketPaperIngest: boolean;
     tradingEnvironment?: "FIXTURE" | "REPLAY" | "MARKET_DATA_PAPER" | "EXTERNAL_DEMO" | string;
@@ -247,6 +255,11 @@ export type Snapshot = {
     allowedActions: string[];
     flattenRequested: boolean;
     pauseNewEntries: boolean;
+    storedPauseNewEntries?: boolean;
+    legacyCryptoMode?: "ACTIVE" | "RETIRED";
+    /** Where legacyCryptoMode came from: the API process environment, not the worker. */
+    legacyCryptoModeSource?: "API_PROCESS_ENV";
+    legacyCryptoModeIssue?: string | null;
     allowDemoPaperEntries: boolean;
     multiMarketPaperIngest: boolean;
     entriesSuspended: boolean;

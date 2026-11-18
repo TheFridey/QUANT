@@ -3,6 +3,7 @@ import {
   buildPositionKey,
   d,
   parseStrategyConfig,
+  legacyRetirementFromEnv,
   resolveExecutionContext,
   SAFETY_CODES,
   type StrategyConfig,
@@ -642,6 +643,10 @@ export class OperatorCapacityService {
     }
     if (config?.pauseNewEntries === true) {
       active.push({ family: "SAFETY_SUSPENSION", detail: "Operator paused new entries.", count: 1 });
+    }
+    // CATALYST: the worker refuses legacy entries while LEGACY_CRYPTO_MODE is RETIRED, whatever the stored config says.
+    if (!legacyRetirementFromEnv().newEntriesEnabled) {
+      active.push({ family: "SAFETY_SUSPENSION", detail: "Legacy crypto retired: Solana discovery is off and new entries are paused. Exits and protection continue.", count: 1 });
     }
     const localRun = capacity.reconciliation.localAllocation;
     if (capacity.recoveryCases.length > 0 || (localRun && localRun.status !== "CLEAN")) {
