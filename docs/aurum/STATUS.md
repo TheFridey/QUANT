@@ -1,6 +1,24 @@
 # AURUM status and execution ledger
 
-## CATALYST — 18 November 2026 (current checkpoint)
+## Deploy: `bb72969` to production, GOLD RUSH G1 (18 Nov 2026, 21:37 UTC)
+
+Operator instruction: "merge and deploy" (PR #86). Nothing new was activated; legacy crypto stays RETIRED. Programme register: [GOLD-RUSH.md](GOLD-RUSH.md).
+
+| Step | Result (observed) |
+| --- | --- |
+| PR [#86](https://github.com/TheFridey/QUANT/pull/86) CI, run 44389210306 | test, build-packages and browser-e2e pass; **250 files, 1,753 passed, 1 skipped; browser e2e 14 passed** |
+| Merge | `bb72969` (merge commit). Content: the TITANIUM/CATALYST integration plus the COMMAND retirement-visibility fix |
+| Preflight, read-only | production `f4d8b99`; api, worker, web, postgresql and redis active; `/api/health` ok; 42 GB free; 0 worker error lines in 24 h; worker logging RETIRED. `quant-api`, `quant-web` and `quant-worker` all use `EnvironmentFile=/srv/quant/app/repo/.env`, so the dashboard's retirement display reads the same file as the worker. The only untracked file is the D3 `.env.bak-20261118T150653Z` reversal copy (kept) |
+| Backup | `quant-20261118T212931Z.dump` (2.09 GB, verified by the backup script). Early sign of retirement, not the 24-hour measurement: the 13:33 dump was 2.079 GB, so about +8 MB in 8 h, against about +120 MB a night before |
+| Snapshot | `/srv/quant/releases/f4d8b99-20261118T213343Z` (69 MB: package dists, api and worker `dist`, web `.next`) |
+| Deploy | fast-forward `f4d8b99` → `bb72969` (94 files; no protected path, no Prisma change). `pnpm install --frozen-lockfile` and env-sourced `pnpm build` succeed (api, worker, web Done); "No pending migrations". The built output has Next **16.4.5**, the `legacyCrypto` readiness field, `storedPauseNewEntries` in the API and `legacy-retirement.js` in shared |
+| Restart | worker 21:36:58, api 21:37:18, web 21:37:38 UTC; all active |
+| Smoke | worker logs `legacy crypto retired: discovery off, new entries paused`; 8 cycles COMPLETE with 0 errors; **0 observations, 0 orders** since restart. Cash 7,061.30912073, HWM 10,106.00207701, session equity and config md5 `5ff22766…` unchanged. `/login` 200; `/api/aurum/readiness` 401 without a token (auth intact). `/api/health` was `degraded` for about 2 minutes after the API restart and then `ok`, as in earlier deploys; `/api/ready` ok. 0 error lines in the worker, API and web journals |
+| Not checked | the authenticated dashboard view, which needs an operator login |
+
+**Rollback:** check out `f4d8b99`, restore the snapshot above or rebuild, then restart worker, api and web. No database action is needed.
+
+## CATALYST — 18 November 2026
 
 Branch `aurum/05-titanium-integration`, from `add6e68`. PAPER only. Production unchanged: `aec2a80` (D8).
 
