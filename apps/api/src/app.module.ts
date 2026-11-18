@@ -7,6 +7,7 @@ import { createPrismaClient, PrismaClient } from "@odin/shared/db";
 import { AuthController } from "./auth.controller.js";
 import { AuthService } from "./auth.service.js";
 import { AurumController } from "./aurum.controller.js";
+import { AurumMarketController } from "./aurum-market.controller.js";
 import { DataQualityController } from "./data-quality.controller.js";
 import { JwtAuthGuard } from "./http.js";
 import { EvolutionController } from "./evolution.controller.js";
@@ -40,7 +41,7 @@ import { FeedbackService } from "./feedback.service.js";
     }),
     BullModule.registerQueue({ name: QUEUES.ingest }),
   ],
-  controllers: [AuthController, AurumController, TerminalController, TradeLotsController, FeedbackController, OperatorController, LabController, EvolutionController, ResearchLoopController, DataQualityController, OpportunitiesController, CampaignsController],
+  controllers: [AuthController, AurumController, AurumMarketController, TerminalController, TradeLotsController, FeedbackController, OperatorController, LabController, EvolutionController, ResearchLoopController, DataQualityController, OpportunitiesController, CampaignsController],
   providers: [
     { provide: PrismaClient, useFactory: () => createPrismaClient() },
     AuthService,
