@@ -14,7 +14,11 @@ UNION ALL SELECT 'unresolved protection intents', count(*) FROM "ProtectionInten
 UNION ALL SELECT 'live protection legs', count(*) FROM "ProtectionOrder" WHERE status IN ('ARMED','TRIGGERED','SUBMITTED')
 UNION ALL SELECT 'open recovery cases', count(*) FROM "RecoveryCase" WHERE status = 'OPEN'
 UNION ALL SELECT 'held risk reservations', count(*) FROM "RiskReservation" WHERE status = 'HELD'
-UNION ALL SELECT 'trade intents in flight', count(*) FROM "TradeIntent" WHERE status IN ('PROPOSED','DEFERRED','ADMITTED','SUBMITTED','PENDING','PARTIALLY_FILLED','UNKNOWN')
+-- Narrowed 18 Nov: TradeIntent rows are never read back to place or settle orders, and production holds
+-- hundreds of stale ADMITTED/DEFERRED rows whose orders are terminal or absent. An intent is only an
+-- obligation when its order is still live.
+UNION ALL SELECT 'trade intents with a live order', count(*) FROM "TradeIntent" ti JOIN "Order" o ON o."clientOrderId" = ti."clientOrderId" WHERE o.status NOT IN ('FILLED','CANCELLED','REJECTED','EXPIRED')
+UNION ALL SELECT 'trade intents SUBMITTED/PENDING/PARTIALLY_FILLED/UNKNOWN', count(*) FROM "TradeIntent" WHERE status IN ('SUBMITTED','PENDING','PARTIALLY_FILLED','UNKNOWN')
 UNION ALL SELECT 'running research campaign units', count(*) FROM "ResearchCampaignUnit" WHERE state IN ('PENDING','RUNNING');
 \echo == status listings (read by a human: any unfamiliar non-terminal value blocks activation)
 SELECT 'Order' AS t, status, count(*) FROM "Order" GROUP BY 2
