@@ -90,6 +90,8 @@ export function validateGoldShadowConfig(c: GoldShadowConfig): { ok: true } | { 
 export type GoldReferenceQuote = ReferenceQuote & {
   executable: false;
   receivedAt: string;
+  /** HELIOS: provider timestamp verbatim (nanoseconds), or null when the provider row had none usable. */
+  providerTimeRaw: string | null;
   provenance: {
     provider: typeof GOLD_PROVIDER_ID;
     providerInstrument: typeof GOLD_PROVIDER_INSTRUMENT;
@@ -304,6 +306,7 @@ export class GoldShadowFeed {
       ask: snap.ask,
       eventTime: snap.time,
       receivedAt: receivedAt.toISOString(),
+      providerTimeRaw: snap.rawTime ?? null,
       executable: false,
       provenance: {
         provider: GOLD_PROVIDER_ID,
