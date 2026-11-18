@@ -26,6 +26,8 @@ import { RESEARCH_LOOP_QUEUE, ResearchLoopProcessor, ResearchLoopScheduler } fro
 import { Scheduler } from "./scheduler.js";
 import { StageLeaseService } from "./stage-lease.js";
 import { liveFeed, StageRunner } from "./stage-runner.js";
+import { legacyRetirementFromEnv } from "./legacy-retirement.js";
+import { workerLog } from "./logger.js";
 
 const queues = Object.values(QUEUES).map((name) => ({ name }));
 
@@ -52,13 +54,17 @@ const queues = Object.values(QUEUES).map((name) => ({ name }));
       inject: [PrismaClient, RedisBus],
       useFactory: (prisma: PrismaClient, bus: RedisBus) => {
         const mode = process.env.DATA_MODE === "replay" || process.env.DATA_MODE === "demo" ? process.env.DATA_MODE : "live";
+        // CATALYST: state the legacy crypto mode once, and make a mistyped value impossible to miss.
+        const legacy = legacyRetirementFromEnv(process.env);
+        if (legacy.issue) workerLog.warn({ legacyCryptoMode: legacy.mode, issue: legacy.issue }, "LEGACY_CRYPTO_MODE not recognised: treated as RETIRED");
+        else workerLog.info({ legacyCryptoMode: legacy.mode }, legacy.mode === "RETIRED" ? "legacy crypto retired: discovery off, new entries paused" : "legacy crypto active");
         const feedMode = resolveMarketFeedMode(process.env);
         if (feedMode === "deterministic") {
           const stepMs = deterministicStepMs(process.env);
           installDeterministicNetworkGuard({ stepMs });
-          return new StageRunner(prisma, deterministicFeed({ stepMs }), bus, mode);
+          return new StageRunner(prisma, deterministicFeed({ stepMs }), bus, mode, () => new Date(), legacy);
         }
-        return new StageRunner(prisma, liveFeed, bus, mode);
+        return new StageRunner(prisma, liveFeed, bus, mode, () => new Date(), legacy);
       },
     },
     IngestProcessor,

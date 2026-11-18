@@ -103,6 +103,7 @@ import type { ExecutorHost } from "./executor/host.js";
 import { consumeCyclePlan } from "./executor/plan-consume.js";
 import { retryProtectionExits } from "./executor/protect.js";
 import { settlePendingPaperOrders } from "./executor/settle.js";
+import { applyLegacyRetirement, legacyRetirementFromEnv, type LegacyRetirement } from "./legacy-retirement.js";
 import { processSandboxOutbox } from "./sandbox-execution.js";
 import { strategyConfigOrExitOnly } from "./strategy-config.js";
 
@@ -198,6 +199,8 @@ export class StageRunner {
     private readonly bus: AgentBus,
     private readonly dataMode: DataMode,
     private readonly now: () => Date = () => new Date(),
+    /** CATALYST: legacy crypto retirement, read once at start (see legacy-retirement.ts). Default ACTIVE. */
+    readonly legacy: LegacyRetirement = legacyRetirementFromEnv(),
   ) {}
 
   async ingest(input: { cycleId?: string; trigger: string }): Promise<{ cycleId: string; skipped: boolean }> {
@@ -346,6 +349,7 @@ export class StageRunner {
     // Audit F2: phases live in ./executor/*; they reach runner internals only through this host.
     const host: ExecutorHost = {
       dataMode: this.dataMode,
+      legacy: this.legacy,
       buildReservationBudget: (...args) => this.buildReservationBudget(...args),
       armProtectionForFill: (...args) => this.armProtectionForFill(...args),
       persistAlert: (...args) => this.persistAlert(...args),
@@ -406,7 +410,7 @@ export class StageRunner {
     timings.transaction = Date.now() - transactionStarted;
     phaseStarted = Date.now();
     // SANDBOX outbox: submit / sync / book external fills outside the account lock (Stage Q).
-    await processSandboxOutbox(this.prisma, { accountId: ctx.accountId, now });
+    await processSandboxOutbox(this.prisma, { accountId: ctx.accountId, now, legacy: this.legacy });
     // Retry unresolved protection exits — account-scoped, lifecycle-fenced (D07).
     await retryProtectionExits(this.prisma, { ctx, now });
     endPhase("protect");
@@ -476,7 +480,10 @@ export class StageRunner {
       return;
     }
     // D08: start discovery without awaiting it before held refresh — mandatory marks are priority.
-    const discoveryPromise = this.feed.fetchUniverse(config.universeLimit);
+    // CATALYST: when legacy crypto is RETIRED, discovery is not called; held marks below still refresh.
+    const discoveryPromise: Promise<ProviderResult<NormalizedPair[]>> = this.legacy.discoveryEnabled
+      ? this.feed.fetchUniverse(config.universeLimit)
+      : Promise.resolve({ ok: true as const, data: [], fetchedAt: now.toISOString() });
     const pinnedCtx = await this.contextForCycle(cycleId);
     const tradingEnvironment: TradingEnvironment =
       pinnedCtx?.tradingEnvironment ?? config.tradingEnvironment ?? "MARKET_DATA_PAPER";
@@ -642,7 +649,13 @@ export class StageRunner {
         dataState: state,
         observationCount: total,
         error:
-          total === 0
+          // Retired: an empty or held-only cycle is the expected state, not an error (it would otherwise show as
+          // a system error and an equity-chart warning). The mode is logged once at worker start.
+          !this.legacy.discoveryEnabled
+            ? isolationSkips > 0
+              ? `Scoped ${isolationSkips} isolation skip(s); healthy rows retained`
+              : null
+            : total === 0
             ? "DexScreener returned no Solana pairs and multi-market paper ingest empty"
             : !result.ok
               ? `Solana upstream unavailable; paper multi-market / held marks ingested (${demoCount + delayedCount})`
@@ -651,7 +664,9 @@ export class StageRunner {
                 : null,
       },
     });
-    if (total === 0) {
+    // Retired: the CycleRun note above records why the cycle is empty. A REJECT decision here would be kept
+    // forever by retention (non-NO_INTENT), at one row per cycle.
+    if (total === 0 && this.legacy.discoveryEnabled) {
       await upsertDecision(this.prisma, cycleId, emptyDecision("EMPTY_UNIVERSE", "No Solana or paper multi-market pairs"));
     }
   }
@@ -708,7 +723,7 @@ export class StageRunner {
     const engine = await db.engineControl.findUnique({ where: { id: "primary" } });
     if (!cycle || !engine) return null;
     const resolved = strategyConfigOrExitOnly(engine.config);
-    const config = resolved.config;
+    const config = applyLegacyRetirement(resolved.config, this.legacy);
     if (resolved.issues) {
       // Audit H1: never healed. Name the failing fields; plan exits only (entries paused) until fixed.
       await this.persistAlert(db, configInvalidAlert(resolved.issues));
@@ -1793,7 +1808,7 @@ export class StageRunner {
   private async config(): Promise<StrategyConfig> {
     const engine = await this.prisma.engineControl.findUnique({ where: { id: "primary" } });
     if (!engine) throw new Error("ENGINE_MISSING");
-    return strategyConfigOrExitOnly(engine.config).config;
+    return applyLegacyRetirement(strategyConfigOrExitOnly(engine.config).config, this.legacy);
   }
 
   /**
