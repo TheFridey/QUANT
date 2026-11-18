@@ -7,6 +7,7 @@ import { applyExternalFill, releasePendingExitReservation } from "@odin/trading-
 import { assertPaperOrSandboxOnly, d, newId, startOfLondonDay, usd } from "@odin/shared";
 import type { PrismaClient } from "@odin/shared/db";
 import { evaluateCircuitBreaker, releaseInTx, type ReservationBudget } from "@odin/risk-engine";
+import { applyLegacyRetirement, type LegacyRetirement } from "./legacy-retirement.js";
 import { strategyConfigOrExitOnly } from "./strategy-config.js";
 
 /**
@@ -17,11 +18,13 @@ import { strategyConfigOrExitOnly } from "./strategy-config.js";
  */
 export async function sandboxEntryBlock(
   prisma: PrismaClient,
-  input: { accountId: string; now: Date },
+  input: { accountId: string; now: Date; legacy?: LegacyRetirement },
 ): Promise<string | null> {
   const engine = await prisma.engineControl.findUnique({ where: { id: "primary" } });
   if (!engine || engine.status !== "RUNNING") return "ENGINE_HALTED";
-  const { config } = strategyConfigOrExitOnly(engine.config ?? {});
+  // CATALYST: a BUY admitted before retirement must not reach the practice venue after it.
+  const base = strategyConfigOrExitOnly(engine.config ?? {}).config;
+  const config = input.legacy ? applyLegacyRetirement(base, input.legacy) : base;
   if (config.pauseNewEntries === true) return "PAUSE_NEW_ENTRIES";
   const account = await prisma.paperAccount.findUnique({ where: { id: input.accountId } });
   if (!account?.sessionStartEquityUsd || !account.sessionStartedAt) return "DAILY_PNL_UNAVAILABLE";
@@ -67,6 +70,7 @@ export async function processSandboxOutbox(
     now?: Date;
     reservationBudget?: ReservationBudget;
     env?: NodeJS.ProcessEnv;
+    legacy?: LegacyRetirement;
   },
 ): Promise<{ submitted: number; filled: number; unknown: number; skipped: number }> {
   const now = input.now ?? new Date();
@@ -105,7 +109,7 @@ export async function processSandboxOutbox(
   let entryBlock: string | null | undefined;
   for (const order of due) {
     if (order.side === "BUY" && order.submissionState === "PRE_SUBMIT") {
-      entryBlock ??= await sandboxEntryBlock(prisma, { accountId: input.accountId, now });
+      entryBlock ??= await sandboxEntryBlock(prisma, { accountId: input.accountId, now, ...(input.legacy ? { legacy: input.legacy } : {}) });
       if (entryBlock) {
         // Fenced: only a still-unsubmitted order is cancelled, so an overlapping outbox run that has
         // already moved it to SUBMITTING cannot be overwritten into a terminal state (review note).

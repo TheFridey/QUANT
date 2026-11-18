@@ -1,6 +1,7 @@
 import { DEFAULT_STRATEGY, startOfLondonDay } from "@odin/shared";
 import type { PrismaClient } from "@odin/shared/db";
 import { describe, expect, it, vi } from "vitest";
+import { legacyRetirementFromEnv } from "./legacy-retirement.js";
 import { sandboxEntryBlock } from "./sandbox-execution.js";
 
 const now = new Date("2026-10-31T16:05:00.000Z");
@@ -51,6 +52,14 @@ describe("sandbox entry re-check before first submission (ASCEND-00 F3)", () => 
     expect(
       await sandboxEntryBlock(fakePrisma({ config: { ...DEFAULT_STRATEGY, pauseNewEntries: true } }), { accountId: "demo", now }),
     ).toBe("PAUSE_NEW_ENTRIES");
+  });
+
+  it("CATALYST: a queued SANDBOX BUY is blocked once legacy crypto is retired, and allowed when ACTIVE", async () => {
+    const healthy = { low: "9900", snapshotEquity: "9950" };
+    const retired = legacyRetirementFromEnv({ LEGACY_CRYPTO_MODE: "RETIRED" });
+    expect(await sandboxEntryBlock(fakePrisma(healthy), { accountId: "demo", now, legacy: retired })).toBe("PAUSE_NEW_ENTRIES");
+    expect(await sandboxEntryBlock(fakePrisma(healthy), { accountId: "demo", now, legacy: legacyRetirementFromEnv({}) })).toBeNull();
+    expect(await sandboxEntryBlock(fakePrisma(healthy), { accountId: "demo", now })).toBeNull();
   });
 
   it("blocks when the day's base is unknown or the session has not rolled to today", async () => {
