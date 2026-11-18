@@ -50,7 +50,7 @@ Details: [D8-PRODUCTION-READONLY.md](D8-PRODUCTION-READONLY.md).
 | # | Decision | Recommendation |
 | --- | --- | --- |
 | D3 | Activate `LEGACY_CRYPTO_MODE=RETIRED` after a fresh zero-obligation check | yes, after code review and deploy approval |
-| D14 | Read-only disk, backup and growth inspection | yes, now |
+| D14 | Read-only disk, backup and growth inspection | **done 18 Nov**: [D14-PRODUCTION-STORAGE.md](D14-PRODUCTION-STORAGE.md). About 2.5 GB/day of disk use (database 0.85 + backups 1.7); **about 17–18 days to full without retirement** |
 | D15 | Backup dump retention | after D14 |
 | D16 | Archive to separate storage | yes, required for real relief |
 | D17 | OANDA earliest-history probe (about 8 requests, read-only) | yes |

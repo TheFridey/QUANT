@@ -16,7 +16,7 @@
 - The database is 13 GB and grows about 0.75 GB a day.
 - Nightly dumps are 1.91 GB and grow about 120 MB a night.
 - The disk has 49 GB free.
-- About 8,640 `NO_INTENT` decisions are written every 2 hours.
+- ~~About 8,640 `NO_INTENT` decisions are written every 2 hours.~~ **Corrected 18 Nov (D14):** production has no NO_INTENT rows (HOLD 76.6%, REJECT 18.4%, PASS 5.0%, ACT 0.02%), so the AgentDecision rule below would archive almost nothing. See [D14-PRODUCTION-STORAGE.md](D14-PRODUCTION-STORAGE.md).
 
 ## 2. Proposed policy (`apps/worker/src/ops/retention-policy.ts`, pending approval)
 
