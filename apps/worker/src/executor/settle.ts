@@ -3,6 +3,7 @@ import { releaseInTx } from "@odin/risk-engine";
 import { d, exitFence, type ExecutionContext } from "@odin/shared";
 import type { Prisma } from "@odin/shared/db";
 import { releasePendingExitReservation, settlePendingOrder } from "@odin/trading-engine";
+import { applyLegacyRetirement } from "../legacy-retirement.js";
 import { strategyConfigOrExitOnly } from "../strategy-config.js";
 import type { ExecutorHost } from "./host.js";
 
@@ -17,7 +18,9 @@ export async function settlePendingPaperOrders(
   { ctx, now }: { ctx: ExecutionContext; now: Date },
 ): Promise<number> {
   const engine = await tx.engineControl.findUnique({ where: { id: "primary" } });
-  const { config } = strategyConfigOrExitOnly(engine?.config ?? {});
+  // CATALYST: retirement forces pauseNewEntries, so queued ENTRY/OPERATOR buys are cancelled; exits still settle.
+  const stored = strategyConfigOrExitOnly(engine?.config ?? {}).config;
+  const config = host.legacy ? applyLegacyRetirement(stored, host.legacy) : stored;
   // Local settle loop must only touch PAPER — never locally fill SANDBOX pending orders (F01).
   const pending = await tx.order.findMany({
     where: { accountId: ctx.accountId, status: "PENDING", executionMode: "PAPER" },
