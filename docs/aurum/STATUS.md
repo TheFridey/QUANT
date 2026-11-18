@@ -1,6 +1,24 @@
 # AURUM status and execution ledger
 
-## CATALYST — 18 November 2026 (current checkpoint)
+## Deploy: `bb72969` to production, GOLD RUSH G1 (18 Nov 2026, 21:37 UTC)
+
+Operator instruction: "merge and deploy" (PR #86). Nothing new was activated; legacy crypto stays RETIRED. Programme register: [GOLD-RUSH.md](GOLD-RUSH.md).
+
+| Step | Result (observed) |
+| --- | --- |
+| PR [#86](https://github.com/TheFridey/QUANT/pull/86) CI, run 44389210306 | test, build-packages and browser-e2e pass; **250 files, 1,753 passed, 1 skipped; browser e2e 14 passed** |
+| Merge | `bb72969` (merge commit). Content: the TITANIUM/CATALYST integration plus the COMMAND retirement-visibility fix |
+| Preflight, read-only | production `f4d8b99`; api, worker, web, postgresql and redis active; `/api/health` ok; 42 GB free; 0 worker error lines in 24 h; worker logging RETIRED. `quant-api`, `quant-web` and `quant-worker` all use `EnvironmentFile=/srv/quant/app/repo/.env`, so the dashboard's retirement display reads the same file as the worker. The only untracked file is the D3 `.env.bak-20261118T150653Z` reversal copy (kept) |
+| Backup | `quant-20261118T212931Z.dump` (2.09 GB, verified by the backup script). Early sign of retirement, not the 24-hour measurement: the 13:33 dump was 2.079 GB, so about +8 MB in 8 h, against about +120 MB a night before |
+| Snapshot | `/srv/quant/releases/f4d8b99-20261118T213343Z` (69 MB: package dists, api and worker `dist`, web `.next`) |
+| Deploy | fast-forward `f4d8b99` → `bb72969` (94 files; no protected path, no Prisma change). `pnpm install --frozen-lockfile` and env-sourced `pnpm build` succeed (api, worker, web Done); "No pending migrations". The built output has Next **16.4.5**, the `legacyCrypto` readiness field, `storedPauseNewEntries` in the API and `legacy-retirement.js` in shared |
+| Restart | worker 21:36:58, api 21:37:18, web 21:37:38 UTC; all active |
+| Smoke | worker logs `legacy crypto retired: discovery off, new entries paused`; 8 cycles COMPLETE with 0 errors; **0 observations, 0 orders** since restart. Cash 7,061.30912073, HWM 10,106.00207701, session equity and config md5 `5ff22766…` unchanged. `/login` 200; `/api/aurum/readiness` 401 without a token (auth intact). `/api/health` was `degraded` for about 2 minutes after the API restart and then `ok`, as in earlier deploys; `/api/ready` ok. 0 error lines in the worker, API and web journals |
+| Not checked | the authenticated dashboard view, which needs an operator login |
+
+**Rollback:** check out `f4d8b99`, restore the snapshot above or rebuild, then restart worker, api and web. No database action is needed.
+
+## CATALYST — 18 November 2026
 
 Branch `aurum/05-titanium-integration`, from `add6e68`. PAPER only. Production unchanged: `aec2a80` (D8).
 
@@ -74,6 +92,38 @@ Earlier records below are preserved. Current starting SHAs and classifications: 
 Existing unlock is unused. Original branches, legacy history and losses preserved. Authorised local verification is complete; full platform acceptance remains blocked by protected implementation and operator evidence. Windows skips, tmpfs durability limits and native SWC ACL refusal remain explicit.
 
 This document also serves as EXECUTION-LEDGER.
+
+## Deploy and activation: `f4d8b99`, legacy crypto RETIRED (18 Nov 2026)
+
+Operator instruction: "merge, deploy and activate" (D3). Production storage was the driver: D14 measured about 2.5 GB of disk a day, with about 17–18 days left. The plan followed was `docs/aurum/D3-RETIREMENT-ACTIVATION-PLAN.md`.
+
+| Step | Result (observed) |
+| --- | --- |
+| PR [#84](https://github.com/TheFridey/QUANT/pull/84) CI, run 44312617178 | test, build-packages and browser-e2e pass; 240 files, **1,672 passed, 1 skipped**, including all 4 retirement DB integration tests |
+| Merge | `f4d8b99` (merge commit; branch cut from the `main` tip, so the tested tree is the merged tree) |
+| Preflight, read-only | production `aec2a80`, clean checkout; api, worker, web, postgresql and redis active; `/api/health` ok; 44 GB free. The worker loads `/srv/quant/app/repo/.env` via systemd `EnvironmentFile`, and its unit does not set `LEGACY_CRYPTO_MODE` |
+| Zero-obligation check | open positions, non-terminal orders, unresolved protection intents, live protection legs, open recovery cases, held reservations and running campaign units: **all 0**. Money: `primary` cash 7,061.30912073, HWM 10,106.00207701, session start and low 7,061.30912073, config md5 `5ff22766…` |
+| The 600 "in-flight" trade intents | **inert historical rows, not obligations.** 221 ADMITTED and 379 DEFERRED, the newest from 16 Nov 07:21. 324 have terminal orders (131 cancelled, 20 rejected, 173 filled); 209 SELLs have no order and no position; 67 ADMITTED BUYs never produced an order. No code reads TradeIntent back to create or settle orders (only the API capacity view and the history loader). The preflight check was over-broad and is now narrowed |
+| Backup | `quant-backup.service` gave `quant-20261118T133349Z.dump` (2.08 GB, `pg_restore --list` verified); 42 GB free |
+| Deploy | fast-forward `aec2a80` → `f4d8b99` (13 files: worker source, docs, `.env.example`); `pnpm install --frozen-lockfile` and env-sourced `pnpm build` succeed; `db:deploy` reports "No pending migrations". The built worker contains `legacy-retirement.js`. **Worker restarted only**; API and web were not restarted (code unchanged) |
+| ACTIVE smoke | worker logs `legacy crypto active`; 5 cycles COMPLETE in 90 s; 120 Solana observations; 0 worker error lines; money and config md5 identical |
+| Activation | `.env` backed up to `.env.bak-20261118T150653Z`. Appended `LEGACY_CRYPTO_MODE=RETIRED`, the only key touched; it appears exactly once. Worker restarted at 15:06:53 UTC |
+| Verification | worker logs `legacy crypto retired: discovery off, new entries paused`, with no unrecognised-value warning. Up to 15:15 UTC: **26 cycles COMPLETE, 0 with error; 0 market observations; 0 orders**; 2 decision rows per cycle (EXECUTOR and ARCHIVIST PASS), against about 120 per cycle before. Cash, HWM, session equity, config md5 and stored `pauseNewEntries` (false) are unchanged. 0 worker error lines; `/api/health` ok |
+
+**Expected effect** (derived; measure after 24 h with `docs/aurum/evidence/d14-production-readonly-20261118.sql`):
+- database growth falls from about 0.85 GB/day to about 0.01 GB/day;
+- the nightly dump stops growing, and the backup directory levels off at about 29–31 GB.
+
+**Known:** the dashboard reads the stored config, so it still shows new entries as allowed. A manual BUY is refused by the worker (`PAUSE_NEW_ENTRIES`).
+
+**Reversal:** restore `.env.bak-20261118T150653Z`, or set `LEGACY_CRYPTO_MODE=ACTIVE`, then `sudo systemctl restart quant-worker`.
+**Code rollback:** check out `aec2a80` and rebuild, or restore snapshot `/srv/quant/releases/aec2a80-20261117T124248Z`, then restart the worker. No database action is needed.
+
+**Not done:**
+- 24-hour measurement;
+- backup window (D15);
+- AgentDecision retention option (D1);
+- API visibility of the worker mode.
 
 | | |
 | --- | --- |
