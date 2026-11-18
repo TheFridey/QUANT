@@ -13,6 +13,19 @@
 | Command API | no AURUM readiness endpoint | pure inactive contract and GET controller under global auth; unknowns null, eligibility false; actual anonymous GET401/authenticated GET200/POST404 |
 | Retirement/isolation | singleton engine and crypto scheduling | structural retirement proposal and C3/C10 packages prepared; no runtime flag/protected adapter changed |
 
+## CATALYST, 18 November 2026
+
+| Workstream | Done | Evidence | Open |
+| --- | --- | --- | --- |
+| D8 production read-only | trial registry, ledger, campaigns, gold datasets, storage | `add6e68`, D8-PRODUCTION-READONLY.md | backup/disk breakdown (D14) |
+| Legacy retirement | `LEGACY_CRYPTO_MODE` flag through plan, config, settle and SANDBOX outbox; held refresh untouched | 4 DB tests + 8 unit; safety review APPROVE WITH NOTES, 4 findings fixed | activation (D3); API visibility |
+| Trial reconstruction | E1–E7 inventory from code grids and ledgers; "≈ 550" rejected | CATALYST-TRIAL-INVENTORY.md | D18 count; declaration (D7) |
+| Gold data | capability and availability matrix; bounded M1 plan; aggregation module | CATALYST-GOLD-DATA.md, 5 tests | probe (D17); acquisition approval |
+| Feed quality | four tiers with no defaults; spread statistics | 5 tests | thresholds after measurement; persistence (D11) |
+| C3/C10 | 10 amendments (lock helper locks nothing for GBP accounts; RLS; DB roles; separate process; margin close-out; ledger invariant; idempotency key; 17:00 NY boundary; branded money; stop vs flatten) | CATALYST-C3-C10-CHALLENGE.md | approval (D12/D13) |
+
+## TITANIUM, 17 November 2026
+
 Final local results: 1,707 pass / 25 skip; 241 files pass / four skip; 35 integration files / 179 tests including two no-resource quarantine tests. Final browser run at 3b79f71: 14/14 pass in 3.5m. Build:portable, typecheck, scoped lint pass; production dependency audit zero known advisories. Public-export follow-up: 53 product tests and package build pass. Frontend rebuild after accessibility fix passes.
 
 Exact commands, attempts, findings and limitations: TITANIUM-REGRESSION.md and TITANIUM-*-REVIEW.md. Starting SHAs: TAKEOVER-TITANIUM.md. Integration SHAs and final acceptance matrix: TITANIUM-REPORT.md. All results are local; production and protected blockers remain open.
