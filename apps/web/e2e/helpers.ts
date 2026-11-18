@@ -61,7 +61,7 @@ export type Snapshot = {
     }>;
   };
   orders: Array<{ id: string; side: string; status: string; baseSymbol: string; rejectReason: string | null; fills: unknown[] }>;
-  opsControls?: { pauseNewEntries?: boolean; unresolvedProtection?: number; entriesSuspended?: boolean };
+  opsControls?: { pauseNewEntries?: boolean; storedPauseNewEntries?: boolean; legacyCryptoMode?: string; unresolvedProtection?: number; entriesSuspended?: boolean };
   strategyInstances?: Array<{ id: string; name: string; budgetUsd: string; status: string }>;
   whyNoTrades?: { families?: string[]; note?: string; decisiveBlocks?: Array<{ reasonCodes?: string[] }> };
   whyBlocked?: Array<{ reasonCodes: string[]; decision: string }>;

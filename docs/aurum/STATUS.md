@@ -1,5 +1,78 @@
 # AURUM status and execution ledger
 
+## CATALYST — 18 November 2026 (current checkpoint)
+
+Branch `aurum/05-titanium-integration`, from `add6e68`. PAPER only. Production unchanged: `aec2a80` (D8).
+
+**Production read-only facts (D8):**
+- the registry gap is reconciled (2,454 = 2,170 counted + 284 TEST);
+- the database is 14 GB and the disk has 44 GB free;
+- the database is under a seventh of the 102 GB used, so the rest of the disk is unmeasured.
+
+Details: [D8-PRODUCTION-READONLY.md](D8-PRODUCTION-READONLY.md).
+
+**Implemented (inactive unless noted):**
+- **Legacy crypto retirement** (`LEGACY_CRYPTO_MODE`, default ACTIVE).
+  - RETIRED stops Solana discovery and forces `pauseNewEntries` at read time only: in the plan, the config, PAPER settle and the SANDBOX outbox.
+  - Held marks, exits, protection and history are unchanged.
+  - Empty retired cycles are not errors and write no permanent REJECT row.
+  - The mode is logged at worker start, and a typo logs a warning.
+  - **Not activated.** See [CATALYST-STORAGE-AND-RETIREMENT.md](CATALYST-STORAGE-AND-RETIREMENT.md).
+- **Gold quote quality tiers and spread statistics** (`gold-quote-tiers.ts`):
+  - four tiers, with no default thresholds and validated ordering;
+  - spread statistics in points, bps and £ per stake, and by New York hour.
+- **Deterministic M1 → higher-timeframe aggregation** (`history/aggregate.ts`), exact decimals.
+- **Documents:**
+  - trial inventory: [CATALYST-TRIAL-INVENTORY.md](CATALYST-TRIAL-INVENTORY.md);
+  - gold data plan: [CATALYST-GOLD-DATA.md](CATALYST-GOLD-DATA.md);
+  - C3/C10 challenge: [CATALYST-C3-C10-CHALLENGE.md](CATALYST-C3-C10-CHALLENGE.md).
+
+**Verification (local Windows; disposable PostgreSQL 16 on Docker tmpfs, fsync on, `127.0.0.1:55437/odin_test`):**
+
+| Check | Result |
+| --- | --- |
+| Integration project (full) | **36 files / 183 tests pass**, including 4 new retirement tests and the GENESIS registry test |
+| Retirement and nearest suites (cycle-plan, paper-lifecycle, daily-loss-latch, stage-runner, release1-executor, lifecycle-fence) after review fixes | pass |
+| New unit tests | retirement 7, SANDBOX retirement block 1, quote tiers 5, aggregation 5: all pass |
+| Full unit project, final code, `--maxWorkers=2` | **207 files pass, 6 skipped (DB-gated); 1,534 tests pass, 34 skipped, 0 failed**. An earlier run under heavier load had 1 transient Nest boot hook timeout in an untouched API test |
+| Combined | 1,534 unit + 183 integration = **1,717 passing** (TITANIUM: 1,707) |
+| `pnpm --filter @odin/worker typecheck`, market-data `tsc --noEmit` | pass |
+| eslint on the 14 changed files | clean |
+| Docker disk-volume run (before tmpfs) | timeouts at 60 s in 3 tests including 2 unchanged suites: environmental I/O, as TITANIUM found |
+
+**Review:** `quant-safety-reviewer` on the retirement change gave APPROVE WITH NOTES.
+- Fixed: 1 (SANDBOX outbox ignored retirement), 2 (typo never reported), 4 (retired cycles shown as errors) and 5 (no exit-while-retired test).
+- Documented: 3 (the API shows the stored config) and 6 (demo and replay modes are unaffected).
+- A test host without `legacy` crashed settle; it was found by the integration run and fixed by making the field optional, which keeps today's behaviour.
+
+**Decisions needed:**
+
+| # | Decision | Recommendation |
+| --- | --- | --- |
+| D3 | Activate `LEGACY_CRYPTO_MODE=RETIRED` after a fresh zero-obligation check | yes, after code review and deploy approval |
+| D14 | Read-only disk, backup and growth inspection | **done 18 Nov**: [D14-PRODUCTION-STORAGE.md](D14-PRODUCTION-STORAGE.md). About 2.5 GB/day of disk use (database 0.85 + backups 1.7); **about 17–18 days to full without retirement** |
+| D15 | Backup dump retention | after D14 |
+| D16 | Archive to separate storage | yes, required for real relief |
+| D17 | OANDA earliest-history probe (about 8 requests, read-only) | yes |
+| D18 | Read-only count of pre-registry `BacktestRun`/`ExperimentReport` rows | yes, before declaring |
+| D7 | Legacy trial declaration: **2,684**, programme rule, an upper bound with reruns included | approve after D18 |
+| D12 / D13 | C3 / C10 with the CATALYST amendments X1–X10 | approve scope; protected implementation follows |
+
+## TITANIUM — 17 November 2026
+
+Earlier records below are preserved. Current starting SHAs and classifications: [TAKEOVER-TITANIUM.md](TAKEOVER-TITANIUM.md). Command evidence: [TITANIUM-REGRESSION.md](TITANIUM-REGRESSION.md) and [EXECUTION-LEDGER.md](EXECUTION-LEDGER.md).
+
+- IMPLEMENTED, INACTIVE: bounded financial domains and configured-margin correction; feed generation/reset fencing, provenance/state isolation and cancellable transport; authenticated read-only readiness contract. No account created.
+- Storage independent review found high-severity defects. Deletion remains disabled, real allowlist empty; restore confined to disposable local databases. Production archive/delete/restore acceptance is not established.
+- VERIFIED_TEST: historical PR #82 CI independently confirmed: 1,663 pass, one skip, 238 files, 177 integration tests and 14 browser tests. These do not prove the new combined branch.
+- VERIFIED_TEST, combined local branch: 1,707 pass / 25 skip, 241 files pass / four skip; integration project 35 files / 179 tests (two no-resource quarantine tests). Portable packages/API/worker/web build, typecheck, scoped lint and zero-advisory production audit pass. Final browser run at 3b79f71: 14/14 pass (3.5m). Exact checkpoint and limits: [TITANIUM-REPORT.md](TITANIUM-REPORT.md).
+- BLOCKED_APPROVAL: durable retention audit/transaction protocol, quote persistence, C3 and C10. Exact scopes: [TITANIUM-APPROVAL-PACKAGE.md](TITANIUM-APPROVAL-PACKAGE.md), [FEED.md](FEED.md), [TITANIUM-STORAGE-REVIEW.md](TITANIUM-STORAGE-REVIEW.md).
+- BLOCKED_RESEARCH: historical reconciliation and holdout authority. Exact operator read-only SQL and counting semantics: [TITANIUM-TRIALS-AND-DATA.md](TITANIUM-TRIALS-AND-DATA.md). No subtraction-based declaration accepted.
+- UNVERIFIED production: reported deployment, current obligations/balances, provider entitlement, storage growth, dataset coverage/hashes. No production inspection authorised or performed.
+- NOT ACTIVATED: feed, campaigns, account, retirement flags, execution, retention or deletion. No push, PR, main merge or deployment authorised.
+
+Existing unlock is unused. Original branches, legacy history and losses preserved. Authorised local verification is complete; full platform acceptance remains blocked by protected implementation and operator evidence. Windows skips, tmpfs durability limits and native SWC ACL refusal remain explicit.
+
 This document also serves as EXECUTION-LEDGER.
 
 | | |
@@ -94,7 +167,7 @@ This document also serves as EXECUTION-LEDGER.
 | D5 | Approve the proposed AURUM account parameters | SCOPE §3 | approve for design; create only after C3 and C10 | none until creation |
 | D6 | Remove the pre-existing `.claude/protected-edits.unlock` now, and recreate it per PCR item | BASELINE: it is present and was not created in this session | remove it | protected edits are blocked again until a scoped unlock |
 | D7 | Answer the legacy-trial questionnaire (3 questions) | F03-F06 doc §45 | answer before M4 | unblocks FORGE |
-| D8 | Authorise the read-only production dry run over ssh | STORAGE-PLAN §5 | yes, after this branch is deployed | real candidate counts |
+| D8 | Authorise the read-only production dry run over ssh | STORAGE-PLAN §5 | yes, after this branch is deployed | real candidate counts. **Approved 18 Nov; metadata inspection done, see [D8-PRODUCTION-READONLY.md](D8-PRODUCTION-READONLY.md). Retention candidate dry run not run** |
 
 ## Deploy: `aec2a80` to production (17 Nov 2026, 12:42 UTC)
 

@@ -1,0 +1,22 @@
+[
+    {
+        "output":  "{\n  \"mode\": \"PLAN_READ_ONLY\",\n  \"now\": \"2026-11-17T15:36:05.063Z\",\n  \"policyHash\": \"9ebe319ae5a48f00b1dd485233537e1a751548201e3e6deb23ceda1ee5ac2f48\",\n  \"policyCandidateTables\": [\n    \"AgentDecision\",\n    \"CyclePlan\",\n    \"OpportunityFunnelEvent\"\n  ],\n  \"deletionEnabled\": false,\n  \"deletionBlockers\": [\n    \"POLICY_NOT_APPROVED\",\n    \"DURABLE_AUDIT_REQUIRED\"\n  ],\n  \"blockedTables\": [\n    {\n      \"table\": \"MarketObservation\",\n      \"reason\": \"RESEARCH_DATASET_WINDOWS_UNMAPPED\"\n    }\n  ],\n  \"estimate\": {\n    \"tables\": {\n      \"AgentDecision\": {\n        \"candidateRows\": 0,\n        \"estimatedBytes\": 0\n      },\n      \"CyclePlan\": {\n        \"candidateRows\": 0,\n        \"estimatedBytes\": 0\n      },\n      \"OpportunityFunnelEvent\": {\n        \"candidateRows\": 0,\n        \"estimatedBytes\": 0\n      }\n    },\n    \"totalBytes\": 0\n  },\n  \"requiredFreeBytes\": 2147483648,\n  \"disk\": {\n    \"freeBytes\": 697773621248,\n    \"totalBytes\": 1000202039296,\n    \"pressure\": {\n      \"level\": \"OK\",\n      \"daysToFull\": 866.4697672526041\n    }\n  }\n}",
+        "command":  "compiled plan",
+        "exit":  0
+    },
+    {
+        "output":  "{\n  \"mode\": \"VERIFY\",\n  \"state\": \"COMPLETE\",\n  \"ok\": true,\n  \"rows\": 1\n}",
+        "command":  "compiled verify",
+        "exit":  0
+    },
+    {
+        "output":  "{\n  \"ok\": false,\n  \"reason\": \"POLICY_NOT_APPROVED\",\n  \"detail\": {\n    \"hash\": \"9ebe319ae5a48f00b1dd485233537e1a751548201e3e6deb23ceda1ee5ac2f48\"\n  }\n}",
+        "command":  "compiled unapproved execute",
+        "exit":  2
+    },
+    {
+        "output":  "{\n  \"ok\": true,\n  \"runId\": \"fixture-restore\",\n  \"inserted\": 0,\n  \"skippedExisting\": 1,\n  \"verified\": 1\n}",
+        "command":  "compiled restore existing fixture",
+        "exit":  0
+    }
+]

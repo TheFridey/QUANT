@@ -21,10 +21,15 @@ for (const viewport of [
     for (const section of SECTIONS) {
       await page.goto(section === "overview" ? "/terminal" : `/terminal/${section}`);
       await page.waitForLoadState("networkidle").catch(() => undefined);
+      // Assess the rendered page after finite entrance animations finish.
+      // Infinite status pulses remain active and every axe rule stays enabled.
+      await expect.poll(() => page.evaluate(() => document.getAnimations().filter((animation) =>
+        animation.playState === "running" && animation.effect?.getComputedTiming().iterations !== Infinity,
+      ).length)).toBe(0);
       const results = await new AxeBuilder({ page }).analyze();
       for (const violation of results.violations) {
         if (violation.impact === "serious" || violation.impact === "critical") {
-          failures.push(`${section}: ${violation.id} (${violation.nodes.length}) ${violation.nodes[0]?.target.join(" ")}`);
+          failures.push(`${section}: ${violation.id} (${violation.nodes.length}) ${violation.nodes.map((node) => `${node.target.join(" ")}: ${node.failureSummary}`).join("; ")}`);
         }
       }
     }

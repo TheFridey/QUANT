@@ -30,4 +30,7 @@ export * from "./precision.js";
 export * from "./position-lot.js";
 export * from "./spread-bet.js";
 export * from "./spread-bet-lifecycle.js";
+export * from "./legacy-retirement.js";
 export * from "./aurum-scope.js";
+export * from "./aurum-readiness.js";
+export * from "./aurum-account-config.js";

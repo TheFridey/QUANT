@@ -42,3 +42,26 @@ Formula: maximum stop distance = permitted risk / min stake − slippage allowan
 - Intraday stops of tens of dollars fit inside these limits.
 - Stops on daily swings at 0.25% risk may not, depending on the gold price and ATR (`UNVERIFIED`; Campaign 01 measures the XAU ATR distribution).
 - When a stop is too wide for the minimum stake, `sizeStake` returns `MIN_STAKE_EXCEEDS_RISK`. **Risk is never raised to reach the minimum.**
+
+## 4. TITANIUM numerical domain (implemented, inactive)
+
+This is a representation contract, not approval of a balance, risk configuration or execution threshold. The current spot account monetary fields use PostgreSQL `Decimal(24,8)` (`packages/shared/prisma/schema.prisma`); draft C3 proposes prices at `(24,8)` and booked GBP at `(24,2)`. No schema is changed here.
+
+| Input | Representation and semantic constraint |
+| --- | --- |
+| Equity / initial balance | Decimal string, strictly positive, magnitude below `1e16`, at most 8 meaningful decimal places. Initial balance remains the unapproved proposal of GBP 10,000. |
+| Available cash / margin; used margin | Same representation, nonnegative. Cash settlement is not implemented; the sizing inputs are available/used margin, not a new ledger. |
+| Price / stop | Same representation, strictly positive. Stops must lie beyond the current closing side, on the loss side, with at least one product point of distance. |
+| Stake / point size | Same representation, strictly positive. Stakes must be on the product increment and at most its maximum. Entry sizing additionally requires the minimum. Partial-close calculations may use an increment below the entry minimum. |
+| Risk / margin fraction | Same representation, greater than zero. Margin and utilisation at most 1. Raw sizing risk at most 0.02; account wrapper risk at most the validated configured fraction, whose ceiling remains 0.005. These are fractions, not percentage numbers. |
+| Spread / slippage allowance | Same representation, nonnegative. Cost scenarios must be complete and ordered. Reference ask must exceed bid. Derived quotes must remain representable. |
+| Funding | No funding calculation exists. `overnightFundingModelled:true` is refused. Overnight and weekend account exposure stay unsupported. |
+| Booked GBP / derived notional | Absolute magnitude below `1e22`, from draft C3 `Decimal(24,2)`. GBP booking checks again after rounding, to refuse rounding into overflow. Intermediate P&L may carry fractional pennies until booking. |
+
+Inputs use decimal syntax only, with an optional exponent from -24 to +24 and at most 64 characters. The exponent range follows the 24-digit representation; the character cap accommodates signed, zero-padded and scientific forms while bounding parser work. Values with more than eight meaningful fractional places are refused rather than rounded into a different input. Meaningful zeroes are normalized, so `1.0000000000` remains exactly 1. `1e400` is finite in decimal.js, but cannot fit these representations and is refused before arithmetic; numeric JavaScript `1e400` is Infinity and is also not an accepted string input.
+
+Spread-bet arithmetic uses an isolated decimal.js context at 80 significant digits: two 24-digit inputs can form a 48-digit product; division by an eight-decimal point size retains ample guard digits before penny booking. The legacy monetary context and legacy risk defaults are unchanged. Stake rounding computes the permitted booked risk directly, then floors to the stake increment, with a final loss-budget assertion. Its work does not grow with the number of tiny stake increments.
+
+The account wrapper applies the configured margin rate as well as the minimum stake. A caller requesting risk above the configured fraction receives `RISK_ABOVE_CONFIGURED`; it is never silently clamped. The configuration argument must eventually come from an authorised, versioned, per-account store. This pure helper cannot authenticate a caller-supplied configuration; that is a C10 blocker, and the helper remains unwired.
+
+Margin reservation, cash/ledger mutation, funding, actual partial-close allocation, and concurrency remain C3/C6/C8 implementation work. The pure P&L function supports a partial stake, but does not prove ledger penny conservation or margin release. Booking partial fills requires a documented residual-penny policy and database invariants before activation. Evidence: `TITANIUM-PRODUCT-REVIEW.md` and the exact targeted test results recorded there.

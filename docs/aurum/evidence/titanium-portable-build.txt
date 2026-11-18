@@ -1,0 +1,47 @@
+
+> odin-quant@ build:portable D:\Projects\QUANT
+> pnpm build:packages && pnpm --filter @odin/api build:tsc && pnpm --filter @odin/worker build:tsc && pnpm --filter @odin/web build
+
+
+> odin-quant@ build:packages D:\Projects\QUANT
+> node packages/evolution/scripts/build-sandbox.mjs && tsc -b --pretty false
+
+[evolution] seccomp sandbox not built: the committed profile is x86_64 Linux only
+
+> @odin/api@0.1.0 build:tsc D:\Projects\QUANT\apps\api
+> nest build --builder tsc --path tsconfig.portable.json
+
+
+> @odin/worker@0.1.0 build:tsc D:\Projects\QUANT\apps\worker
+> nest build --builder tsc --path tsconfig.portable.json
+
+
+> @odin/web@0.1.0 build D:\Projects\QUANT\apps\web
+> next build
+
+▲ Next.js 16.4.5 (Turbopack)
+✓ Running next.config.ts took 3.0s
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 73s
+  Running TypeScript ...
+  Finished TypeScript in 43s ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/5) ...
+  Generating static pages using 7 workers (1/5)
+  Generating static pages using 7 workers (2/5)
+  Generating static pages using 7 workers (3/5)
+✓ Generating static pages using 7 workers (5/5) in 1239ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ○ /login
+├ ○ /terminal
+└ ƒ /terminal/[section]
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

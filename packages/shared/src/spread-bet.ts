@@ -1,5 +1,7 @@
 import Decimal from "decimal.js";
-import { d } from "./money.js";
+import { bookedAmountFits, spreadDecimal, SpreadDecimal } from "./spread-bet-domain.js";
+
+const d = (value: string): Decimal => new SpreadDecimal(value);
 
 /**
  * OPERATION AURUM: simulated UK financial spread betting (GBP per point) on a USD-quoted reference.
@@ -84,24 +86,20 @@ const fail = <R extends string>(reason: R) => ({ ok: false as const, reason });
 const ok = <T>(value: T) => ({ ok: true as const, value });
 
 function dec(value: string): Decimal | null {
-  try {
-    const v = d(value);
-    return v.isFinite() ? v : null;
-  } catch {
-    return null;
-  }
+  return spreadDecimal(value);
 }
 
 export type SpecReason = "INVALID_SPEC";
 
 /** Validates internal consistency of a product spec. Callers must check this before any other function. */
 export function validateProductSpec(spec: SpreadBetProductSpec): Result<SpreadBetProductSpec, SpecReason> {
+  if (!spec || !spec.spreadPoints || !Array.isArray(spec.sourceUrls)) return fail("INVALID_SPEC");
   const point = dec(spec.pointSize);
   const min = dec(spec.minStakeGbp);
   const inc = dec(spec.stakeIncrementGbp);
   const max = dec(spec.maxStakeGbp);
   const margin = dec(spec.marginRate);
-  const spreads = Object.values(spec.spreadPoints).map(dec);
+  const spreads = [spec.spreadPoints.BASELINE, spec.spreadPoints.ELEVATED, spec.spreadPoints.SEVERE].map(dec);
   if (!point || !min || !inc || !max || !margin || spreads.some((s) => s === null)) return fail("INVALID_SPEC");
   if (point.lte(0) || min.lte(0) || inc.lte(0) || max.lt(min)) return fail("INVALID_SPEC");
   if (!min.mod(inc).isZero() || !max.mod(inc).isZero()) return fail("INVALID_SPEC");
@@ -113,6 +111,8 @@ export function validateProductSpec(spec: SpreadBetProductSpec): Result<SpreadBe
   if (e.lt(b) || s.lt(e)) return fail("INVALID_SPEC");
   if (!Number.isInteger(spec.priceDp) || spec.priceDp < 0 || spec.priceDp > 8) return fail("INVALID_SPEC");
   if (spec.accountCurrency !== "GBP") return fail("INVALID_SPEC");
+  if (spec.provenance !== "GENERIC_SIMULATION" && spec.provenance !== "BROKER_DOCUMENTED") return fail("INVALID_SPEC");
+  if (spec.overnightFundingModelled !== false || spec.guaranteedStopsModelled !== false) return fail("INVALID_SPEC");
   if (spec.provenance === "BROKER_DOCUMENTED" && (spec.sourceUrls.length === 0 || !spec.verifiedAt)) {
     return fail("INVALID_SPEC");
   }
@@ -144,12 +144,14 @@ export function deriveSpreadBetQuote(
   const point = d(spec.pointSize);
   const refSpread = ask.minus(bid);
   const scenarioSpread = d(spec.spreadPoints[scenario]).times(point);
-  const spread = Decimal.max(refSpread, scenarioSpread);
+  const spread = SpreadDecimal.max(refSpread, scenarioSpread);
   const mid = bid.plus(ask).div(2);
   const half = spread.div(2);
   const simBid = mid.minus(half).toDecimalPlaces(spec.priceDp, Decimal.ROUND_FLOOR);
   const simAsk = mid.plus(half).toDecimalPlaces(spec.priceDp, Decimal.ROUND_CEIL);
-  if (simBid.lte(0)) return fail("INVALID_PRICE");
+  if (simBid.lte(0) || !dec(simBid.toFixed()) || !dec(simAsk.toFixed())) return fail("INVALID_PRICE");
+  const spreadPoints = simAsk.minus(simBid).div(point);
+  if (!dec(spreadPoints.toFixed())) return fail("INVALID_PRICE");
   return ok({
     kind: "SIMULATED_SPREAD_BET_QUOTE",
     productId: spec.id,
@@ -157,7 +159,7 @@ export function deriveSpreadBetQuote(
     scenario,
     bid: simBid.toFixed(spec.priceDp),
     ask: simAsk.toFixed(spec.priceDp),
-    spreadPoints: simAsk.minus(simBid).div(point).toFixed(),
+    spreadPoints: spreadPoints.toFixed(),
     eventTime: ref.eventTime,
     disclosure: "Simulation-derived from a reference quote. Not a broker quote.",
   });
@@ -165,12 +167,27 @@ export function deriveSpreadBetQuote(
 
 /** Executable price for opening: LONG at ask, SHORT at bid. */
 export function entryPrice(direction: Direction, q: Pick<SimulatedSpreadBetQuote, "bid" | "ask">): string {
-  return requireDirection(direction) === "LONG" ? q.ask : q.bid;
+  requireDirection(direction);
+  requireQuotePrices(q);
+  return direction === "LONG" ? q.ask : q.bid;
 }
 
 /** Executable price for closing: LONG at bid, SHORT at ask. */
 export function exitPrice(direction: Direction, q: Pick<SimulatedSpreadBetQuote, "bid" | "ask">): string {
-  return requireDirection(direction) === "LONG" ? q.bid : q.ask;
+  requireDirection(direction);
+  requireQuotePrices(q);
+  return direction === "LONG" ? q.bid : q.ask;
+}
+
+function requireQuotePrices(q: Pick<SimulatedSpreadBetQuote, "bid" | "ask">): void {
+  const bid = dec(q?.bid);
+  const ask = dec(q?.ask);
+  if (!bid || !ask || bid.lte(0) || ask.lte(bid)) throw new Error("INVALID_INPUT");
+}
+
+function validStake(spec: SpreadBetProductSpec, stake: Decimal): boolean {
+  // Partial closes may be below the entry minimum, but must remain on the stake grid.
+  return stake.gt(0) && stake.lte(spec.maxStakeGbp) && stake.mod(spec.stakeIncrementGbp).isZero();
 }
 
 /**
@@ -189,24 +206,36 @@ export function pnlGbp(input: {
   const stake = dec(input.stakeGbp);
   const entry = dec(input.entry);
   const exit = dec(input.exit);
-  if (!stake || !entry || !exit || stake.lte(0) || entry.lte(0) || exit.lte(0)) return fail("INVALID_INPUT");
+  if (!stake || !entry || !exit || !validStake(input.spec, stake) || entry.lte(0) || exit.lte(0)) return fail("INVALID_INPUT");
   const move = input.direction === "LONG" ? exit.minus(entry) : entry.minus(exit);
-  return ok(move.div(d(input.spec.pointSize)).times(stake));
+  const pnl = move.div(d(input.spec.pointSize)).times(stake);
+  return bookedAmountFits(pnl) ? ok(pnl) : fail("INVALID_INPUT");
 }
 
 /** Books an exact GBP amount to pennies, rounding toward negative infinity (profits down, losses up). */
 export function bookGbp(amount: Decimal): string {
-  return amount.toDecimalPlaces(2, Decimal.ROUND_FLOOR).toFixed(2);
+  if (!bookedAmountFits(amount)) throw new Error("INVALID_INPUT");
+  const booked = amount.toDecimalPlaces(2, Decimal.ROUND_FLOOR);
+  if (!bookedAmountFits(booked)) throw new Error("INVALID_INPUT");
+  return booked.toFixed(2);
 }
 
 /** GBP notional exposure: stake × price / pointSize. Not a cash outlay. */
 export function notionalGbp(spec: SpreadBetProductSpec, stakeGbp: string, priceUsd: string): Decimal {
-  return d(stakeGbp).times(d(priceUsd)).div(d(spec.pointSize));
+  if (!validateProductSpec(spec).ok) throw new Error("INVALID_SPEC");
+  const stake = dec(stakeGbp);
+  const price = dec(priceUsd);
+  if (!stake || !price || !validStake(spec, stake) || price.lte(0)) throw new Error("INVALID_INPUT");
+  const notional = stake.times(price).div(d(spec.pointSize));
+  if (!bookedAmountFits(notional)) throw new Error("INVALID_INPUT");
+  return notional;
 }
 
 /** Initial margin reserved for a position, rounded up to the penny. */
 export function marginGbp(spec: SpreadBetProductSpec, stakeGbp: string, priceUsd: string): string {
-  return notionalGbp(spec, stakeGbp, priceUsd).times(d(spec.marginRate)).toDecimalPlaces(2, Decimal.ROUND_CEIL).toFixed(2);
+  const margin = notionalGbp(spec, stakeGbp, priceUsd).times(d(spec.marginRate)).toDecimalPlaces(2, Decimal.ROUND_CEIL);
+  if (!bookedAmountFits(margin)) throw new Error("INVALID_INPUT");
+  return margin.toFixed(2);
 }
 
 export const SIZING_REASONS = [
@@ -288,12 +317,14 @@ export function sizeStake(input: {
   if (capped) stake = max;
   // Keep the booked (rounded-up) loss estimate within the booked (rounded-down) permitted risk.
   const permittedBooked = permitted.toDecimalPlaces(2, Decimal.ROUND_FLOOR);
-  while (stake.gt(0) && stake.times(lossPerStakeUnit).toDecimalPlaces(2, Decimal.ROUND_CEIL).gt(permittedBooked)) {
-    stake = stake.minus(inc);
-  }
+  stake = SpreadDecimal.min(stake, permittedBooked.div(lossPerStakeUnit).div(inc).floor().times(inc));
   if (stake.lt(d(spec.minStakeGbp))) return fail("MIN_STAKE_EXCEEDS_RISK");
+  if (stake.times(lossPerStakeUnit).toDecimalPlaces(2, Decimal.ROUND_CEIL).gt(permittedBooked)) return fail("INVALID_INPUT");
 
-  const margin = d(marginGbp(spec, stake.toFixed(), entry.toFixed()));
+  const notional = stake.times(entry).div(point);
+  if (!bookedAmountFits(notional)) return fail("INVALID_INPUT");
+  const margin = notional.times(d(spec.marginRate)).toDecimalPlaces(2, Decimal.ROUND_CEIL);
+  if (!bookedAmountFits(margin)) return fail("INVALID_INPUT");
   if (margin.gt(avail)) return fail("INSUFFICIENT_MARGIN");
   if (used.plus(margin).div(equity).gt(maxUtil)) return fail("MARGIN_UTILISATION_LIMIT");
 
@@ -303,7 +334,9 @@ export function sizeStake(input: {
     estimatedLossAtStopGbp: stake.times(lossPerStakeUnit).toDecimalPlaces(2, Decimal.ROUND_CEIL).toFixed(2),
     marginGbp: margin.toFixed(2),
     permittedRiskGbp: permittedBooked.toFixed(2),
-    cappedAtMaxStake: capped,
+    // P4: true only when the final stake is the product maximum because risk would have allowed more. The
+    // rounding loop below the cap can reduce the stake further, and then it is no longer "capped".
+    cappedAtMaxStake: capped && stake.eq(max),
     disclosure: "Estimated loss at stop is not a maximum loss: ordinary stops can gap.",
   });
 }
@@ -314,8 +347,9 @@ export function sizeStake(input: {
  */
 export function stopFillPrice(direction: Direction, stop: string, closingSidePrice: string): string | null {
   requireDirection(direction);
-  const s = d(stop);
-  const p = d(closingSidePrice);
+  const s = dec(stop);
+  const p = dec(closingSidePrice);
+  if (!s || !p || s.lte(0) || p.lte(0)) throw new Error("INVALID_INPUT");
   if (direction === "LONG") return p.lte(s) ? p.toFixed() : null;
   return p.gte(s) ? p.toFixed() : null;
 }

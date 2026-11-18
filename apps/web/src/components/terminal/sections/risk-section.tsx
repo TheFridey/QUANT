@@ -80,7 +80,7 @@ export function RiskSection() {
           </div>
           <div>
             <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Pause new entries</dt>
-            <dd className="mono">{execution?.pauseNewEntries ? "yes" : "no"}</dd>
+            <dd className="mono">{execution?.pauseNewEntries ? (execution?.legacyCryptoMode === "RETIRED" ? "yes (legacy retired)" : "yes") : "no"}</dd>
           </div>
           <div>
             <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Entries suspended</dt>

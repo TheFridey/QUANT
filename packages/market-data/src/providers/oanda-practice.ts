@@ -615,7 +615,7 @@ export class OandaPracticeMarketData {
     return { ok: true, base: this.credentials.apiUrl.replace(/\/$/, "") };
   }
 
-  private async get(url: URL): Promise<{ ok: true; payload: unknown } | { ok: false; code: OandaFailureCode; error: string }> {
+  private async get(url: URL, signal?: AbortSignal): Promise<{ ok: true; payload: unknown } | { ok: false; code: OandaFailureCode; error: string }> {
     const token = (this.options.token ?? (() => process.env.OANDA_API_TOKEN ?? ""))();
     let response: Response;
     try {
@@ -623,6 +623,7 @@ export class OandaPracticeMarketData {
         method: "GET",
         headers: { authorization: `Bearer ${token}`, accept: "application/json", "accept-datetime-format": "RFC3339" },
         redirect: "error",
+        signal,
       });
     } catch (error) {
       return { ok: false, code: "HTTP_ERROR", error: `oanda:error:${error instanceof Error ? error.message : "unknown"}` };
@@ -656,7 +657,7 @@ export class OandaPracticeMarketData {
   }
 
   /** Current bid/ask/time/tradeable for 1-20 instruments. */
-  async pricing(instruments: readonly string[]): Promise<OandaResult<OandaPriceSnapshot[]>> {
+  async pricing(instruments: readonly string[], signal?: AbortSignal): Promise<OandaResult<OandaPriceSnapshot[]>> {
     const pre = this.preflight(true);
     if (!pre.ok) return pre;
     if (instruments.length === 0 || instruments.length > 20 || !instruments.every((i) => OANDA_INSTRUMENT_NAME.test(i))) {
@@ -664,7 +665,7 @@ export class OandaPracticeMarketData {
     }
     const url = new URL(`${pre.base}/v3/accounts/${this.credentials.accountId}/pricing`);
     url.searchParams.set("instruments", instruments.join(","));
-    const res = await this.get(url);
+    const res = await this.get(url, signal);
     if (!res.ok) return res;
     const now = this.now();
     const prices = parseOandaPricing(res.payload, now);

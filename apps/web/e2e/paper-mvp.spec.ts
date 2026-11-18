@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { PrismaClient } from "../../../packages/shared/src/db";
 import {
   apiFromPage,
   ensureEngineStatus,
@@ -104,15 +105,20 @@ test.describe("Gate 1 local paper browser workflows", () => {
     await page.getByRole("link", { name: "Strategy Laboratory" }).click();
     const pauseEntries = page.getByRole("button", { name: /Pause new entries|Resume new entries/ });
     const beforeOps = await snapshot(page);
-    const wasPaused = Boolean(beforeOps.opsControls?.pauseNewEntries);
+    // The toggle changes the operator's stored flag; the effective flag also includes legacy retirement.
+    const stored = (o: { storedPauseNewEntries?: boolean; pauseNewEntries?: boolean } | undefined) => Boolean(o?.storedPauseNewEntries ?? o?.pauseNewEntries);
+    const wasPaused = stored(beforeOps.opsControls);
     await pauseEntries.click();
     await expect
-      .poll(async () => Boolean((await snapshot(page)).opsControls?.pauseNewEntries))
+      .poll(async () => stored((await snapshot(page)).opsControls))
       .toBe(!wasPaused);
+    // The direct API poll can observe the acknowledgement before the UI snapshot updates.
+    await expect(pauseEntries).toHaveText(wasPaused ? /Pause new entries/ : /Resume new entries/);
     await pauseEntries.click();
     await expect
-      .poll(async () => Boolean((await snapshot(page)).opsControls?.pauseNewEntries))
+      .poll(async () => stored((await snapshot(page)).opsControls))
       .toBe(wasPaused);
+    await expect(pauseEntries).toHaveText(wasPaused ? /Resume new entries/ : /Pause new entries/);
   });
 
   test("signal/rejection reasons surface on overview and risk", async ({ page }) => {
@@ -234,27 +240,28 @@ test.describe("Gate 1 local paper browser workflows", () => {
   }) => {
     await login(page);
 
-    // Seed durable alert via isolated e2e DB (UI has no ACK button — API ack + honesty copy).
-    const { execFileSync } = await import("node:child_process");
-    execFileSync(
-      "psql",
-      [
-        "-h",
-        "127.0.0.1",
-        "-U",
-        "odin",
-        "-d",
-        "odin_e2e",
-        "-c",
-        `INSERT INTO "DurableAlert" (id, severity, code, message, acked, payload, "createdAt", "accountId")
-         VALUES ('alert_e2e_pw', 'WARNING', 'E2E_BROWSER_ACK', 'Playwright seeded alert', false, '{"ackClearsSafety":false}'::jsonb, NOW(), 'primary')
-         ON CONFLICT (id) DO UPDATE SET acked = false, "ackedAt" = NULL, message = EXCLUDED.message, payload = EXCLUDED.payload;`,
-      ],
-      { env: { ...process.env, PGPASSWORD: "odin" }, stdio: "pipe" },
-    );
+    // Explicit disposable target: never depend on host psql, its default port or .env discovery.
+    const rawUrl = process.env.DATABASE_URL_TEST ?? process.env.DATABASE_URL;
+    if (!rawUrl) throw new Error("E2E_DATABASE_URL_REQUIRED");
+    const url = new URL(rawUrl);
+    if (process.env.EXECUTION_MODE !== "PAPER" || !["postgres:", "postgresql:"].includes(url.protocol)
+      || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || url.search
+      || !/^\/(?:odin_e2e|odin_test_[A-Za-z0-9_]*e2e[A-Za-z0-9_]*)$/.test(url.pathname)) {
+      throw new Error("E2E_DISPOSABLE_DATABASE_REQUIRED");
+    }
+    const db = new PrismaClient({ datasources: { db: { url: rawUrl } } });
+    try {
+      const [identity] = await db.$queryRaw<Array<{ name: string }>>`SELECT current_database() AS name`;
+      expect(identity?.name).toBe(url.pathname.slice(1));
+      await db.durableAlert.upsert({
+        where: { id: "alert_e2e_pw" },
+        create: { id: "alert_e2e_pw", severity: "WARNING", code: "E2E_BROWSER_ACK", message: "Playwright seeded alert", acked: false, payload: { ackClearsSafety: false }, accountId: "primary" },
+        update: { acked: false, ackedAt: null, message: "Playwright seeded alert", payload: { ackClearsSafety: false } },
+      });
+    } finally { await db.$disconnect(); }
 
     const snap = await snapshot(page);
-    const openAlert = (snap.alerts ?? []).find((alert) => alert.id === "alert_e2e_pw" || !alert.acked);
+    const openAlert = (snap.alerts ?? []).find((alert) => alert.id === "alert_e2e_pw");
     await page.goto("/terminal/risk");
     await expect(page.getByText(/ACK ≠ clear|ACK≠clear|Alert ACK does not|ACK≠clear safety/i).first()).toBeVisible();
     await expect(page.getByText(/E2E_BROWSER_ACK|Playwright seeded alert|Durable alerts/i).first()).toBeVisible();

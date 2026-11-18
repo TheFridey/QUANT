@@ -75,7 +75,7 @@ export function SettingsSection() {
           </div>
           <div>
             <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Pause new entries</dt>
-            <dd className="mono">{snapshot?.execution?.pauseNewEntries ? "yes" : "no"}</dd>
+            <dd className="mono">{snapshot?.execution?.pauseNewEntries ? (snapshot?.execution?.legacyCryptoMode === "RETIRED" ? "yes (legacy retired)" : "yes") : "no"}</dd>
           </div>
           <div>
             <dt className="text-[10px] uppercase tracking-[0.14em] text-muted">Alpaca</dt>

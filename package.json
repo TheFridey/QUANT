@@ -10,6 +10,7 @@
     "postinstall": "node packages/evolution/scripts/build-sandbox.mjs",
     "build:packages": "node packages/evolution/scripts/build-sandbox.mjs && tsc -b --pretty false",
     "build": "pnpm build:packages && pnpm --filter @odin/api --filter @odin/worker --filter @odin/web build",
+    "build:portable": "pnpm build:packages && pnpm --filter @odin/api build:tsc && pnpm --filter @odin/worker build:tsc && pnpm --filter @odin/web build",
     "typecheck": "tsc -b --pretty false && pnpm --filter @odin/api --filter @odin/worker --filter @odin/web typecheck",
     "test": "vitest run",
     "test:watch": "vitest",

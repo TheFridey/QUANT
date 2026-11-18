@@ -5,14 +5,24 @@ import {
   circuitKey,
   DEFAULT_CIRCUIT_POLICY,
   initialCircuit,
-  recordFailure,
-  recordSuccess,
+  resetCircuit,
+  recordFailure as rawFailure,
+  recordSuccess as rawSuccess,
   summariseCircuits,
   type CircuitPolicy,
+  type CircuitRecord,
 } from "./provider-circuit.js";
 
 const NO_JITTER: CircuitPolicy = { ...DEFAULT_CIRCUIT_POLICY, jitterFraction: 0 };
 const T0 = 1_000_000;
+
+// Existing sequential scenarios complete the current admitted generation explicitly.
+function recordFailure(r: CircuitRecord, f: Parameters<typeof rawFailure>[1], now: number, p = NO_JITTER) {
+  return rawFailure(r, { ...f, token: f.token ?? r.epoch ?? 0 }, now, p);
+}
+function recordSuccess(r: CircuitRecord, now: number, token = r.epoch ?? 0) {
+  return rawSuccess(r, now, token);
+}
 
 describe("provider circuit breaker (HORIZON Phase II, unwired)", () => {
   it("stays closed below the failure threshold and opens at it", () => {
@@ -54,12 +64,94 @@ describe("provider circuit breaker (HORIZON Phase II, unwired)", () => {
     expect(admitRequest(r, T0 + 5_001).admission).toMatchObject({ allowed: false, reason: "HALF_OPEN_PROBE_IN_FLIGHT" });
     const reopened = recordFailure(r, { kind: "NETWORK" }, T0 + 6_000, NO_JITTER);
     expect(reopened).toMatchObject({ state: "OPEN", openings: 2, retryAt: T0 + 6_000 + 10_000 });
-    expect(recordSuccess(admitRequest(reopened, T0 + 16_000).record, T0 + 16_001).state).toBe("CLOSED");
+    const probe = admitRequest(reopened, T0 + 16_000);
+    expect(recordSuccess(probe.record, T0 + 16_001, probe.admission.token).state).toBe("CLOSED");
+  });
+
+  it("N3: a stale probe's late success cannot close a newer HALF_OPEN generation", () => {
+    const open = recordFailure(initialCircuit("oanda_practice:XAU_USD"), { kind: "AUTH_FAILED" }, T0, NO_JITTER);
+    const probe1 = admitRequest(open, T0 + 5_000, NO_JITTER);
+    // Probe 1 never reports in time: the breaker reopens, then admits probe 2.
+    const expired = admitRequest(probe1.record, T0 + 5_000 + NO_JITTER.probeTimeoutMs, NO_JITTER).record;
+    expect(expired.state).toBe("OPEN");
+    const probe2 = admitRequest(expired, expired.retryAt!, NO_JITTER);
+    expect(probe2.admission).toMatchObject({ allowed: true, state: "HALF_OPEN" });
+    expect(probe2.admission.token).not.toBe(probe1.admission.token);
+    // Probe 1's success now arrives out of order.
+    const late = recordSuccess(probe2.record, expired.retryAt! + 1, probe1.admission.token);
+    expect(late).toMatchObject({ state: "HALF_OPEN", halfOpenInFlight: true, staleResults: 1 });
+    expect(admitRequest(late, expired.retryAt! + 2, NO_JITTER).admission).toMatchObject({ allowed: false, reason: "HALF_OPEN_PROBE_IN_FLIGHT" });
+    // A success without a token is never accepted in HALF_OPEN.
+    expect(rawSuccess(probe2.record, expired.retryAt! + 1)).toMatchObject({ state: "HALF_OPEN", staleResults: 1 });
+    // Only probe 2 closes it.
+    expect(recordSuccess(late, expired.retryAt! + 3, probe2.admission.token)).toMatchObject({ state: "CLOSED", consecutiveFailures: 0 });
+  });
+
+  it("N3: a stale probe's late failure cannot reopen a newer generation, in either order", () => {
+    const open = recordFailure(initialCircuit("k"), { kind: "AUTH_FAILED" }, T0, NO_JITTER);
+    const probe1 = admitRequest(open, T0 + 5_000, NO_JITTER);
+    const expired = admitRequest(probe1.record, T0 + 5_000 + NO_JITTER.probeTimeoutMs, NO_JITTER).record;
+    const probe2 = admitRequest(expired, expired.retryAt!, NO_JITTER);
+    // Stale failure first, then the current success: closes.
+    const afterStaleFailure = recordFailure(probe2.record, { kind: "NETWORK", token: probe1.admission.token }, expired.retryAt! + 1, NO_JITTER);
+    expect(afterStaleFailure).toMatchObject({ state: "HALF_OPEN", openings: probe2.record.openings, staleResults: 1 });
+    const closed = recordSuccess(afterStaleFailure, expired.retryAt! + 2, probe2.admission.token);
+    expect(closed.state).toBe("CLOSED");
+    // Current success first, then the stale failure: stays closed and is not counted.
+    const lateFailure = recordFailure(closed, { kind: "HTTP_5XX", token: probe1.admission.token }, expired.retryAt! + 3, NO_JITTER);
+    expect(lateFailure).toMatchObject({ state: "CLOSED", consecutiveFailures: 0, staleResults: 2 });
+    // A failure from the current probe still reopens.
+    expect(recordFailure(probe2.record, { kind: "NETWORK", token: probe2.admission.token }, expired.retryAt! + 1, NO_JITTER).state).toBe("OPEN");
+  });
+
+  it("N3: results from requests admitted in an earlier CLOSED period are stale after a full cycle", () => {
+    const closedAdmission = admitRequest(initialCircuit("k"), T0, NO_JITTER).admission;
+    const open = recordFailure(initialCircuit("k"), { kind: "AUTH_FAILED", token: closedAdmission.token }, T0, NO_JITTER);
+    const probe = admitRequest(open, open.retryAt!, NO_JITTER);
+    const closed = recordSuccess(probe.record, open.retryAt! + 1, probe.admission.token);
+    expect(closed.state).toBe("CLOSED");
+    for (let i = 0; i < NO_JITTER.failureThreshold + 1; i++) {
+      expect(recordFailure(closed, { kind: "NETWORK", token: closedAdmission.token }, open.retryAt! + 2, NO_JITTER).state).toBe("CLOSED");
+    }
+    // A legacy record without an epoch still works: it reads as generation 0.
+    const legacy = { ...initialCircuit("k") } as Record<string, unknown>;
+    delete legacy.epoch;
+    expect(admitRequest(legacy as never, T0, NO_JITTER).admission.token).toBe(0);
   });
 
   it("backoff grows exponentially and is capped", () => {
     const values = [1, 2, 3, 4, 10, 30].map((n) => backoffMs("k", n, NO_JITTER));
     expect(values).toEqual([5_000, 10_000, 20_000, 40_000, 300_000, 300_000]);
+  });
+
+  it("consumes CLOSED completions so old and duplicate results cannot erase or add failures", () => {
+    const r = initialCircuit("k");
+    const token = admitRequest(r, T0).admission.token;
+    const failed = rawFailure(r, { kind: "NETWORK", token }, T0 + 1, NO_JITTER);
+    expect(rawSuccess(failed, T0 + 2, token)).toMatchObject({ consecutiveFailures: 1, staleResults: 1 });
+    expect(rawFailure(failed, { kind: "NETWORK", token }, T0 + 2, NO_JITTER)).toMatchObject({ consecutiveFailures: 1, staleResults: 1 });
+    const succeeded = rawSuccess(r, T0 + 1, token);
+    expect(rawFailure(succeeded, { kind: "AUTH_FAILED", token }, T0 + 2, NO_JITTER)).toMatchObject({ state: "CLOSED", consecutiveFailures: 0, staleResults: 1 });
+  });
+
+  it("rejects missing tokens in every state and fences OPEN diagnostics", () => {
+    const closed = initialCircuit("k");
+    const open = recordFailure(closed, { kind: "AUTH_FAILED" }, T0);
+    const half = admitRequest(open, open.retryAt!, NO_JITTER).record;
+    for (const r of [closed, open, half]) {
+      expect(rawSuccess(r, T0 + 1)).toEqual({ ...r, staleResults: (r.staleResults ?? 0) + 1 });
+      expect(rawFailure(r, { kind: "NETWORK" }, T0 + 1, NO_JITTER)).toEqual({ ...r, staleResults: (r.staleResults ?? 0) + 1 });
+    }
+    expect(rawSuccess(open, T0 + 2, closed.epoch)).toMatchObject({ lastSuccessAt: null, staleResults: 1 });
+    expect(rawFailure(open, { kind: "NETWORK", token: closed.epoch }, T0 + 2, NO_JITTER)).toMatchObject({ lastFailure: "AUTH_FAILED", staleResults: 1 });
+  });
+
+  it("fences old completions after an explicit reset", () => {
+    const r = initialCircuit("k");
+    const token = admitRequest(r, T0).admission.token;
+    const reset = resetCircuit(r);
+    expect(rawSuccess(reset, T0 + 1, token)).toMatchObject({ state: "CLOSED", lastSuccessAt: null, staleResults: 1 });
+    expect(rawFailure(reset, { kind: "AUTH_FAILED", token }, T0 + 1)).toMatchObject({ state: "CLOSED", lastFailure: null, staleResults: 1 });
   });
 
   it("jitter is deterministic per key, bounded, and differs across keys", () => {
