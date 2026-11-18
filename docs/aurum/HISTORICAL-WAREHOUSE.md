@@ -70,7 +70,17 @@ HELIOS, 18 November 2026. Facts are VERIFIED_PRODUCTION (observed on the practic
 
   Repeat until COMPLETED (5 invocations). The job resumes from its checkpoint.
 
-## 4. Derived timeframes
+## 4. Derived versus native timeframes (VERIFIED_PRODUCTION, read-only)
 
-- `packages/market-data/src/history/aggregate.ts` (CATALYST) aggregates canonical M1 into M5, M15, M30, H1, H4 and daily. It uses exact decimals and keeps bid/ask only when every member has it.
-- Comparing derived bars with native bars needs both series for the same range. The native H1 (2024-11 → 2026-11) and the pilot M1 overlap in October 2025. That comparison is the next warehouse step and is not yet run.
+- **Method:** `packages/market-data/src/history/aggregate.ts` (CATALYST) aggregates canonical M1 into higher timeframes with exact decimals. To check it against the provider, the pilot M1 bars were aggregated to H1 inside a read-only transaction on production, with the same rule (first open, max high, min low, last close). The result was compared with OANDA's native H1 dataset for October 2025. Query: [`evidence/helios-derived-vs-native-h1.sql`](evidence/helios-derived-vs-native-h1.sql).
+- **Result:** both series have **527 hours, 527 of which (100%) have identical open, high, low and close**.
+  - 0 hours appear in only one of the two series.
+  - The maximum close difference is 0.
+  - 22 hours are partial (fewer than 60 M1 members, at the daily break and session edges), and those match exactly too.
+- **Conclusion for this month:** OANDA's native H1 mid bars are the aggregation of its M1 mid bars. Canonical M1 can generate H1 without loss.
+- **Not verified:**
+  - other months;
+  - M5, M15, M30 and H4 (same method, not yet run);
+  - daily bars, where alignment differs: UTC and the 17:00 New York roll must not be mixed;
+  - bid and ask aggregates, since the native H1 dataset stores MBA extras and the comparison covered mid only.
+- **What aggregation does not tell you:** OHLC bars do not record tick order inside a bar. A stop and a target both inside one bar remain ambiguous at any granularity, and simulations must resolve that conservatively.
