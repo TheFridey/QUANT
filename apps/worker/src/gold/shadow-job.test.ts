@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GoldShadowTicker, goldShadowEnabled, goldShadowPolicies } from "./shadow-job.js";
+import { GoldShadowProcessor, GoldShadowScheduler, GoldShadowTicker, goldShadowEnabled, goldShadowPolicies } from "./shadow-job.js";
 
 const NOW = new Date("2026-11-17T15:00:10.000Z");
 
@@ -79,5 +79,37 @@ describe("HELIOS gold shadow ingestion (default off, non-executable)", () => {
     const l = fakeStore();
     l.store.startRun = async () => ({ ok: false, reason: "LEASE_HELD", runId: "other" }) as never;
     expect(await ticker(accepted("2026-11-17T15:00:01Z"), l).t.tick()).toEqual({ status: "NO_LEASE", reason: "LEASE_HELD" });
+  });
+
+  it("halts for good after DISABLED or INVALID_CONFIG instead of creating a run every tick", async () => {
+    const { t, store } = ticker({ status: "INVALID_CONFIG", reason: "INVALID_SPREAD_CAP" });
+    await t.tick();
+    expect(await t.tick()).toEqual({ status: "HALTED", reason: "INVALID_CONFIG" });
+    expect(await t.tick()).toEqual({ status: "HALTED", reason: "INVALID_CONFIG" });
+    expect(store.calls.filter((c) => c === "startRun")).toHaveLength(1);
+  });
+
+  it("when disabled, the scheduler schedules nothing and the processor touches neither the database nor the network", async () => {
+    const previous = process.env.AURUM_GOLD_SHADOW_ENABLED;
+    delete process.env.AURUM_GOLD_SHADOW_ENABLED;
+    try {
+      const removed: string[] = [];
+      let added = 0;
+      const queue = { getRepeatableJobs: async () => [{ key: "stale" }], removeRepeatableByKey: async (k: string) => void removed.push(k), add: async () => void (added += 1) };
+      await new GoldShadowScheduler(queue as never).onModuleInit();
+      expect(removed).toEqual(["stale"]);
+      expect(added).toBe(0);
+      const explode = new Proxy({}, { get: () => { throw new Error("database touched while disabled"); } });
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (() => { throw new Error("network touched while disabled"); }) as typeof fetch;
+      try {
+        await expect(new GoldShadowProcessor(explode as never).process()).resolves.toBeUndefined();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    } finally {
+      if (previous === undefined) delete process.env.AURUM_GOLD_SHADOW_ENABLED;
+      else process.env.AURUM_GOLD_SHADOW_ENABLED = previous;
+    }
   });
 });

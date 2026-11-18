@@ -47,6 +47,7 @@ export function goldShadowPolicies(env: NodeJS.ProcessEnv = process.env, config:
 export type TickResult =
   | { status: "NO_LEASE"; reason: "LEASE_HELD" | "LEASE_LOST" }
   | { status: "BUDGET_PAUSED"; until: string }
+  | { status: "HALTED"; reason: string }
   | { status: "POLLED"; poll: ShadowPollResult["status"]; persisted?: PersistOutcome["status"] };
 
 type Feed = Pick<GoldShadowFeed, "poll">;
@@ -56,6 +57,8 @@ type Store = Pick<GoldShadowStore, "startRun" | "renewLease" | "persist" | "coun
 export class GoldShadowTicker {
   private runId: string | null = null;
   private budgetPausedUntil = 0;
+  /** Set once the feed reports DISABLED or INVALID_CONFIG: the ticker stops for good (no run churn per tick). */
+  private halted: string | null = null;
 
   constructor(
     private readonly feed: Feed,
@@ -65,6 +68,7 @@ export class GoldShadowTicker {
 
   async tick(): Promise<TickResult> {
     const now = this.opts.now();
+    if (this.halted) return { status: "HALTED", reason: this.halted };
     if (now.getTime() < this.budgetPausedUntil) return { status: "BUDGET_PAUSED", until: new Date(this.budgetPausedUntil).toISOString() };
     if (this.runId && !(await this.store.renewLease(this.runId, this.opts.owner, now, this.opts.leaseMs))) this.runId = null;
     if (!this.runId) {
@@ -131,6 +135,7 @@ export class GoldShadowTicker {
       case "INVALID_CONFIG":
         await this.store.stopRun(runId, this.opts.owner, now, "FAILED", r.status);
         this.runId = null;
+        this.halted = r.status;
         return { status: "POLLED", poll: r.status };
     }
   }
