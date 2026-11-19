@@ -423,6 +423,8 @@ export type OandaPriceSnapshot = {
   instrument: string;
   /** Provider event time (ISO, ms precision). */
   time: string | null;
+  /** HELIOS: the provider's timestamp exactly as received (OANDA sends nanoseconds); used for durable event identity. */
+  rawTime?: string | null;
   bid: string | null;
   ask: string | null;
   mid: string | null;
@@ -537,6 +539,7 @@ export function parseOandaPricing(payload: unknown, now: Date): OandaPriceSnapsh
     out.push({
       instrument,
       time,
+      rawTime: typeof row.time === "string" && time !== null ? row.time.trim() : null,
       bid,
       ask,
       mid: quality.twoSided ? ((Number(bid) + Number(ask)) / 2).toFixed(8) : null,

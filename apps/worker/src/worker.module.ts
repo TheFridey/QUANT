@@ -21,6 +21,7 @@ import {
 } from "./deterministic-feed.js";
 import { RESEARCH_CAMPAIGN_QUEUE, ResearchCampaignProcessor, ResearchCampaignScheduler } from "./campaign-job.js";
 import { GENESIS_SHADOW_QUEUE, GenesisShadowProcessor, GenesisShadowScheduler } from "./genesis-shadow.js";
+import { GOLD_SHADOW_QUEUE, GoldShadowProcessor, GoldShadowScheduler } from "./gold/shadow-job.js";
 import { RedisBus } from "./redis-bus.js";
 import { RESEARCH_LOOP_QUEUE, ResearchLoopProcessor, ResearchLoopScheduler } from "./research-loop.js";
 import { Scheduler } from "./scheduler.js";
@@ -40,7 +41,7 @@ const queues = Object.values(QUEUES).map((name) => ({ name }));
         return { connection: { url, maxRetriesPerRequest: null } };
       },
     }),
-    BullModule.registerQueue(...queues, { name: RESEARCH_LOOP_QUEUE }, { name: GENESIS_SHADOW_QUEUE }, { name: RESEARCH_CAMPAIGN_QUEUE }),
+    BullModule.registerQueue(...queues, { name: RESEARCH_LOOP_QUEUE }, { name: GENESIS_SHADOW_QUEUE }, { name: RESEARCH_CAMPAIGN_QUEUE }, { name: GOLD_SHADOW_QUEUE }),
   ],
   providers: [
     RedisBus,
@@ -78,6 +79,9 @@ const queues = Object.values(QUEUES).map((name) => ({ name }));
     ResearchLoopScheduler,
     ResearchLoopProcessor,
     GenesisShadowScheduler,
+    // HELIOS: default off (AURUM_GOLD_SHADOW_ENABLED must be exactly "true"); observation only, never executable.
+    GoldShadowScheduler,
+    GoldShadowProcessor,
     GenesisShadowProcessor,
     ResearchCampaignScheduler,
     ResearchCampaignProcessor,
