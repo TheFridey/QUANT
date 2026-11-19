@@ -58,3 +58,60 @@ No persistence code or scheduler was added because this schema boundary is expre
 The documented candle API supports bid/ask/mid components, up to 5,000 candles per request, explicit alignment and complete-bar flags; it does not reconstruct a complete quote sequence or a historical spread distribution from midpoint OHLC. [Candle parameters](https://developer.oanda.com/rest-live-v20/pricing-ep/), [interval definitions](https://developer.oanda.com/rest-live-v20/instrument-df/).
 
 M1/M5/M15/H1/H4/D exist as API intervals, not verified local coverage. A bounded refresh must pin instrument/environment/components/alignment/schema, validate returned coverage and completeness, checkpoint only committed batches, deduplicate by interval/alignment/open time, hash exports and preserve gaps. Verify current endpoint compatibility before acquisition. No refresh, holdout access or campaign execution occurred in this review.
+
+## HELIOS: durable shadow schema (D11; implemented and tested on disposable databases only)
+
+Branch `aurum/helios-feed-schema`. Operator approval D11, 18 Nov: implement it and test it on disposable databases only. It is **not applied to production**.
+
+- **Migration:** `packages/shared/prisma/migrations/20261118220000_helios_gold_shadow`, additive only.
+  - Three tables: `GoldShadowIngestRun`, `GoldShadowQuote` and `GoldShadowSamplingBucket`.
+  - The raw `prisma migrate diff` also proposed dropping two existing indexes and five column defaults. That is pre-existing drift between `schema.prisma` and earlier raw-SQL migrations, so those statements were deliberately excluded. Declaring the two indexes in `schema.prisma` is a separate follow-up.
+- **Database-enforced:**
+  - `executionEligible = false` (CHECK) and `quoteKind = REFERENCE_MARKET_QUOTE`;
+  - `bid > 0`, `ask > bid`, `spread = ask − bid`, `2·mid = bid + ask`;
+  - verdict, session and SHA-256 hash formats;
+  - the raw provider-time format;
+  - `eventTime ≤ receivedAt + 1 s` and `bucketStart ≤ eventTime`;
+  - run status and non-negative counters;
+  - **at most 50 rejection samples per run**;
+  - quotes are append-only (UPDATE, DELETE and TRUNCATE triggers).
+  - There is no relation to any order, fill, position or ledger table.
+- **Identity:**
+  - The provider timestamp is kept verbatim (OANDA sends nanoseconds) in `providerTimeRaw`, and `eventIdentity` is SHA-256 of provider, environment, instrument and that verbatim string.
+  - `eventTime` is a microsecond `timestamptz` used only for range queries.
+  - **One canonical quote per (provider, environment, instrument, sampling policy, bucket)** is a unique index on the quote itself, so a restart or a second worker cannot store a second one.
+- **Challenge outcome:**
+  - The FEED proposal's bucket-to-quote foreign-key design was replaced by the bucket key on the quote. `GoldShadowSamplingBucket` keeps only the suppression audit (count and first/last receipt).
+  - Rejection evidence is a CHECK-bounded JSON array on the run rather than a fourth table.
+- **Writer:** `apps/worker/src/gold/shadow-store.ts`.
+  - Lease per instrument; a same-owner restart closes its earlier run.
+  - An advisory transaction lock per instrument makes the daily budget exact.
+  - Classification happens before the budget, so a repeated poll never spends budget.
+  - A conflict is recorded as evidence and never overwrites.
+  - Every SQL timestamp is an explicit ISO `::timestamptz`.
+  - Transactions are bounded at 10 s.
+  - **Known limitation:** lease expiry uses the worker clock.
+- **Tests:** 9 integration tests, run with the database `TimeZone` set to `Europe/London`. They cover storage and nanosecond retention, executable refused by the database, restart duplicate, conflicting payload, bucket suppression, a concurrent same-bucket race, lease handover, a restart-safe daily budget, the rejection cap, append-only enforcement, and invalid or future input.
+- **Review:** `db-migration-reviewer` gave APPROVE WITH NOTES. Findings 1–7 are fixed; finding 8 (database clock for leases) is documented. The review found the migration additive and safe on live PostgreSQL 14.24: `gen_random_uuid()` is built in from 13, and no existing table is touched.
+
+### Storage measurement (disposable PostgreSQL 16, tmpfs; `shadow-store.measure.integration.test.ts`, `HELIOS_MEASURE=1`)
+
+| Measure | Result |
+| --- | --- |
+| One day at the ceiling (17,280 quotes, one per 5 s bucket) | **28.9 MB** table and indexes (**1,670 B per quote**); WAL **37.4 MB** (2,162 B per quote) |
+| Application persist latency (300 quotes through the real store) | p50 8.8 ms, p95 12.6 ms, p99 15.1 ms, max 26.6 ms. An earlier run during host I/O stalls had p50 28 ms and one 34 s stall: that is why transactions are bounded |
+| Restart replay of 300 stored events | 300 DUPLICATE, 0 stored; WAL 197 KB |
+| Burst of 300 extra in-bucket responses | 300 SUPPRESSED, 0 stored (bucket counters only) |
+| One-hour range query (720 rows) | index scan on `(instrument, eventTime, id)`, 0.4 ms, 6–60 shared buffer hits |
+
+**Projection (derived):**
+- At the ceiling, 28.9 MB/day is about 0.87 GB per 30 days, or **about 10.5 GB/year**.
+- Restricted to gold trading hours (about 23 h × 5 days), it is about 20 MB/day on average, or about 7 GB/year.
+- Dumps add about 13% of that per retained dump.
+- That is about a quarter of today's free disk per year: **the 17,280/day ceiling should not run unbounded**.
+
+**Recommendation (D11 resource budget, for the operator):** either
+- (a) start with 15 s buckets (5,760/day, about 2.4 GB/year at trading hours), or
+- (b) keep 5 s buckets with a 90-day hot window for raw quotes.
+
+Either way, archive aggregated minute bars, never the raw quotes, into the warehouse. Storing hashes as `bytea` and dropping the repeated provider/environment text from the unique indexes would roughly halve bytes per quote. That is a schema refinement worth making before production, while no rows exist.

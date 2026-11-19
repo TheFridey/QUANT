@@ -1678,3 +1678,93 @@ model ResearchHoldoutLedger {
   @@index([instrumentKey, barMs, lineageKey])
   @@index([unitId, kind])
 }
+
+/// HELIOS (D11, approved 18 Nov 2026 for disposable databases only): durable gold shadow observations.
+/// Reference quotes only: never executable (CHECK executionEligible = false), no relation to any financial table.
+/// One canonical quote per (provider, environment, instrument, sampling policy, bucket): enforced by a unique index,
+/// so a second worker or a restart cannot store a second observation for the same bucket.
+model GoldShadowIngestRun {
+  id                 String    @id @default(uuid())
+  provider           String
+  environment        String
+  instrument         String
+  transport          String
+  /// SHA-256 of the canonical feed configuration, quality policy and sampling policy in force for the run.
+  configHash         String
+  qualityPolicyHash  String
+  samplingPolicyHash String
+  /// Lease: the worker that owns the run and when its lease expires. A second worker cannot take a live lease.
+  leaseOwner         String?
+  leaseExpiresAt     DateTime? @db.Timestamptz(6)
+  status             String    @default("RUNNING")
+  startedAt          DateTime  @default(now()) @db.Timestamptz(6)
+  heartbeatAt        DateTime? @db.Timestamptz(6)
+  finishedAt         DateTime? @db.Timestamptz(6)
+  polls              Int       @default(0)
+  accepted           Int       @default(0)
+  suppressed         Int       @default(0)
+  rejected           Int       @default(0)
+  providerFailures   Int       @default(0)
+  lastErrorCode      String?
+  /// At most 50 rejection samples (CHECK), so a provider outage cannot generate unbounded evidence.
+  rejectionSamples   Json      @default("[]")
+  quotes             GoldShadowQuote[]
+
+  @@index([instrument, startedAt])
+  @@index([status, leaseExpiresAt])
+}
+
+model GoldShadowQuote {
+  id                 String   @id @default(uuid())
+  runId              String
+  provider           String
+  environment        String
+  instrument         String
+  quoteKind          String   @default("REFERENCE_MARKET_QUOTE")
+  /// The provider's timestamp exactly as received (OANDA sends nanoseconds). Never truncated.
+  providerTimeRaw    String
+  /// UTC event time for range queries (microseconds). Identity uses providerTimeRaw, not this.
+  eventTime          DateTime @db.Timestamptz(6)
+  receivedAt         DateTime @db.Timestamptz(6)
+  /// SHA-256 of provider, environment, instrument and providerTimeRaw: the provider event identity.
+  eventIdentity      String
+  /// SHA-256 of the raw pricing row as received.
+  payloadHash        String
+  bid                Decimal  @db.Decimal(24, 8)
+  ask                Decimal  @db.Decimal(24, 8)
+  mid                Decimal  @db.Decimal(24, 8)
+  spread             Decimal  @db.Decimal(24, 8)
+  providerTradeable  Boolean?
+  sessionState       String
+  qualityVerdict     String
+  qualityReasons     String[]
+  qualityPolicyHash  String
+  samplingPolicyHash String
+  bucketStart        DateTime @db.Timestamptz(6)
+  executionEligible  Boolean  @default(false)
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+  run                GoldShadowIngestRun @relation(fields: [runId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  bucket             GoldShadowSamplingBucket?
+
+  @@unique([provider, environment, instrument, eventIdentity])
+  @@unique([provider, environment, instrument, samplingPolicyHash, bucketStart])
+  @@index([instrument, eventTime, id])
+  @@index([runId, receivedAt])
+}
+
+/// Suppression audit per bucket: unchanged responses are counted here, never stored as quotes.
+model GoldShadowSamplingBucket {
+  id                 String   @id @default(uuid())
+  provider           String
+  environment        String
+  instrument         String
+  samplingPolicyHash String
+  bucketStart        DateTime @db.Timestamptz(6)
+  quoteId            String   @unique
+  firstReceivedAt    DateTime @db.Timestamptz(6)
+  lastReceivedAt     DateTime @db.Timestamptz(6)
+  suppressedCount    Int      @default(0)
+  quote              GoldShadowQuote @relation(fields: [quoteId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([provider, environment, instrument, samplingPolicyHash, bucketStart])
+}
