@@ -460,6 +460,7 @@ export type Snapshot = {
 export type TerminalSection =
   | "overview"
   | "radar"
+  | "gold"
   | "agents"
   | "markets"
   | "trading"

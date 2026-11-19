@@ -29,6 +29,7 @@ import { PerformanceSection } from "@/components/terminal/sections/performance-s
 import { PortfolioSection } from "@/components/terminal/sections/portfolio-section";
 import { PositionsSection } from "@/components/terminal/sections/positions-section";
 import { RadarSection } from "@/components/terminal/sections/radar-section";
+import { GoldMarketSection } from "@/components/terminal/sections/gold-market-section";
 import { CapacitySection } from "@/components/terminal/sections/capacity-section";
 import { RiskSection } from "@/components/terminal/sections/risk-section";
 import { SettingsSection } from "@/components/terminal/sections/settings-section";
@@ -138,6 +139,8 @@ function renderSection(section: TerminalSection) {
       );
     case "agents":
       return <AgentsSection />;
+    case "gold":
+      return <GoldMarketSection />;
     case "markets":
       return <MarketSelectorSection />;
     case "trading":

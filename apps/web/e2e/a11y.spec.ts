@@ -4,7 +4,7 @@ import { login } from "./helpers";
 
 /** Audit UI: zero serious or critical axe violations on every terminal section, desktop and mobile. */
 const SECTIONS = [
-  "overview", "agents", "radar", "markets", "trading", "portfolio", "positions", "history", "strategy",
+  "overview", "agents", "gold", "radar", "markets", "trading", "portfolio", "positions", "history", "strategy",
   "backtesting", "risk", "capacity", "research", "operations", "forge", "genome", "integrity", "confidence",
   "memory", "models", "autonomy", "logs", "settings",
 ];

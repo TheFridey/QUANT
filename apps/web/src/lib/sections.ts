@@ -27,6 +27,7 @@ export type SectionDef = {
 export const SECTIONS: SectionDef[] = [
   { id: "overview", label: "Overview", group: "Desk", shortLabel: "Overview" },
   { id: "agents", label: "Agent Intelligence", group: "Desk", shortLabel: "Agents" },
+  { id: "gold", label: "Gold Market (AURUM)", group: "Markets", shortLabel: "Gold" },
   { id: "radar", label: "Market Scanner", group: "Markets", shortLabel: "Scanner" },
   { id: "markets", label: "Market Selector", group: "Markets", shortLabel: "Selector" },
   { id: "trading", label: "Trading Terminal", group: "Orders & Positions", shortLabel: "Ticket" },
